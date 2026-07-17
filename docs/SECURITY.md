@@ -40,7 +40,7 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   the macOS app and macOS CLI store their API token in Keychain. Non-macOS CLI
   fallback storage is owner-only mode 0600 and may be replaced by a host vault.
 - **Supply chain** — CI blocks on tests, typechecks, browser/Swift tests,
-  dependency audit, 440-package license policy, Gitleaks and SPDX SBOM creation.
+  dependency audit, 446-package license policy, Gitleaks and SPDX SBOM creation.
 
 Security tests cover malicious origins, missing auth, SSE query-token denial,
 client cwd injection, symlink escape, interpreter bypass, environment leakage,

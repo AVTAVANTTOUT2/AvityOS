@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "avity-control-plane": "./dist/main.js"
+    "avity-control-plane": "./bin/avity-control-plane.mjs"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

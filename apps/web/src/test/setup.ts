@@ -9,5 +9,6 @@ class TestResizeObserver {
 }
 
 globalThis.ResizeObserver = TestResizeObserver as typeof ResizeObserver;
+HTMLElement.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 1024, 768);
 
 afterEach(() => cleanup());

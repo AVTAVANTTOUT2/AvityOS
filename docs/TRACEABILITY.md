@@ -18,7 +18,7 @@ Evidence date: 2026-07-17. Status: ✅ implemented and locally reproduced ·
 | Checkpoints and independent review | ✅ | Required commands pass only on exit evidence; separate reviewer run with diff/brain/evidence; rejection loops and approval tested. |
 | Usage, quotas and budgets | ✅ | Transactional usage/budget accounting and budget escalation. Provider-reported cost remains zero unless pricing is configured. |
 | Execution security boundary | ✅ | 7 control-plane security tests, 12 worker tests, environment test, Git-hook test and sandbox read/write tests cover the audited boundary. |
-| Supply-chain gates | ✅ | Local: zero known vulnerabilities, license policy passes 440 installed packages, Gitleaks passes; CI includes blocking audit/license/Gitleaks and SPDX SBOM. |
+| Supply-chain gates | ✅ | Local: zero known vulnerabilities, license policy passes 446 installed packages, Gitleaks passes; CI includes blocking audit/license/Gitleaks and SPDX SBOM. |
 | Fake/demo honesty | ✅ | Fake is a deterministic engineering fixture; production backend failure shows `Hors ligne`; fixtures require `VITE_AVITY_DEMO=1`. |
 | Full local TS verification | ✅ | `pnpm verify`: all builds/typechecks and 99 tests pass. |
 | Browser + Swift verification | ✅ | Playwright: 1 passed. `swift build && swift test`: 1 XCTest passed. |

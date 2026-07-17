@@ -30,6 +30,22 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (id.includes('/lucide-react/')) return 'icons'
+          if (id.includes('/recharts/')) return 'charts'
+          if (id.includes('/victory-vendor/') || id.includes('/decimal.js-light/') || id.includes('/es-toolkit/')) {
+            return 'charts-math'
+          }
+          if (id.includes('/@reduxjs/') || id.includes('/react-redux/') || id.includes('/reselect/') || id.includes('/immer/')) {
+            return 'charts-state'
+          }
+        },
+      },
+    },
+  },
 
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],

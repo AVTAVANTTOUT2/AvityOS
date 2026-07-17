@@ -21,11 +21,10 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "@avityos/contracts": "workspace:*",
-    "@avityos/control-plane": "workspace:*",
     "@avityos/policy": "workspace:*"
   },
   "devDependencies": {
+    "@avityos/control-plane": "workspace:*",
     "@avityos/providers": "workspace:*",
     "@types/node": "22.13.1",
     "fastify": "5.8.5",

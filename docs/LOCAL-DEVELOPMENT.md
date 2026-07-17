@@ -31,7 +31,7 @@ control plane cannot be reached. Sample fixtures are used only when
 ```sh
 pnpm verify         # build + 99 tests + strict typecheck, every TS package
 pnpm verify:full    # above + Playwright E2E + Swift build/test
-pnpm licenses:check # 440-package license policy on the current lock install
+pnpm licenses:check # 446-package license policy on the current lock install
 gitleaks detect --source . --redact
 ```
 
