@@ -15,6 +15,31 @@ importers:
         specifier: 3.0.5
         version: 3.0.5(@types/node@22.13.1)(jiti@2.7.0)(lightningcss@1.30.1)
 
+  apps/cli:
+    dependencies:
+      '@avityos/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+    devDependencies:
+      '@avityos/control-plane':
+        specifier: workspace:*
+        version: link:../../services/control-plane
+      '@avityos/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+      '@types/node':
+        specifier: 22.13.1
+        version: 22.13.1
+      fastify:
+        specifier: 5.2.1
+        version: 5.2.1
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: 3.0.5
+        version: 3.0.5(@types/node@22.13.1)(jiti@2.7.0)(lightningcss@1.30.1)
+
   apps/web:
     dependencies:
       '@emotion/react':

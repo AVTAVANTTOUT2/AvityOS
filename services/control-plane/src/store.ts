@@ -13,6 +13,7 @@ import type {
   Objective,
   Plan,
   Project,
+  PullRequestRef,
   RunState,
 } from "@avityos/contracts";
 import { assertMissionTransition, assertRunTransition } from "@avityos/orchestration";
@@ -915,6 +916,64 @@ export class Store {
         : this.db.prepare("SELECT id FROM terminal_sessions ORDER BY created_at ASC").all()
     ) as unknown as { id: string }[];
     return rows.map((r) => this.getTerminal(r.id)!);
+  }
+
+  // ── pull requests ────────────────────────────────────────────────────────
+
+  recordPullRequest(input: {
+    projectId: string;
+    missionId: string | null;
+    branch: string;
+    title: string;
+    state: "draft" | "open" | "merged" | "closed";
+    number?: number | null;
+    url?: string | null;
+  }): PullRequestRef {
+    const id = newId("pr");
+    const ts = now();
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO pull_requests (id, project_id, mission_id, number, url, branch, title, state, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(id, input.projectId, input.missionId, input.number ?? null, input.url ?? null, input.branch, input.title, input.state, ts, ts);
+      this.appendEvent("git.pr_opened", { projectId: input.projectId, missionId: input.missionId }, {
+        prId: id,
+        branch: input.branch,
+        title: input.title,
+      });
+    });
+    tx();
+    return this.getPullRequest(id)!;
+  }
+
+  getPullRequest(id: string): PullRequestRef | null {
+    const r = this.db.prepare("SELECT * FROM pull_requests WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!r) return null;
+    return {
+      id: r.id as string,
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string,
+      projectId: r.project_id as string,
+      missionId: (r.mission_id as string) ?? null,
+      number: (r.number as number) ?? null,
+      url: (r.url as string) ?? null,
+      branch: r.branch as string,
+      title: r.title as string,
+      state: r.state as PullRequestRef["state"],
+    };
+  }
+
+  listPullRequests(projectId?: string): PullRequestRef[] {
+    const rows = (
+      projectId
+        ? this.db.prepare("SELECT id FROM pull_requests WHERE project_id = ? ORDER BY created_at ASC").all(projectId)
+        : this.db.prepare("SELECT id FROM pull_requests ORDER BY created_at ASC").all()
+    ) as unknown as { id: string }[];
+    return rows.map((r) => this.getPullRequest(r.id)!);
   }
 
   // ── budgets ──────────────────────────────────────────────────────────────

@@ -305,6 +305,23 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE pull_requests (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        mission_id TEXT,
+        number INTEGER,
+        url TEXT,
+        branch TEXT NOT NULL,
+        title TEXT NOT NULL,
+        state TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {

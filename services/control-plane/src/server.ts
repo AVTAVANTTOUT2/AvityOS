@@ -439,6 +439,53 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return { ok: true };
   });
 
+  // ── providers ────────────────────────────────────────────────────────────
+
+  app.get("/v1/providers", async () => {
+    const items = [];
+    for (const [name, adapter] of engine.providers) {
+      items.push({
+        name,
+        contractVersion: adapter.contractVersion,
+        capabilities: adapter.capabilities(),
+        healthy: await adapter.healthy(),
+        models: await adapter.listModels(),
+        default: name === engine.defaultProvider,
+      });
+    }
+    return { items };
+  });
+
+  // ── pull requests ────────────────────────────────────────────────────────
+
+  const PrCreate = z.object({
+    missionId: z.string().nullable().default(null),
+    branch: z.string().min(1),
+    title: z.string().min(1),
+    state: z.enum(["draft", "open", "merged", "closed"]).default("open"),
+    number: z.number().int().nullable().default(null),
+    url: z.string().url().nullable().default(null),
+  });
+
+  app.post("/v1/projects/:id/prs", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    const body = parse(PrCreate, req.body);
+    return reply.status(201).send(store.recordPullRequest({ projectId: id, ...body }));
+  });
+
+  app.get("/v1/prs", async (req) => {
+    const { projectId } = req.query as { projectId?: string };
+    return { items: store.listPullRequests(projectId) };
+  });
+
+  app.get("/v1/prs/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const pr = store.getPullRequest(id);
+    if (!pr) return apiError(reply, 404, "not_found", `pull request ${id} not found`);
+    return pr;
+  });
+
   // ── audit ────────────────────────────────────────────────────────────────
 
   app.get("/v1/audit", async (req) => {
