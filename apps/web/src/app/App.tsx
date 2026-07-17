@@ -12,6 +12,8 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   BarChart, Bar,
 } from "recharts";
+import { DataProvider, useData } from "../lib/data";
+import type { Agent, Project as ProjectCardData } from "../demo/fixtures";
 
 // ─── UTILS ──────────────────────────────────────────────────────────────────
 
@@ -20,166 +22,13 @@ function cn(...c: (string | undefined | false | null)[]) {
 }
 
 // ─── DATA ────────────────────────────────────────────────────────────────────
-
-const PROJECTS = [
-  {
-    id: 1, name: "SaaS Facturation",
-    goal: "Plateforme de facturation automatique avec abonnements, devis et comptabilité intégrée",
-    phase: "Développement backend", progress: 67, health: "good",
-    activeAgents: 4, branch: "main", lastActivity: "il y a 3 min",
-    nextCheckpoint: "v0.3 API complète", cost: "€124", status: "active",
-  },
-  {
-    id: 2, name: "Plateforme Réservation",
-    goal: "Système de réservation multi-établissements avec paiements et notifications temps réel",
-    phase: "Tests & QA", progress: 89, health: "warning",
-    activeAgents: 2, branch: "main", lastActivity: "il y a 12 min",
-    nextCheckpoint: "Mise en production", cost: "€287", status: "active",
-  },
-  {
-    id: 3, name: "API Finance",
-    goal: "Connecteur open banking et rapprochement comptable automatisé",
-    phase: "Revue sécurité", progress: 41, health: "blocked",
-    activeAgents: 0, branch: "feature/security", lastActivity: "il y a 2h",
-    nextCheckpoint: "Audit pentest", cost: "€89", status: "blocked",
-  },
-  {
-    id: 4, name: "App Mobile Sport",
-    goal: "Suivi d'entraînement personnalisé avec coaching IA et nutrition",
-    phase: "Conception UI", progress: 23, health: "good",
-    activeAgents: 3, branch: "main", lastActivity: "il y a 8 min",
-    nextCheckpoint: "Maquettes validées", cost: "€56", status: "active",
-  },
-];
-
-const AGENTS = [
-  { id: 1, name: "Cerveau Central", role: "Orchestrateur", model: "Claude Opus 4", status: "execution", mission: "Coordination sprint #7", context: "142k / 200k", cost: "€34.20", successRate: 97, project: "SaaS Facturation" },
-  { id: 2, name: "Architecte Sophia", role: "Architecte", model: "Claude Sonnet 4.6", status: "planning", mission: "Refactoring API Gateway", context: "89k / 200k", cost: "€12.40", successRate: 94, project: "SaaS Facturation" },
-  { id: 3, name: "Frontend Leo", role: "Lead Frontend", model: "GPT-4o", status: "execution", mission: "Dashboard composants", context: "64k / 128k", cost: "€8.90", successRate: 91, project: "App Mobile Sport" },
-  { id: 4, name: "Backend Mira", role: "Lead Backend", model: "Claude Sonnet 4.6", status: "validation", mission: "Endpoints paiements", context: "112k / 200k", cost: "€18.70", successRate: 96, project: "Plateforme Réservation" },
-  { id: 5, name: "SecOps Rex", role: "Cybersécurité", model: "DeepSeek R1", status: "blocked", mission: "Audit authentification", context: "78k / 128k", cost: "€6.20", successRate: 88, project: "API Finance" },
-  { id: 6, name: "QA Nova", role: "QA / Review", model: "Claude Sonnet 4.6", status: "execution", mission: "Tests end-to-end", context: "95k / 200k", cost: "€15.80", successRate: 98, project: "Plateforme Réservation" },
-  { id: 7, name: "Infra Atlas", role: "Infrastructure", model: "GPT-4o", status: "available", mission: "—", context: "0 / 128k", cost: "€0", successRate: 93, project: "—" },
-];
-
-const KANBAN: Record<string, { id: string; title: string; team: string; agent: string; priority: string; duration: string; branch: string; tests?: string }[]> = {
-  "À planifier": [
-    { id: "T-091", title: "Intégration Stripe webhooks", team: "Backend", agent: "Backend Mira", priority: "haute", duration: "2h", branch: "feature/stripe-hooks" },
-    { id: "T-092", title: "Cache Redis sessions utilisateur", team: "Backend", agent: "—", priority: "normale", duration: "3h", branch: "—" },
-  ],
-  "Prête": [
-    { id: "T-087", title: "Page tableau de bord client", team: "Frontend", agent: "Frontend Leo", priority: "haute", duration: "4h", branch: "feat/dashboard-client" },
-  ],
-  "En cours": [
-    { id: "T-083", title: "API REST facturation v2", team: "Backend", agent: "Backend Mira", priority: "critique", duration: "6h", branch: "api/billing-v2", tests: "passing" },
-    { id: "T-085", title: "Composants design system", team: "Frontend", agent: "Frontend Leo", priority: "haute", duration: "3h", branch: "ui/components-v2", tests: "running" },
-    { id: "T-088", title: "Migration base de données v3", team: "Backend", agent: "Architecte Sophia", priority: "critique", duration: "8h", branch: "db/migration-v3", tests: "pending" },
-  ],
-  "En validation": [
-    { id: "T-079", title: "Authentification OAuth Google", team: "Backend", agent: "SecOps Rex", priority: "haute", duration: "5h", branch: "auth/oauth-google", tests: "passing" },
-  ],
-  "PR ouverte": [
-    { id: "T-074", title: "Refactoring module paiements", team: "Backend", agent: "Backend Mira", priority: "normale", duration: "4h", branch: "refactor/payments", tests: "passing" },
-    { id: "T-076", title: "Tests unitaires controllers", team: "QA", agent: "QA Nova", priority: "haute", duration: "3h", branch: "test/controllers", tests: "passing" },
-  ],
-  "Bloquée": [
-    { id: "T-071", title: "Connexion bancaire open banking", team: "Backend", agent: "SecOps Rex", priority: "critique", duration: "—", branch: "feat/open-banking", tests: "failed" },
-  ],
-  "Terminée": [
-    { id: "T-068", title: "Architecture microservices", team: "Architecture", agent: "Architecte Sophia", priority: "haute", duration: "12h", branch: "arch/microservices", tests: "passing" },
-    { id: "T-069", title: "Setup CI/CD GitHub Actions", team: "Infra", agent: "Infra Atlas", priority: "haute", duration: "4h", branch: "ci/github-actions", tests: "passing" },
-  ],
-};
-
-const INTERVENTIONS = [
-  {
-    id: 1, project: "API Finance",
-    question: "Faut-il implémenter l'authentification via OAuth 2.0 ou SAML pour les partenaires bancaires ?",
-    reason: "Deux standards sont compatibles mais SAML offre plus de contrôle pour les grandes institutions financières.",
-    impact: "Affecte l'architecture d'authentification et 3 missions dépendantes. Délai estimé : 2 jours supplémentaires.",
-    options: ["OAuth 2.0 avec PKCE", "SAML 2.0 avec SSO", "Les deux en parallèle"],
-    recommendation: "OAuth 2.0 avec PKCE",
-    urgency: "haute", blockedAgents: ["SecOps Rex", "Backend Mira"], time: "il y a 23 min", type: "choix-architecture",
-  },
-  {
-    id: 2, project: "Plateforme Réservation",
-    question: "Le déploiement en production est prêt. Confirmez-vous la mise en ligne ?",
-    reason: "Tous les tests passent (98% coverage). Dernière PR fusionnée il y a 1h. Aucun incident détecté.",
-    impact: "Mise en production immédiate ou progressive. Rollback disponible en 30 secondes si besoin.",
-    options: ["Déployer maintenant", "Reporter à demain matin", "Déploiement progressif 10%"],
-    recommendation: "Déploiement progressif 10%",
-    urgency: "normale", blockedAgents: ["Infra Atlas"], time: "il y a 1h", type: "deploiement",
-  },
-  {
-    id: 3, project: "SaaS Facturation",
-    question: "Le budget mensuel alloué est atteint à 87 %. Augmenter ou ralentir les agents ?",
-    reason: "Consommation plus élevée que prévu, due à des itérations complexes sur le module comptabilité.",
-    impact: "Sans action, arrêt automatique des agents dans environ 4 jours.",
-    options: ["Augmenter de €200", "Ralentir les agents non critiques", "Pause temporaire"],
-    recommendation: "Ralentir les agents non critiques",
-    urgency: "normale", blockedAgents: [], time: "il y a 3h", type: "budget",
-  },
-];
-
-const PROVIDERS = [
-  { name: "Anthropic / Claude", models: ["claude-opus-4-8", "claude-sonnet-4-6"], status: "healthy", latency: "1.2s", rateLimit: 72, tokens: "2.4M", cost: "€89.40", missions: 6, health: 99 },
-  { name: "OpenAI / GPT-4o", models: ["gpt-4o", "gpt-4o-mini", "o3"], status: "healthy", latency: "0.9s", rateLimit: 34, tokens: "1.1M", cost: "€34.20", missions: 3, health: 98 },
-  { name: "DeepSeek", models: ["deepseek-r1", "deepseek-v3"], status: "warning", latency: "3.8s", rateLimit: 91, tokens: "0.8M", cost: "€12.60", missions: 1, health: 72 },
-  { name: "Cursor CLI", models: ["cursor-fast", "cursor-slow"], status: "healthy", latency: "0.6s", rateLimit: 22, tokens: "0.3M", cost: "€8.90", missions: 2, health: 96 },
-];
-
-const CONSUMPTION = [
-  { day: "Lun", cost: 12.4, tokens: 340 },
-  { day: "Mar", cost: 21.8, tokens: 580 },
-  { day: "Mer", cost: 15.2, tokens: 420 },
-  { day: "Jeu", cost: 25.1, tokens: 690 },
-  { day: "Ven", cost: 18.7, tokens: 510 },
-  { day: "Sam", cost: 9.8, tokens: 280 },
-  { day: "Dim", cost: 6.9, tokens: 190 },
-];
-
-const ACTIVITY_LOG = [
-  { time: "14:32", project: "SaaS Facturation", agent: "Backend Mira", event: "Commit poussé", action: "git push origin api/billing-v2", result: "success", cost: "—" },
-  { time: "14:28", project: "Plateforme Réservation", agent: "QA Nova", event: "Tests terminés", action: "npm run test:e2e", result: "success", cost: "€0.40" },
-  { time: "14:15", project: "API Finance", agent: "SecOps Rex", event: "Mission bloquée", action: "Attente décision auth", result: "blocked", cost: "—" },
-  { time: "13:58", project: "App Mobile Sport", agent: "Frontend Leo", event: "PR ouverte", action: "Composants navigation iOS", result: "success", cost: "€1.20" },
-  { time: "13:44", project: "SaaS Facturation", agent: "Architecte Sophia", event: "ADR créé", action: "ADR-007 : API Gateway pattern", result: "success", cost: "€0.80" },
-  { time: "13:30", project: "Plateforme Réservation", agent: "Cerveau Central", event: "Plan révisé", action: "Sprint #8 planifié (14 missions)", result: "success", cost: "€2.10" },
-  { time: "13:12", project: "API Finance", agent: "Backend Mira", event: "Erreur détectée", action: "Migration DB : contrainte violée", result: "error", cost: "€0.30" },
-  { time: "12:55", project: "App Mobile Sport", agent: "Cerveau Central", event: "Checkpoint validé", action: "Phase 1 terminée — Maquettes approuvées", result: "success", cost: "€4.20" },
-];
-
-const PRS = [
-  { id: "PR #47", title: "feat(billing): Stripe webhooks et gestion des abonnements récurrents", agent: "Backend Mira", reviewer: "QA Nova", branch: "api/billing-v2 → main", files: 7, risk: "faible", tests: "passing", status: "review", mission: "T-083" },
-  { id: "PR #46", title: "refactor(payments): Extraction module paiements en service autonome", agent: "Backend Mira", reviewer: "Architecte Sophia", branch: "refactor/payments → main", files: 12, risk: "moyenne", tests: "passing", status: "approved", mission: "T-074" },
-  { id: "PR #45", title: "test: Ajout tests unitaires pour les controllers REST (coverage +12%)", agent: "QA Nova", reviewer: "SecOps Rex", branch: "test/controllers → main", files: 4, risk: "faible", tests: "passing", status: "merged", mission: "T-076" },
-];
-
-const DIFF = [
-  { t: "meta", c: "diff --git a/src/billing/stripe.ts b/src/billing/stripe.ts" },
-  { t: "meta", c: "--- a/src/billing/stripe.ts  +++ b/src/billing/stripe.ts" },
-  { t: "ctx", c: " import Stripe from 'stripe';" },
-  { t: "ctx", c: " " },
-  { t: "ctx", c: " export class StripeService {" },
-  { t: "ctx", c: "   constructor(private config: StripeConfig) {}" },
-  { t: "add", c: "+  async handleWebhook(payload: Buffer, sig: string) {" },
-  { t: "add", c: "+    const event = stripe.webhooks.constructEvent(payload, sig, this.config.secret);" },
-  { t: "add", c: "+    switch (event.type) {" },
-  { t: "add", c: "+      case 'invoice.paid': return this.onInvoicePaid(event.data.object);" },
-  { t: "add", c: "+      case 'subscription.updated': return this.onSubscriptionUpdate(event.data.object);" },
-  { t: "add", c: "+      default: break;" },
-  { t: "add", c: "+    }" },
-  { t: "add", c: "+  }" },
-  { t: "del", c: "-  async processPayment(amount: number) {" },
-  { t: "del", c: "-    // TODO: implement" },
-  { t: "del", c: "-  }" },
-  { t: "ctx", c: " }" },
-];
+// All data flows through DataProvider (src/lib/data.tsx): live control-plane
+// state when available, labeled demo fixtures otherwise.
 
 const NAV = [
   { id: "mission-control", label: "Vue générale", icon: LayoutGrid },
   { id: "projects", label: "Projets", icon: Folder },
-  { id: "interventions", label: "Interventions", icon: Inbox, badge: 3 },
+  { id: "interventions", label: "Interventions", icon: Inbox, badge: true },
   { id: "agents", label: "Agents", icon: Bot },
   { id: "executions", label: "Exécutions", icon: Terminal },
   { id: "github", label: "GitHub & Code", icon: GitPullRequest },
@@ -197,25 +46,6 @@ const CMD_ITEMS = [
   { icon: GitPullRequest, label: "Consulter PR #47", sub: "En review" },
   { icon: Pause, label: "Mettre en pause toutes les exécutions" },
   { icon: Activity, label: "Voir le journal d'activité" },
-];
-
-const TERM_OUT = [
-  "> npm run build:api",
-  "Building production bundle...",
-  "✓ Routes compiled (48 endpoints)",
-  "✓ Middleware stack validated",
-  "✓ Database migrations checked",
-  "✓ OpenAPI spec generated (v3.1)",
-  "Build successful in 4.2s",
-  "",
-  "> git add -A && git commit -m 'feat(billing): implement Stripe webhooks v2'",
-  "[api/billing-v2 c4f7a91] feat(billing): implement Stripe webhooks v2",
-  " 7 files changed, 312 insertions(+), 48 deletions(-)",
-  "",
-  "> npm run test -- --testPathPattern=billing",
-  "PASS  src/billing/stripe.test.ts (12 tests)",
-  "PASS  src/billing/invoices.test.ts (8 tests)",
-  "All tests passed in 3.1s",
 ];
 
 // ─── SHARED UI ───────────────────────────────────────────────────────────────
@@ -256,6 +86,9 @@ function Glass({ className, children, onClick }: { className?: string; children:
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 
 function Sidebar({ current, onChange, macOS }: { current: string; onChange: (s: string) => void; macOS: boolean }) {
+  const { interventions, consumption } = useData();
+  const interventionCount = interventions.length;
+  const monthCost = consumption.reduce((sum, c) => sum + c.cost, 0);
   return (
     <div className={cn(
       "w-[216px] flex-shrink-0 flex flex-col border-r border-black/[0.06]",
@@ -297,9 +130,9 @@ function Sidebar({ current, onChange, macOS }: { current: string; onChange: (s: 
             >
               <Icon size={15} strokeWidth={active ? 2 : 1.6} />
               <span>{item.label}</span>
-              {"badge" in item && item.badge && (
+              {"badge" in item && item.badge && interventionCount > 0 && (
                 <span className="ml-auto bg-[#5267D9] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                  {item.badge}
+                  {interventionCount}
                 </span>
               )}
             </button>
@@ -314,7 +147,7 @@ function Sidebar({ current, onChange, macOS }: { current: string; onChange: (s: 
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5">
           <TrendingUp size={11} className="text-[#74716B]" />
-          <span className="text-[11px] text-[#74716B]">€145.10 ce mois</span>
+          <span className="text-[11px] text-[#74716B]">{`$${monthCost.toFixed(2)} ce mois`}</span>
         </div>
         <button className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] text-[#74716B] hover:text-[#202124] hover:bg-black/[0.04] transition-all">
           <div className="w-6 h-6 rounded-full bg-[#5267D9]/15 flex items-center justify-center text-[#5267D9] text-[10px] font-bold">A</div>
@@ -331,6 +164,7 @@ function TopBar({ screen, onNewProject, onCmdK, macOS, onToggleMacOS }: {
   screen: string; onNewProject: () => void; onCmdK: () => void;
   macOS: boolean; onToggleMacOS: () => void;
 }) {
+  const { mode } = useData();
   const titles: Record<string, string> = {
     "mission-control": "Vue générale", projects: "Projets", interventions: "Interventions",
     agents: "Agents IA", executions: "Exécutions & Terminaux", github: "GitHub & Code",
@@ -339,6 +173,15 @@ function TopBar({ screen, onNewProject, onCmdK, macOS, onToggleMacOS }: {
   return (
     <div className="h-14 flex items-center gap-3 px-5 border-b border-black/[0.06] bg-[#F7F4EE]/80 backdrop-blur-xl flex-shrink-0">
       <span className="text-[13px] font-semibold text-[#202124]">{titles[screen] ?? screen}</span>
+      {mode === "demo" && (
+        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide bg-amber-50 text-amber-600" title="Le control plane est injoignable — données de démonstration affichées">Démo</span>
+      )}
+      {mode === "live" && (
+        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide bg-green-50 text-green-700" title="Connecté au control plane">Live</span>
+      )}
+      {mode === "connecting" && (
+        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide bg-blue-50 text-[#5267D9]">Connexion…</span>
+      )}
       <div className="flex-1" />
       <button
         onClick={onCmdK}
@@ -380,7 +223,7 @@ function TopBar({ screen, onNewProject, onCmdK, macOS, onToggleMacOS }: {
 
 // ─── PROJECT CARD ─────────────────────────────────────────────────────────────
 
-function ProjectCard({ p, onClick }: { p: typeof PROJECTS[0]; onClick: () => void }) {
+function ProjectCard({ p, onClick }: { p: ProjectCardData; onClick: () => void }) {
   const hc = { good: "border-l-green-400", warning: "border-l-orange-400", blocked: "border-l-red-400" }[p.health] ?? "border-l-gray-200";
   const hbg = { good: "bg-green-50 text-green-700", warning: "bg-orange-50 text-orange-600", blocked: "bg-red-50 text-red-600" }[p.health] ?? "bg-gray-50 text-gray-500";
   const hl = { good: "Sain", warning: "Attention", blocked: "Bloqué" }[p.health] ?? "";
@@ -418,11 +261,17 @@ function ProjectCard({ p, onClick }: { p: typeof PROJECTS[0]; onClick: () => voi
 // ─── MISSION CONTROL ─────────────────────────────────────────────────────────
 
 function MissionControl({ onNewProject, onOpenProject }: { onNewProject: () => void; onOpenProject: () => void }) {
+  const { projects: PROJECTS, interventions: INTERVENTIONS, consumption: CONSUMPTION, providers: PROVIDERS, agents, prs, kanban } = useData();
+  const blocked = PROJECTS.filter(p => p.health === "blocked").length;
+  const urgent = INTERVENTIONS.filter(i => i.urgency === "haute").length;
+  const openPrs = prs.filter(pr => pr.status !== "merged").length;
+  const totalCost = CONSUMPTION.reduce((sum, c) => sum + c.cost, 0);
+  const missionsInFlight = (kanban["En cours"]?.length ?? 0) + (kanban["En validation"]?.length ?? 0);
   const stats = [
-    { label: "Projets actifs", value: "4", sub: "dont 1 bloqué", Icon: Folder, color: "text-[#5267D9]" },
-    { label: "Agents actifs", value: "6", sub: "7 au total", Icon: Bot, color: "text-green-600" },
-    { label: "Interventions", value: "3", sub: "1 urgente", Icon: Inbox, color: "text-orange-500" },
-    { label: "PR en attente", value: "5", sub: "2 à valider", Icon: GitPullRequest, color: "text-purple-600" },
+    { label: "Projets actifs", value: String(PROJECTS.length), sub: blocked ? `dont ${blocked} bloqué${blocked > 1 ? "s" : ""}` : "aucun bloqué", Icon: Folder, color: "text-[#5267D9]" },
+    { label: "Agents actifs", value: String(agents.length), sub: `${missionsInFlight} mission${missionsInFlight === 1 ? "" : "s"} en cours`, Icon: Bot, color: "text-green-600" },
+    { label: "Interventions", value: String(INTERVENTIONS.length), sub: urgent ? `${urgent} urgente${urgent > 1 ? "s" : ""}` : "aucune urgente", Icon: Inbox, color: "text-orange-500" },
+    { label: "PR en attente", value: String(openPrs), sub: `${prs.length} au total`, Icon: GitPullRequest, color: "text-purple-600" },
   ];
   return (
     <div className="space-y-5">
@@ -481,9 +330,9 @@ function MissionControl({ onNewProject, onOpenProject }: { onNewProject: () => v
               <span className="text-[12px] font-semibold text-[#202124]">Consommation</span>
               <span className="text-[10px] text-[#74716B]">7 jours</span>
             </div>
-            <div className="text-xl font-semibold text-[#202124] mt-1">€145.10</div>
-            <div className="text-[10px] text-[#74716B] mb-2">Budget : €500 · 29% utilisé</div>
-            <Bar2 value={29} />
+            <div className="text-xl font-semibold text-[#202124] mt-1">{`$${totalCost.toFixed(2)}`}</div>
+            <div className="text-[10px] text-[#74716B] mb-2">{CONSUMPTION.length ? `sur ${CONSUMPTION.length} jour${CONSUMPTION.length > 1 ? "s" : ""} d'activité` : "aucune consommation enregistrée"}</div>
+            <Bar2 value={Math.min(100, Math.round(totalCost))} />
             <div className="mt-4 h-20">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={CONSUMPTION} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
@@ -532,8 +381,15 @@ function MissionControl({ onNewProject, onOpenProject }: { onNewProject: () => v
 // ─── INTERVENTIONS ────────────────────────────────────────────────────────────
 
 function InterventionsScreen() {
-  const [sel, setSel] = useState(1);
-  const intervention = INTERVENTIONS.find(i => i.id === sel)!;
+  const { interventions: INTERVENTIONS, actions, mode } = useData();
+  const [sel, setSel] = useState<number | null>(null);
+  const [freeText, setFreeText] = useState("");
+  const intervention = INTERVENTIONS.find(i => i.id === sel) ?? INTERVENTIONS[0];
+  if (!intervention) {
+    return (
+      <div className="p-6 text-sm text-[#74716B]">Aucune intervention en attente. Les agents poursuivent leur travail de manière autonome.</div>
+    );
+  }
   return (
     <div className="flex gap-4 h-full">
       <div className="w-72 flex-shrink-0 space-y-2">
@@ -629,16 +485,32 @@ function InterventionsScreen() {
           <textarea
             className="w-full bg-[#F7F4EE] border border-black/[0.06] rounded-xl p-3 text-[12px] text-[#202124] placeholder:text-[#74716B] focus:outline-none focus:ring-2 focus:ring-[#5267D9]/15 resize-none"
             rows={3}
+            value={freeText}
+            onChange={(e) => setFreeText(e.target.value)}
             placeholder="Ajoutez des précisions ou instructions supplémentaires..."
           />
         </div>
 
         <div className="flex gap-2.5">
-          <button className="flex items-center gap-2 bg-[#5267D9] text-white text-[12px] px-4 py-2.5 rounded-xl font-medium hover:bg-[#4255C4] transition-all">
-            <CheckCircle size={13} />Répondre avec la recommandation
+          <button
+            onClick={() => {
+              if (mode !== "live") return;
+              const apiId = (intervention as { apiId?: string }).apiId;
+              if (apiId) void actions.answerIntervention(apiId, freeText || intervention.recommendation || "Approuvé", "approved");
+              setFreeText("");
+            }}
+            className="flex items-center gap-2 bg-[#5267D9] text-white text-[12px] px-4 py-2.5 rounded-xl font-medium hover:bg-[#4255C4] transition-all">
+            <CheckCircle size={13} />{freeText ? "Répondre" : "Répondre avec la recommandation"}
           </button>
           <button className="text-[12px] px-4 py-2.5 rounded-xl font-medium bg-white/80 border border-black/[0.07] text-[#202124] hover:bg-[#F7F4EE] transition-all">Reporter</button>
-          <button className="text-[12px] px-4 py-2.5 rounded-xl font-medium text-red-500 hover:bg-red-50 transition-all">Refuser</button>
+          <button
+            onClick={() => {
+              if (mode !== "live") return;
+              const apiId = (intervention as { apiId?: string }).apiId;
+              if (apiId) void actions.answerIntervention(apiId, freeText || "Refusé", "rejected");
+              setFreeText("");
+            }}
+            className="text-[12px] px-4 py-2.5 rounded-xl font-medium text-red-500 hover:bg-red-50 transition-all">Refuser</button>
         </div>
 
         <div className="mt-4 text-[11px] text-[#74716B] bg-[#F7F4EE] px-3 py-2 rounded-xl flex items-center gap-2">
@@ -669,6 +541,7 @@ const TEST_LABELS: Record<string, string> = {
 };
 
 function MissionsScreen() {
+  const { kanban: KANBAN } = useData();
   const [sel, setSel] = useState<string | null>(null);
   const allCards = Object.values(KANBAN).flat();
   const selCard = allCards.find(c => c.id === sel);
@@ -768,6 +641,7 @@ function MissionsScreen() {
 // ─── PROVIDERS ───────────────────────────────────────────────────────────────
 
 function ProvidersScreen() {
+  const { providers: PROVIDERS, consumption: CONSUMPTION } = useData();
   const [period, setPeriod] = useState("Semaine");
   return (
     <div className="space-y-5">
@@ -851,6 +725,7 @@ const SESSIONS = [
 ];
 
 function TerminalsScreen() {
+  const { termOut: TERM_OUT } = useData();
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3 mb-1">
@@ -929,14 +804,19 @@ function TerminalsScreen() {
 // ─── CODE & PR ───────────────────────────────────────────────────────────────
 
 function CodePRScreen() {
-  const [selPR, setSelPR] = useState(PRS[0]);
+  const { prs: PRS, diff: DIFF } = useData();
+  const [selIdx, setSelIdx] = useState(0);
+  const selPR = PRS[selIdx] ?? PRS[0];
+  if (!selPR) {
+    return <div className="p-6 text-sm text-[#74716B]">Aucune pull request pour le moment.</div>;
+  }
   return (
     <div className="flex gap-4 h-full">
       <div className="w-72 flex-shrink-0 space-y-2">
         <h2 className="text-[13px] font-semibold text-[#202124] mb-4">Pull Requests</h2>
         {PRS.map(pr => (
           <div
-            key={pr.id} onClick={() => setSelPR(pr)}
+            key={pr.id} onClick={() => setSelIdx(PRS.indexOf(pr))}
             className={cn("p-4 rounded-2xl border cursor-pointer transition-all", selPR.id === pr.id ? "bg-white/90 border-[#5267D9]/25 shadow-sm" : "bg-white/50 border-black/[0.06] hover:bg-white/70")}
           >
             <div className="flex items-center gap-2 mb-2">
@@ -1024,7 +904,7 @@ const STATUS_STYLES: Record<string, string> = {
   blocked: "bg-red-50 text-red-600", offline: "bg-gray-50 text-gray-500",
 };
 
-function AgentNode({ agent, size = "md" }: { agent: typeof AGENTS[0]; size?: "sm" | "md" | "lg" }) {
+function AgentNode({ agent, size = "md" }: { agent: Agent; size?: "sm" | "md" | "lg" }) {
   const dotColors: Record<string, string> = { execution: "bg-[#5267D9]", planning: "bg-blue-400", validation: "bg-purple-400", available: "bg-green-400", blocked: "bg-red-400", offline: "bg-gray-300" };
   const sz = { sm: { box: "w-8 h-8", icon: 13, name: "text-[9px]", role: "text-[8px]" }, md: { box: "w-10 h-10", icon: 16, name: "text-[10px]", role: "text-[9px]" }, lg: { box: "w-12 h-12", icon: 20, name: "text-[11px]", role: "text-[10px]" } }[size];
   return (
@@ -1041,6 +921,7 @@ function AgentNode({ agent, size = "md" }: { agent: typeof AGENTS[0]; size?: "sm
 }
 
 function TeamScreen() {
+  const { agents: AGENTS } = useData();
   const [view, setView] = useState<"org" | "list">("org");
   return (
     <div className="space-y-4">
@@ -1112,6 +993,7 @@ function TeamScreen() {
 // ─── ACTIVITY ────────────────────────────────────────────────────────────────
 
 function ActivityScreen() {
+  const { activity: ACTIVITY_LOG } = useData();
   const rStyle: Record<string, string> = { success: "text-green-600", error: "text-red-500", blocked: "text-orange-500" };
   const rLabel: Record<string, string> = { success: "✓ Succès", error: "✗ Erreur", blocked: "⚠ Bloqué" };
   return (
@@ -1153,8 +1035,12 @@ function ActivityScreen() {
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
 function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
-  const p = PROJECTS[0];
+  const { projects: PROJECTS, agents: AGENTS, prs: PRS } = useData();
   const [tab, setTab] = useState("overview");
+  const p = PROJECTS[0];
+  if (!p) {
+    return <div className="p-6 text-sm text-[#74716B]">Aucun projet. <button className="text-[#5267D9] underline" onClick={onBack}>Retour</button></div>;
+  }
   const tabs = [
     { id: "overview", label: "Vue d'ensemble" },
     { id: "plan", label: "Plan" },
@@ -1219,7 +1105,7 @@ function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
           <Glass className="p-5">
             <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-3">Agents actifs</div>
             <div className="space-y-2">
-              {AGENTS.filter(a => a.project === "SaaS Facturation").map(a => (
+              {AGENTS.filter(a => a.project === p.name).map(a => (
                 <div key={a.id} className="flex items-center gap-3 p-2.5 rounded-xl bg-[#F7F4EE]">
                   <StatusDot status={a.status} />
                   <div className="flex-1 min-w-0">
@@ -1276,6 +1162,7 @@ function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
 // ─── PROJECTS LIST ────────────────────────────────────────────────────────────
 
 function ProjectsScreen({ onOpenProject, onNewProject }: { onOpenProject: () => void; onNewProject: () => void }) {
+  const { projects: PROJECTS } = useData();
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -1352,8 +1239,25 @@ function SettingsScreen() {
 // ─── NEW PROJECT ──────────────────────────────────────────────────────────────
 
 function NewProjectModal({ onClose }: { onClose: () => void }) {
+  const { actions, mode } = useData();
   const [step, setStep] = useState(1);
+  const [objectiveText, setObjectiveText] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [autonomy, setAutonomy] = useState("autonomous_with_checkpoints");
+  const [submitState, setSubmitState] = useState<{ busy: boolean; detail: string | null }>({ busy: false, detail: null });
   const total = 3;
+  const launch = async () => {
+    if (mode !== "live") { onClose(); return; }
+    setSubmitState({ busy: true, detail: null });
+    const result = await actions.createProject({
+      name: projectName || objectiveText.slice(0, 60) || "Nouveau projet",
+      objective: objectiveText,
+      autonomy,
+      criteria: [],
+    });
+    setSubmitState({ busy: false, detail: result.detail });
+    if (result.ok) setTimeout(onClose, 1200);
+  };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-8">
       <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={onClose} />
@@ -1376,6 +1280,8 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
                 <textarea
                   className="w-full bg-[#F7F4EE] border border-black/[0.06] rounded-xl p-4 text-[12px] text-[#202124] placeholder:text-[#74716B] focus:outline-none focus:ring-2 focus:ring-[#5267D9]/15 resize-none leading-relaxed"
                   rows={4}
+                  value={objectiveText}
+                  onChange={(e) => setObjectiveText(e.target.value)}
                   placeholder="Ex: Une plateforme SaaS de gestion de projets avec authentification OAuth, facturation Stripe, tableau de bord en temps réel et API REST documentée avec tests complets..."
                 />
                 <p className="text-[10px] text-[#74716B] mt-1.5">Soyez précis — AvityOS adaptera le plan, l'équipe et les estimations.</p>
@@ -1383,7 +1289,7 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-1.5">Nom du projet</label>
-                  <input className="w-full bg-[#F7F4EE] border border-black/[0.06] rounded-xl px-3 py-2.5 text-[12px] text-[#202124] focus:outline-none focus:ring-2 focus:ring-[#5267D9]/15" placeholder="Mon Projet SaaS" />
+                  <input value={projectName} onChange={(e) => setProjectName(e.target.value)} className="w-full bg-[#F7F4EE] border border-black/[0.06] rounded-xl px-3 py-2.5 text-[12px] text-[#202124] focus:outline-none focus:ring-2 focus:ring-[#5267D9]/15" placeholder="Mon Projet SaaS" />
                 </div>
                 <div>
                   <label className="block text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-1.5">Priorité</label>
@@ -1464,12 +1370,16 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
           <button onClick={() => step > 1 && setStep(s => s - 1)} disabled={step === 1} className="text-[12px] px-4 py-2 rounded-xl text-[#74716B] hover:bg-[#F7F4EE] transition-all disabled:opacity-30">
             Retour
           </button>
-          <button
-            onClick={() => step < total ? setStep(s => s + 1) : onClose()}
-            className="flex items-center gap-2 bg-[#5267D9] text-white text-[12px] px-5 py-2.5 rounded-xl font-medium hover:bg-[#4255C4] transition-all"
-          >
-            {step === total ? <><Zap size={13} />Lancer le projet</> : <>Continuer<ArrowRight size={13} /></>}
-          </button>
+          <div className="flex items-center gap-3">
+            {submitState.detail && <span className="text-[11px] text-[#5267D9]">{submitState.detail}</span>}
+            <button
+              onClick={() => step < total ? setStep(s => s + 1) : void launch()}
+              disabled={submitState.busy}
+              className="flex items-center gap-2 bg-[#5267D9] text-white text-[12px] px-5 py-2.5 rounded-xl font-medium hover:bg-[#4255C4] transition-all disabled:opacity-50"
+            >
+              {step === total ? <><Zap size={13} />{submitState.busy ? "Lancement…" : "Lancer le projet"}</> : <>Continuer<ArrowRight size={13} /></>}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1522,6 +1432,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
 // ─── MACOS MENU BAR ───────────────────────────────────────────────────────────
 
 function MacOSMenuBar() {
+  const { agents, interventions } = useData();
   return (
     <div className="h-6 bg-black/35 backdrop-blur-md flex items-center px-4 select-none flex-shrink-0">
       <span className="text-white text-[12px] font-semibold mr-6">AvityOS</span>
@@ -1529,10 +1440,9 @@ function MacOSMenuBar() {
         <span key={m} className="text-white/80 text-[11px] mr-5 hover:text-white cursor-default">{m}</span>
       ))}
       <div className="ml-auto flex items-center gap-5 text-[10px] text-white/75">
-        <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />6 agents actifs</span>
-        <span>3 interventions</span>
-        <span>€145.10</span>
-        <span className="text-white/60">Ven 17 juil. 14:32</span>
+        <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />{`${agents.length} agent${agents.length === 1 ? "" : "s"} actif${agents.length === 1 ? "" : "s"}`}</span>
+        <span>{`${interventions.length} intervention${interventions.length === 1 ? "" : "s"}`}</span>
+        <span className="text-white/60">{new Date().toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" })}</span>
       </div>
     </div>
   );
@@ -1547,6 +1457,14 @@ function AgentsScreen() {
 // ─── APP ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  return (
+    <DataProvider>
+      <AppShell />
+    </DataProvider>
+  );
+}
+
+function AppShell() {
   const [screen, setScreen] = useState("mission-control");
   const [cmdK, setCmdK] = useState(false);
   const [macOS, setMacOS] = useState(false);
