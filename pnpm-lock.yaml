@@ -319,6 +319,34 @@ importers:
         specifier: 3.0.5
         version: 3.0.5(@types/node@22.13.1)(jiti@2.7.0)(lightningcss@1.30.1)
 
+  services/worker:
+    dependencies:
+      '@avityos/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@avityos/control-plane':
+        specifier: workspace:*
+        version: link:../control-plane
+      '@avityos/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
+    devDependencies:
+      '@avityos/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+      '@types/node':
+        specifier: 22.13.1
+        version: 22.13.1
+      fastify:
+        specifier: 5.2.1
+        version: 5.2.1
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: 3.0.5
+        version: 3.0.5(@types/node@22.13.1)(jiti@2.7.0)(lightningcss@1.30.1)
+
 packages:
 
   '@babel/code-frame@7.29.7':

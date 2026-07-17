@@ -14,6 +14,7 @@ import {
   type EventEnvelope,
 } from "@avityos/contracts";
 import { IllegalTransitionError } from "@avityos/orchestration";
+import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
 import { createHash, randomBytes } from "node:crypto";
 import type { Engine } from "./engine.js";
 import { newId, now, type Store } from "./store.js";
@@ -23,7 +24,13 @@ export interface ServerOptions {
   engine: Engine;
   apiToken?: string;
   version: string;
+  commandPolicy?: CommandPolicy;
 }
+
+export const DEFAULT_COMMAND_POLICY: CommandPolicy = {
+  allowedExecutables: ["git", "pnpm", "npm", "node", "ls", "echo", "cat", "pwd", "sleep"],
+  deniedExecutables: ["rm", "sudo", "curl", "wget", "ssh", "scp"],
+};
 
 function apiError(reply: FastifyReply, status: number, code: ApiErrorCode, message: string) {
   return reply.status(status).send({ error: { code, message } });
@@ -273,6 +280,105 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       clearInterval(keepalive);
     });
     await new Promise(() => undefined); // hold the connection open
+  });
+
+  // ── terminal sessions ────────────────────────────────────────────────────
+
+  const commandPolicy = opts.commandPolicy ?? DEFAULT_COMMAND_POLICY;
+  const TerminalCreate = z.object({
+    command: z.array(z.string().min(1)).min(1),
+    cwd: z.string().min(1),
+    runId: z.string().nullable().default(null),
+  });
+
+  app.post("/v1/projects/:id/terminals", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    const body = parse(TerminalCreate, req.body);
+
+    const verdict = isCommandAllowed(commandPolicy, body.command);
+    store.appendEvent("policy.decision", { projectId: id }, {
+      action: "terminal.spawn",
+      resource: body.command.join(" "),
+      effect: verdict.effect,
+      reason: verdict.reason,
+    });
+    if (verdict.effect !== "allow") {
+      store.appendAudit(id, "policy", "terminal.denied", `${body.command.join(" ")}: ${verdict.reason}`);
+      return apiError(reply, 403, "policy_denied", verdict.reason);
+    }
+    store.appendAudit(id, "user", "terminal.create", body.command.join(" "));
+    return reply.status(201).send(store.createTerminal(id, body.command, body.cwd, body.runId));
+  });
+
+  app.get("/v1/terminals", async (req) => {
+    const { projectId } = req.query as { projectId?: string };
+    return { items: store.listTerminals(projectId) };
+  });
+
+  app.get("/v1/terminals/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const terminal = store.getTerminal(id);
+    if (!terminal) return apiError(reply, 404, "not_found", `terminal ${id} not found`);
+    return { ...terminal, logs: store.terminalLogs(id) };
+  });
+
+  app.post("/v1/terminals/:id/cancel", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const terminal = store.getTerminal(id);
+    if (!terminal) return apiError(reply, 404, "not_found", `terminal ${id} not found`);
+    if (["succeeded", "failed", "cancelled", "timed_out"].includes(terminal.state)) return terminal;
+    store.setTerminalState(id, "cancelling");
+    return store.getTerminal(id);
+  });
+
+  function requireWorker(req: FastifyRequest, reply: FastifyReply): string | null {
+    const workerId = (req.headers["x-worker-id"] as string) ?? "";
+    const token = (req.headers["x-worker-token"] as string) ?? "";
+    const row = store.db.prepare("SELECT token_hash, status FROM workers WHERE id = ?").get(workerId) as
+      | { token_hash: string; status: string }
+      | undefined;
+    if (!row || row.token_hash !== sha256(token) || row.status === "revoked") {
+      void apiError(reply, 401, "policy_denied", "invalid worker credentials");
+      return null;
+    }
+    return workerId;
+  }
+
+  app.post("/v1/workers/lease", async (req, reply) => {
+    const workerId = requireWorker(req, reply);
+    if (!workerId) return;
+    store.db.prepare("UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), workerId);
+    const lease = store.leaseTerminal(workerId);
+    return { lease };
+  });
+
+  app.post("/v1/terminals/:id/output", async (req, reply) => {
+    const workerId = requireWorker(req, reply);
+    if (!workerId) return;
+    const { id } = req.params as { id: string };
+    const terminal = store.getTerminal(id);
+    if (!terminal) return apiError(reply, 404, "not_found", `terminal ${id} not found`);
+    if (terminal.workerId !== workerId) return apiError(reply, 403, "policy_denied", "terminal leased to another worker");
+    const body = parse(z.object({ text: z.string() }), req.body);
+    if (terminal.state === "starting") store.setTerminalState(id, "running");
+    store.appendTerminalLog(id, body.text);
+    return { ok: true, cancelRequested: store.getTerminal(id)!.state === "cancelling" };
+  });
+
+  app.post("/v1/terminals/:id/exit", async (req, reply) => {
+    const workerId = requireWorker(req, reply);
+    if (!workerId) return;
+    const { id } = req.params as { id: string };
+    const terminal = store.getTerminal(id);
+    if (!terminal) return apiError(reply, 404, "not_found", `terminal ${id} not found`);
+    if (terminal.workerId !== workerId) return apiError(reply, 403, "policy_denied", "terminal leased to another worker");
+    const body = parse(
+      z.object({ exitCode: z.number().int().nullable(), state: z.enum(["succeeded", "failed", "cancelled", "timed_out"]) }),
+      req.body,
+    );
+    store.setTerminalState(id, body.state, body.exitCode);
+    return { ok: true };
   });
 
   // ── workers ──────────────────────────────────────────────────────────────

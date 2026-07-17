@@ -1,0 +1,35 @@
+{
+  "name": "@avityos/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "avity-worker": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@avityos/contracts": "workspace:*",
+    "@avityos/policy": "workspace:*",
+    "@avityos/control-plane": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.1",
+    "typescript": "5.7.3",
+    "vitest": "3.0.5",
+    "@avityos/providers": "workspace:*",
+    "fastify": "5.2.1"
+  }
+}

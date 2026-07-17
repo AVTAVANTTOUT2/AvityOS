@@ -801,6 +801,122 @@ export class Store {
     }));
   }
 
+  // ── terminal sessions ────────────────────────────────────────────────────
+
+  createTerminal(projectId: string, command: string[], cwd: string, runId: string | null = null): {
+    id: string;
+    state: string;
+  } {
+    const id = newId("trm");
+    const ts = now();
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO terminal_sessions (id, project_id, run_id, command, cwd, state, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`,
+        )
+        .run(id, projectId, runId, JSON.stringify(command), cwd, ts, ts);
+      this.appendEvent("terminal.output", { projectId, runId }, {
+        terminalId: id,
+        state: "queued",
+        command,
+      });
+    });
+    tx();
+    return { id, state: "queued" };
+  }
+
+  getTerminal(id: string): {
+    id: string;
+    projectId: string;
+    runId: string | null;
+    workerId: string | null;
+    command: string[];
+    cwd: string;
+    state: string;
+    exitCode: number | null;
+  } | null {
+    const r = this.db.prepare("SELECT * FROM terminal_sessions WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!r) return null;
+    return {
+      id: r.id as string,
+      projectId: r.project_id as string,
+      runId: (r.run_id as string) ?? null,
+      workerId: (r.worker_id as string) ?? null,
+      command: JSON.parse(r.command as string) as string[],
+      cwd: r.cwd as string,
+      state: r.state as string,
+      exitCode: (r.exit_code as number) ?? null,
+    };
+  }
+
+  /** Atomically lease the oldest queued terminal session to a worker. */
+  leaseTerminal(workerId: string): ReturnType<Store["getTerminal"]> {
+    let leasedId: string | null = null;
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare("SELECT id FROM terminal_sessions WHERE state = 'queued' ORDER BY created_at ASC LIMIT 1")
+        .get() as { id: string } | undefined;
+      if (!row) return;
+      this.db
+        .prepare("UPDATE terminal_sessions SET state = 'starting', worker_id = ?, updated_at = ? WHERE id = ?")
+        .run(workerId, now(), row.id);
+      leasedId = row.id;
+    });
+    tx();
+    return leasedId ? this.getTerminal(leasedId) : null;
+  }
+
+  setTerminalState(id: string, state: string, exitCode: number | null = null): void {
+    const terminal = this.getTerminal(id);
+    if (!terminal) throw new Error(`terminal ${id} not found`);
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare("UPDATE terminal_sessions SET state = ?, exit_code = ?, updated_at = ? WHERE id = ?")
+        .run(state, exitCode, now(), id);
+      this.appendEvent("terminal.output", { projectId: terminal.projectId, runId: terminal.runId }, {
+        terminalId: id,
+        state,
+        exitCode,
+      });
+    });
+    tx();
+  }
+
+  appendTerminalLog(id: string, text: string): void {
+    const terminal = this.getTerminal(id);
+    if (!terminal) return;
+    const clean = redactSecrets(text);
+    const seq = (this.db
+      .prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM terminal_logs WHERE terminal_id = ?")
+      .get(id) as { s: number }).s;
+    this.db
+      .prepare("INSERT INTO terminal_logs (terminal_id, seq, text, created_at) VALUES (?, ?, ?, ?)")
+      .run(id, seq, clean, now());
+    this.appendEvent("terminal.output", { projectId: terminal.projectId, runId: terminal.runId }, {
+      terminalId: id,
+      text: clean.length > 4000 ? `${clean.slice(0, 4000)}…` : clean,
+    });
+  }
+
+  terminalLogs(id: string): { seq: number; text: string; createdAt: string }[] {
+    const rows = this.db
+      .prepare("SELECT seq, text, created_at FROM terminal_logs WHERE terminal_id = ? ORDER BY seq ASC")
+      .all(id) as unknown as { seq: number; text: string; created_at: string }[];
+    return rows.map((r) => ({ seq: r.seq, text: r.text, createdAt: r.created_at }));
+  }
+
+  listTerminals(projectId?: string): NonNullable<ReturnType<Store["getTerminal"]>>[] {
+    const rows = (
+      projectId
+        ? this.db.prepare("SELECT id FROM terminal_sessions WHERE project_id = ? ORDER BY created_at ASC").all(projectId)
+        : this.db.prepare("SELECT id FROM terminal_sessions ORDER BY created_at ASC").all()
+    ) as unknown as { id: string }[];
+    return rows.map((r) => this.getTerminal(r.id)!);
+  }
+
   // ── budgets ──────────────────────────────────────────────────────────────
 
   setBudget(projectId: string, limitUsd: number, warnAtFraction = 0.8): void {

@@ -279,6 +279,32 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE terminal_sessions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        run_id TEXT,
+        worker_id TEXT,
+        command TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        state TEXT NOT NULL,
+        exit_code INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_terminals_state ON terminal_sessions(state);
+
+      CREATE TABLE terminal_logs (
+        terminal_id TEXT NOT NULL REFERENCES terminal_sessions(id),
+        seq INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (terminal_id, seq)
+      );
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {
