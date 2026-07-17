@@ -1,0 +1,50 @@
+[Unit]
+Description=AvityOS Worker
+Documentation=file://__AVITY_ROOT__/deploy/systemd/README.md
+# After= orders startup only; it does not wait for the HTTP API to be ready.
+# Wants= (not Requires=): the worker keeps polling and reconnects if the
+# control plane restarts; a hard Requires would tear the worker down with it.
+After=network-online.target avity-control-plane.service
+Wants=network-online.target avity-control-plane.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__AVITY_USER__
+Group=__AVITY_GROUP__
+WorkingDirectory=__AVITY_ROOT__
+EnvironmentFile=__WORKER_ENV_FILE__
+
+# Bounded readiness wait against the unauthenticated /v1/health endpoint.
+# Fails the unit start after six attempts (~30s) if the control plane is down.
+# Do not put tokens in this URL; /v1/health does not require authentication.
+ExecStartPre=/bin/sh -c 'for attempt in 1 2 3 4 5 6; do /usr/bin/curl --fail --silent --show-error __CONTROL_PLANE_HEALTH_URL__ >/dev/null && exit 0; /usr/bin/sleep 5; done; echo "avity-worker: control plane health check failed at __CONTROL_PLANE_HEALTH_URL__" >&2; exit 1'
+
+ExecStart=__NODE_BINARY__ __WORKER_ENTRYPOINT__
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=avity-worker
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+UMask=0077
+
+# Optional shared data directory (logs, caches) if colocated with the plane.
+ReadWritePaths=__AVITY_DATA_DIR__
+# Mission cwd / git clones / worktrees leased by the control plane.
+ReadWritePaths=__AVITY_WORKSPACE_ROOT__
+
+[Install]
+WantedBy=multi-user.target
