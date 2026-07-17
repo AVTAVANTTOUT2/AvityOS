@@ -109,6 +109,7 @@ export const CheckpointKind = z.enum([
   "secret_scan",
   "architecture_rule",
   "policy",
+  "review",
   "human_approval",
 ]);
 export type CheckpointKind = z.infer<typeof CheckpointKind>;

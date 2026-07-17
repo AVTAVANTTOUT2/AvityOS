@@ -16,6 +16,7 @@ import {
 import { IllegalTransitionError } from "@avityos/orchestration";
 import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
 import { createHash, randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
 import type { Engine } from "./engine.js";
 import { newId, now, type Store } from "./store.js";
 
@@ -24,13 +25,34 @@ export interface ServerOptions {
   engine: Engine;
   apiToken?: string;
   version: string;
+  /** Policy for ad-hoc project terminals (interactive, human-initiated). */
   commandPolicy?: CommandPolicy;
+  /** Policy for mission-scoped check terminals (bound to a worktree). */
+  missionCommandPolicy?: CommandPolicy;
+  /** Explicit browser-origin allowlist. Never use a wildcard in production. */
+  allowedOrigins?: readonly string[];
 }
 
+/**
+ * Ad-hoc project terminals: observation-oriented allowlist. Interpreters and
+ * package managers (node, npm, pnpm, git with hooks) can execute arbitrary
+ * code and are therefore NOT allowed here — they are only permitted on
+ * mission-scoped terminals whose cwd is bound server-side to a worktree.
+ */
 export const DEFAULT_COMMAND_POLICY: CommandPolicy = {
+  allowedExecutables: ["ls", "echo", "cat", "pwd", "sleep"],
+  deniedExecutables: ["rm", "sudo", "curl", "wget", "ssh", "scp", "node", "npm", "pnpm", "npx", "sh", "bash", "zsh", "python", "python3"],
+};
+
+export const DEFAULT_MISSION_COMMAND_POLICY: CommandPolicy = {
   allowedExecutables: ["git", "pnpm", "npm", "node", "ls", "echo", "cat", "pwd", "sleep"],
   deniedExecutables: ["rm", "sudo", "curl", "wget", "ssh", "scp"],
 };
+
+export const DEFAULT_ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+] as const;
 
 function apiError(reply: FastifyReply, status: number, code: ApiErrorCode, message: string) {
   return reply.status(status).send({ error: { code, message } });
@@ -44,12 +66,18 @@ function apiError(reply: FastifyReply, status: number, code: ApiErrorCode, messa
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
   const { store, engine } = opts;
   const app = Fastify({ logger: false });
-  await app.register(cors, { origin: true });
+  await app.register(cors, { origin: [...(opts.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS)] });
   const startedAt = Date.now();
 
   app.addHook("onRequest", async (req, reply) => {
     if (!opts.apiToken) return;
     if (req.url.startsWith("/v1/health")) return;
+    // EventSource cannot send headers; the stream endpoint accepts the
+    // token as a query parameter instead.
+    if (req.url.startsWith("/v1/events/stream")) {
+      const token = (req.query as { token?: string }).token;
+      if (token === opts.apiToken) return;
+    }
     const header = req.headers.authorization;
     if (header !== `Bearer ${opts.apiToken}`) {
       await reply.status(401).send({ error: { code: "policy_denied", message: "invalid or missing API token" } });
@@ -262,8 +290,8 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
       connection: "keep-alive",
-      "access-control-allow-origin": "*",
     });
+    reply.raw.write(": connected\n\n"); // flush headers immediately
 
     const send = (ev: EventEnvelope) => {
       if (query.projectId && ev.projectId !== query.projectId) return;
@@ -285,19 +313,56 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   // ── terminal sessions ────────────────────────────────────────────────────
 
   const commandPolicy = opts.commandPolicy ?? DEFAULT_COMMAND_POLICY;
+  const missionCommandPolicy = opts.missionCommandPolicy ?? DEFAULT_MISSION_COMMAND_POLICY;
   const TerminalCreate = z.object({
     command: z.array(z.string().min(1)).min(1),
-    cwd: z.string().min(1),
+    /** Optional mission binding: cwd becomes the mission worktree. */
+    missionId: z.string().nullable().default(null),
     runId: z.string().nullable().default(null),
   });
+
+  /**
+   * The execution cwd is NEVER taken from the client. It resolves
+   * server-side to the mission worktree (mission terminals) or the
+   * project repository root (project terminals), with realpath containment
+   * so symlinked paths cannot escape.
+   */
+  function resolveTerminalCwd(
+    projectId: string,
+    missionId: string | null,
+  ): { cwd: string } | { error: string } {
+    const project = store.getProject(projectId);
+    if (!project) return { error: `project ${projectId} not found` };
+    if (missionId) {
+      const mission = store.getMission(missionId);
+      if (!mission || mission.projectId !== projectId) {
+        return { error: `mission ${missionId} not found in project ${projectId}` };
+      }
+      if (!mission.worktreePath) return { error: `mission ${missionId} has no worktree` };
+      const resolved = safeRealpath(mission.worktreePath);
+      if (!resolved) return { error: "mission worktree does not exist" };
+      const repoRoot = project.repoPath ? safeRealpath(project.repoPath) : null;
+      // worktrees live under <repo>/.avity/worktrees; a symlinked worktree
+      // resolving elsewhere is rejected.
+      if (repoRoot && resolved !== repoRoot && !resolved.startsWith(`${repoRoot}/`)) {
+        return { error: "mission worktree escapes the project repository" };
+      }
+      return { cwd: resolved };
+    }
+    if (!project.repoPath) return { error: "project has no repository; terminals require one" };
+    const resolved = safeRealpath(project.repoPath);
+    if (!resolved) return { error: "project repository path does not exist" };
+    return { cwd: resolved };
+  }
 
   app.post("/v1/projects/:id/terminals", async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);
     const body = parse(TerminalCreate, req.body);
 
-    const verdict = isCommandAllowed(commandPolicy, body.command);
-    store.appendEvent("policy.decision", { projectId: id }, {
+    const policy = body.missionId ? missionCommandPolicy : commandPolicy;
+    const verdict = isCommandAllowed(policy, body.command);
+    store.appendEvent("policy.decision", { projectId: id, missionId: body.missionId }, {
       action: "terminal.spawn",
       resource: body.command.join(" "),
       effect: verdict.effect,
@@ -307,8 +372,15 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       store.appendAudit(id, "policy", "terminal.denied", `${body.command.join(" ")}: ${verdict.reason}`);
       return apiError(reply, 403, "policy_denied", verdict.reason);
     }
-    store.appendAudit(id, "user", "terminal.create", body.command.join(" "));
-    return reply.status(201).send(store.createTerminal(id, body.command, body.cwd, body.runId));
+
+    const resolved = resolveTerminalCwd(id, body.missionId);
+    if ("error" in resolved) {
+      store.appendAudit(id, "policy", "terminal.denied", `cwd resolution: ${resolved.error}`);
+      return apiError(reply, 403, "policy_denied", resolved.error);
+    }
+
+    store.appendAudit(id, "user", "terminal.create", `${body.command.join(" ")} @ ${resolved.cwd}`);
+    return reply.status(201).send(store.createTerminal(id, body.command, resolved.cwd, body.runId));
   });
 
   app.get("/v1/terminals", async (req) => {
@@ -501,4 +573,13 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+/** realpath that returns null instead of throwing (missing path). */
+function safeRealpath(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
 }

@@ -181,3 +181,26 @@ describe("anthropic adapter", () => {
     expect(events).toContainEqual({ type: "usage", inputTokens: 7, outputTokens: 3, costUsd: 0 });
   });
 });
+
+describe("command adapter environment scoping", () => {
+  it("never leaks the control-plane environment to CLI agents", async () => {
+    process.env.AVITY_TEST_CANARY_SECRET = "sk-canary-should-not-leak";
+    try {
+      const adapter = new CommandProviderAdapter("env-probe", {
+        executable: "printenv",
+        args: [],
+        env: { AGENT_SCOPED_VAR: "yes" },
+      });
+      const events = await drain(
+        adapter.startRun({ runId: "r", model: "default", systemPrompt: "", userPrompt: "" }).events,
+      );
+      const completed = events.find((e) => e.type === "completed") as { resultText: string };
+      expect(completed).toBeDefined();
+      expect(completed.resultText).toContain("PATH=");
+      expect(completed.resultText).toContain("AGENT_SCOPED_VAR=yes");
+      expect(completed.resultText).not.toContain("AVITY_TEST_CANARY_SECRET");
+    } finally {
+      delete process.env.AVITY_TEST_CANARY_SECRET;
+    }
+  });
+});

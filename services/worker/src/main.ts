@@ -11,6 +11,17 @@ async function main(): Promise<void> {
     ...(process.env.AVITY_WORKER_TOKEN ? { workerToken: process.env.AVITY_WORKER_TOKEN } : {}),
   };
 
+  // Remote control planes require TLS: worker credentials must never cross
+  // the network in cleartext. Loopback is exempt for local development.
+  const url = new URL(config.controlPlaneUrl);
+  const loopback = ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
+  if (url.protocol !== "https:" && !loopback && process.env.AVITY_ALLOW_INSECURE !== "1") {
+    console.error(
+      `refusing plain HTTP to non-loopback control plane ${config.controlPlaneUrl}; use https or set AVITY_ALLOW_INSECURE=1 (not recommended)`,
+    );
+    process.exit(1);
+  }
+
   const agent = new WorkerAgent(config);
   if (!config.workerId || !config.workerToken) {
     const { id, token } = await agent.enroll();

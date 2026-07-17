@@ -1,3 +1,7 @@
+import { execFile } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import type { Mission, Project } from "@avityos/contracts";
 import {
   decideCorrection,
@@ -5,9 +9,21 @@ import {
   selectMissionsToStart,
   unblockedMissions,
 } from "@avityos/orchestration";
+import {
+  addMissionWorktree,
+  changedFiles,
+  commitAll,
+  git,
+  isCleanWorkingTree,
+  listWorktrees,
+  missionBranchName,
+  removeWorktree,
+} from "@avityos/git";
+import { checkBudget, isCommandAllowed, isPathAllowed, type CommandPolicy } from "@avityos/policy";
 import type { ProviderAdapter } from "@avityos/providers";
-import { checkBudget } from "@avityos/policy";
 import type { Store } from "./store.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface EngineConfig {
   maxConcurrentRuns: number;
@@ -17,6 +33,12 @@ export interface EngineConfig {
   tickMs: number;
   /** Policy: whether fallback may switch to another model of the same provider. */
   allowModelSwitch: boolean;
+  /** Policy: whether fallback may move down the provider chain. */
+  allowProviderSwitch: boolean;
+  /** Allowlist for mission check commands (argv-based, no shell). */
+  checkCommandPolicy: CommandPolicy;
+  /** How long to wait for a worker-executed check before failing it. */
+  checkTimeoutMs: number;
 }
 
 export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
@@ -26,6 +48,12 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
   maxWaitMs: 120_000,
   tickMs: 250,
   allowModelSwitch: true,
+  allowProviderSwitch: true,
+  checkCommandPolicy: {
+    allowedExecutables: ["git", "pnpm", "npm", "node", "ls", "echo", "cat", "pwd", "sleep"],
+    deniedExecutables: ["rm", "sudo", "curl", "wget", "ssh", "scp"],
+  },
+  checkTimeoutMs: 10 * 60 * 1000,
 };
 
 const AMBIGUITY_MARKERS = [
@@ -33,10 +61,11 @@ const AMBIGUITY_MARKERS = [
 ];
 
 /**
- * The deterministic project engine. LLM providers execute missions; this
- * class owns every state transition, retry, budget check and escalation.
- * All durable state lives in the Store — the engine can be recreated at any
- * time (crash recovery) and continues from persisted state.
+ * The deterministic project engine. LLM providers write code and review it;
+ * this class owns every state transition, worktree, retry, check execution,
+ * budget gate and escalation. All durable state lives in the Store — the
+ * engine can be recreated at any time (crash recovery) and continues from
+ * persisted state.
  */
 export class Engine {
   private timer: NodeJS.Timeout | null = null;
@@ -48,9 +77,18 @@ export class Engine {
     readonly store: Store,
     readonly providers: Map<string, ProviderAdapter>,
     readonly config: EngineConfig = DEFAULT_ENGINE_CONFIG,
-    readonly defaultProvider = "fake",
-    readonly defaultModel = "fake:succeed",
+    /** Ordered fallback chain of provider names (first = preferred). */
+    readonly providerChain: string[] = ["fake"],
+    /** Default model per provider (coding/author runs). */
+    readonly defaultModels: Map<string, string> = new Map([["fake", "fake:succeed"]]),
+    /** Reviewer model per provider — a distinct identity from the author. */
+    readonly reviewModels: Map<string, string> = new Map([["fake", "fake:review-approve"]]),
   ) {}
+
+  /** Kept for API compatibility: the preferred provider name. */
+  get defaultProvider(): string {
+    return this.providerChain[0] ?? "fake";
+  }
 
   start(): void {
     this.stopped = false;
@@ -71,11 +109,15 @@ export class Engine {
 
   /**
    * Startup reconciliation (ADR-0003): any run recorded as active belongs to
-   * a dead process. Mark it failed and route its mission through the normal
-   * bounded retry path — no duplicate side effects because runs are only
-   * restarted through mission state, never replayed.
+   * a dead process. Mark it failed once and route its mission through the
+   * normal bounded retry path — worktrees are reused, commits are skipped
+   * when the tree is clean, and PR records are idempotent per mission, so a
+   * restart cannot duplicate side effects.
    */
   reconcile(): void {
+    // snapshot BEFORE orphan handling: failValidation may legitimately
+    // re-dispatch missions as `assigned`, and those must not be demoted
+    const staleAssigned = this.store.listMissions(undefined, "assigned").map((m) => m.id);
     const orphans = this.store.listRuns({ states: ["queued", "starting", "running", "paused", "cancelling"] });
     for (const run of orphans) {
       if (run.state === "queued") this.store.transitionRun(run.id, "starting");
@@ -90,21 +132,21 @@ export class Engine {
       }
       this.store.appendAudit(run.projectId, "engine", "reconcile.orphan_run", run.id);
     }
-    // Missions stuck in transient engine-owned states are re-queued.
-    for (const mission of this.store.listMissions(undefined, "assigned")) {
-      this.store.transitionMission(mission.id, "ready", "reconciled after restart");
+    for (const missionId of staleAssigned) {
+      if (this.store.getMission(missionId)?.state === "assigned") {
+        this.store.transitionMission(missionId, "ready", "reconciled after restart");
+      }
     }
     for (const mission of this.store.listMissions(undefined, "validating")) {
-      this.validateMission(mission.id);
+      void this.validateMission(mission.id);
+    }
+    for (const mission of this.store.listMissions(undefined, "review_required")) {
+      void this.reviewMission(mission.id);
     }
   }
 
   // ── objective intake ─────────────────────────────────────────────────────
 
-  /**
-   * Analyze an objective. Material ambiguity produces one grouped
-   * clarification; otherwise planning proceeds immediately.
-   */
   analyzeObjective(projectId: string, objectiveId: string): { clarificationId: string | null } {
     const objective = this.store.getObjective(objectiveId);
     const project = this.store.getProject(projectId);
@@ -146,7 +188,6 @@ export class Engine {
     return { clarificationId: null };
   }
 
-  /** Called after a clarification is answered: record decisions, resume automatically. */
   resumeAfterClarification(clarificationId: string): void {
     const clarification = this.store.getClarification(clarificationId);
     if (!clarification) throw new Error(`clarification ${clarificationId} not found`);
@@ -179,9 +220,8 @@ export class Engine {
 
   /**
    * Deterministic planner v1: one implementation mission per acceptance
-   * criterion (role inferred from keywords), then an independent review
-   * mission depending on all of them. An LLM planner can replace mission
-   * derivation later without touching state handling.
+   * criterion. Checks are only required when a real command exists to run
+   * them — a check that cannot execute cannot pass, so none are invented.
    */
   generatePlan(projectId: string, objectiveId: string): void {
     const objective = this.store.getObjective(objectiveId);
@@ -192,13 +232,12 @@ export class Engine {
 
     const plan = this.store.createPlan(
       projectId,
-      `Plan v-auto for objective r${objective.revision}: ${criteria.length} implementation mission(s) plus independent review.`,
+      `Plan v-auto for objective r${objective.revision}: ${criteria.length} implementation mission(s) with independent review.`,
       [{ id: "ms_1", title: "Deliver objective", description: objective.text.slice(0, 500), order: 0 }],
     );
 
-    const implIds: string[] = [];
     for (const [i, criterion] of criteria.entries()) {
-      const mission = this.store.createMission({
+      this.store.createMission({
         projectId,
         planId: plan.id,
         milestoneId: "ms_1",
@@ -211,7 +250,8 @@ export class Engine {
           allowedPaths: [],
           forbiddenPaths: ["**/.env", "**/secrets/**"],
           acceptanceCriteria: [criterion],
-          requiredChecks: ["build", "test"],
+          requiredChecks: [],
+          checkCommands: {},
           budgetUsd: null,
           timeoutSeconds: 900,
           expectedArtifacts: [],
@@ -219,36 +259,13 @@ export class Engine {
         priority: 60 - i,
         dependsOn: [],
       });
-      implIds.push(mission.id);
     }
-
-    this.store.createMission({
-      projectId,
-      planId: plan.id,
-      milestoneId: "ms_1",
-      title: "Independent review of delivered missions",
-      role: "review",
-      contract: {
-        objective: "Review all delivered missions against their acceptance criteria and report defects.",
-        rationale: "The mission author may not be the sole approver of its own work.",
-        context: [],
-        allowedPaths: [],
-        forbiddenPaths: [],
-        acceptanceCriteria: ["Every implementation mission reviewed with an explicit verdict"],
-        requiredChecks: [],
-        budgetUsd: null,
-        timeoutSeconds: 600,
-        expectedArtifacts: [],
-      },
-      priority: 10,
-      dependsOn: implIds,
-    });
 
     this.store.addBrainEntry(
       projectId,
       "fact",
       `Plan v${plan.version} generated`,
-      `${criteria.length} implementation missions + review`,
+      `${criteria.length} implementation mission(s); every mission gets an independent review run before approval`,
       [`objective:${objectiveId}`, `plan:${plan.id}`],
     );
     this.store.setProjectStatus(projectId, "active");
@@ -260,7 +277,6 @@ export class Engine {
     if (this.ticking || this.stopped) return;
     this.ticking = true;
     try {
-      // 1) promote unblocked proposed missions to ready
       for (const project of this.store.listProjects()) {
         if (project.status !== "active") continue;
         const missions = this.store.listMissions(project.id);
@@ -269,7 +285,6 @@ export class Engine {
           this.store.transitionMission(m.id, "ready", "dependencies satisfied");
         }
       }
-      // 2) start missions within concurrency limits
       const ready = this.store.listMissions(undefined, "ready");
       const running = [
         ...this.store.listMissions(undefined, "assigned"),
@@ -292,6 +307,49 @@ export class Engine {
     }
   }
 
+  // ── worktrees ────────────────────────────────────────────────────────────
+
+  /**
+   * Coding missions execute inside a dedicated git worktree on a mission
+   * branch (`mission/<id>-<slug>`), created from the project's base branch
+   * and persisted on the mission. Reused (not recreated) after restarts.
+   */
+  private async ensureWorktree(project: Project, mission: Mission): Promise<string | null> {
+    if (!project.repoPath) return null;
+    const branch = mission.branchName ?? missionBranchName(mission.id, mission.title);
+    const worktreePath = mission.worktreePath ?? join(project.repoPath, ".avity", "worktrees", mission.id);
+
+    if (!existsSync(worktreePath)) {
+      mkdirSync(dirname(worktreePath), { recursive: true });
+      const existing = await listWorktrees(project.repoPath);
+      const branchExists = (await git(project.repoPath, "branch", "--list", branch)).trim().length > 0;
+      if (existing.some((w) => w.branch === branch)) {
+        // branch is checked out in a stale worktree path; detach it first
+        const stale = existing.find((w) => w.branch === branch)!;
+        await removeWorktree(project.repoPath, stale.path, true).catch(() => undefined);
+      }
+      if (branchExists) {
+        await git(project.repoPath, "worktree", "add", worktreePath, branch);
+      } else {
+        await addMissionWorktree(project.repoPath, worktreePath, branch, project.defaultBranch);
+      }
+    }
+    this.store.updateMissionMeta(mission.id, { branchName: branch, worktreePath });
+    this.store.appendEvent("git.branch_created", { projectId: project.id, missionId: mission.id }, {
+      branch,
+      worktreePath,
+    });
+    return worktreePath;
+  }
+
+  private async cleanupWorktree(mission: Mission): Promise<void> {
+    const project = this.store.getProject(mission.projectId);
+    if (!project?.repoPath || !mission.worktreePath) return;
+    if (!existsSync(mission.worktreePath)) return;
+    await removeWorktree(project.repoPath, mission.worktreePath, true).catch(() => undefined);
+    this.store.appendAudit(project.id, "engine", "worktree.cleanup", mission.worktreePath);
+  }
+
   // ── mission execution ────────────────────────────────────────────────────
 
   async executeMission(missionId: string): Promise<void> {
@@ -309,30 +367,39 @@ export class Engine {
       }
     }
 
-    const providerName = this.defaultProvider;
-    const adapter = this.providers.get(providerName);
-    if (!adapter) {
-      this.store.transitionMission(missionId, "blocked", `provider ${providerName} not configured`);
+    let worktreePath: string | null = null;
+    try {
+      worktreePath = await this.ensureWorktree(project, mission);
+    } catch (err) {
+      this.store.transitionMission(missionId, "blocked", `worktree creation failed: ${String(err).slice(0, 300)}`);
+      this.store.createApproval(project.id, missionId, "Worktree creation failed", String(err).slice(0, 500));
       return;
     }
 
-    this.store.transitionMission(missionId, "running", `run starting on ${providerName}`);
+    this.store.transitionMission(missionId, "running", `run starting on ${this.providerChain[0]}`);
 
+    let providerIdx = 0;
     let attempt = 0;
-    let model = mission.contract.budgetUsd === null ? this.defaultModel : this.defaultModel;
-    const models = await adapter.listModels();
+    let model: string | null = null;
 
     while (true) {
       if (this.stopped) return;
       const current = this.store.getMission(missionId);
-      if (!current || current.state !== "running") return; // cancelled/paused externally
+      if (!current || current.state !== "running") return;
 
-      const run = this.store.createRun({
-        projectId: project.id,
-        missionId,
-        providerId: providerName,
-        model,
-      });
+      const providerName = this.providerChain[providerIdx];
+      const adapter = providerName ? this.providers.get(providerName) : undefined;
+      if (!providerName || !adapter) {
+        this.store.transitionMission(missionId, "blocked", "no provider available in the configured chain");
+        this.store.createApproval(project.id, missionId, "No provider available", "Configure a provider and approve to retry.");
+        return;
+      }
+      const models = await adapter.listModels();
+      if (model === null || !models.includes(model)) {
+        model = this.defaultModels.get(providerName) ?? models[0] ?? "default";
+      }
+
+      const run = this.store.createRun({ projectId: project.id, missionId, providerId: providerName, model });
       this.store.transitionRun(run.id, "starting");
 
       const handle = adapter.startRun({
@@ -340,12 +407,16 @@ export class Engine {
         model,
         systemPrompt: buildSystemPrompt(project, current),
         userPrompt: current.contract.objective,
+        ...(worktreePath ? { cwd: worktreePath } : {}),
         timeoutMs: (current.contract.timeoutSeconds ?? 900) * 1000,
       });
       this.activeRuns.set(run.id, handle);
       this.store.transitionRun(run.id, "running");
 
-      let outcome: { kind: "completed"; result: string } | { kind: "error"; category: string; retryAfterMs: number | null } | null = null;
+      let outcome:
+        | { kind: "completed"; result: string }
+        | { kind: "error"; category: string; retryAfterMs: number | null }
+        | null = null;
 
       try {
         for await (const ev of handle.events) {
@@ -393,15 +464,12 @@ export class Engine {
           `run:${run.id}`,
         ]);
         this.store.transitionMission(missionId, "validating", "starting deterministic validation");
-        this.validateMission(missionId);
+        await this.validateMission(missionId);
         return;
       }
 
       const category = outcome?.kind === "error" ? outcome.category : "agent_crash";
-      this.store.transitionRun(run.id, "failed", {
-        exitReason: "provider error",
-        errorCategory: category,
-      });
+      this.store.transitionRun(run.id, "failed", { exitReason: "provider error", errorCategory: category });
 
       const decision = decideFallback({
         category: category as never,
@@ -411,9 +479,11 @@ export class Engine {
         maxWaitMs: this.config.maxWaitMs,
         alternateModelsAvailable:
           this.config.allowModelSwitch && models.length > 1 && models.indexOf(model) < models.length - 1,
-        alternateProvidersAllowed: false,
+        alternateProvidersAllowed:
+          this.config.allowProviderSwitch && providerIdx < this.providerChain.length - 1,
       });
       this.store.appendEvent("provider.fallback", { projectId: project.id, missionId, runId: run.id }, {
+        provider: providerName,
         category,
         action: decision.action,
         waitMs: decision.waitMs,
@@ -434,6 +504,10 @@ export class Engine {
           continue;
         }
         case "switch_provider":
+          providerIdx += 1;
+          attempt = 0;
+          model = null;
+          continue;
         case "pause_lower_priority":
         case "escalate_user": {
           this.store.transitionMission(missionId, "blocked", decision.reason);
@@ -449,35 +523,175 @@ export class Engine {
     }
   }
 
+  // ── validation: real checks, real evidence ───────────────────────────────
+
   /**
-   * Deterministic validation: run the mission's required checks. In the
-   * MVP engine, checks that require a workspace run through the worker
-   * later; result-only missions validate their result exists.
+   * Deterministic validation. Evidence-based only:
+   * - changed files must respect the mission's path contract;
+   * - every required check runs its configured real command in the worktree
+   *   (via a worker when one is online, in-process otherwise) and passes
+   *   solely on its exit code;
+   * - a required check with no configured command fails — checks are never
+   *   assumed.
    */
-  validateMission(missionId: string): void {
+  async validateMission(missionId: string): Promise<void> {
     const mission = this.store.getMission(missionId);
     if (!mission || mission.state !== "validating") return;
     const project = this.store.getProject(mission.projectId)!;
 
     const runs = this.store.listRuns({ missionId, states: ["succeeded"] });
-    const hasResult = runs.length > 0;
-    for (const kind of mission.contract.requiredChecks) {
-      this.store.upsertCheckpoint(
-        project.id,
-        missionId,
-        kind,
-        hasResult ? "passed" : "failed",
-        hasResult ? `validated against run ${runs.at(-1)!.id}` : "no successful run",
-      );
-    }
-
-    if (!hasResult) {
+    if (runs.length === 0) {
       this.failValidation(mission, "validation failed: no successful run result");
       return;
     }
 
-    this.store.transitionMission(missionId, "review_required", "validation passed; awaiting review");
-    this.reviewMission(missionId);
+    // 1) path-scope enforcement on actual changed files
+    if (mission.worktreePath && mission.branchName && project.repoPath) {
+      const changed = await worktreeChangedFiles(mission.worktreePath, project.repoPath, project.defaultBranch, mission.branchName);
+      for (const file of changed) {
+        const verdict = isPathAllowed(
+          mission.worktreePath,
+          mission.contract.allowedPaths,
+          mission.contract.forbiddenPaths,
+          join(mission.worktreePath, file),
+        );
+        if (verdict.effect !== "allow") {
+          this.store.upsertCheckpoint(project.id, missionId, "policy", "failed", `changed file ${file}: ${verdict.reason}`);
+          this.store.appendAudit(project.id, "policy", "mission.path_violation", `${missionId}: ${file}`);
+          this.failValidation(mission, `path policy violation: ${file}`);
+          return;
+        }
+      }
+      this.store.upsertCheckpoint(
+        project.id,
+        missionId,
+        "policy",
+        "passed",
+        changed.length ? `${changed.length} changed file(s) within contract paths` : "no file changes",
+      );
+    }
+
+    // 2) required checks execute their real commands
+    for (const kind of mission.contract.requiredChecks) {
+      const argv = mission.contract.checkCommands[kind];
+      if (!argv || argv.length === 0) {
+        this.store.upsertCheckpoint(project.id, missionId, kind, "failed", "no command configured for required check");
+        this.failValidation(mission, `required check ${kind} has no configured command`);
+        return;
+      }
+      const cwd = mission.worktreePath ?? project.repoPath;
+      if (!cwd) {
+        this.store.upsertCheckpoint(project.id, missionId, kind, "failed", "no worktree/repository to run the check in");
+        this.failValidation(mission, `required check ${kind} has nowhere to run`);
+        return;
+      }
+      this.store.upsertCheckpoint(project.id, missionId, kind, "running", argv.join(" "));
+      const result = await this.runCheckCommand(project.id, argv, cwd);
+      this.store.upsertCheckpoint(
+        project.id,
+        missionId,
+        kind,
+        result.ok ? "passed" : "failed",
+        `${argv.join(" ")} -> exit ${result.exitCode}${result.detail ? `: ${result.detail.slice(0, 400)}` : ""}`,
+      );
+      if (!result.ok) {
+        this.failValidation(mission, `check ${kind} failed (exit ${result.exitCode})`);
+        return;
+      }
+    }
+
+    // 3) commit validated work (idempotent: skipped when tree is clean)
+    if (mission.worktreePath && mission.branchName && project.repoPath) {
+      try {
+        if (!(await isCleanWorkingTree(mission.worktreePath))) {
+          const commit = await commitAll(
+            mission.worktreePath,
+            `feat(${missionId}): ${mission.title.slice(0, 80)}\n\nMission: ${missionId}\nValidated-by: AvityOS checks`,
+          );
+          this.store.appendEvent("git.commit_created", { projectId: project.id, missionId }, {
+            commit,
+            branch: mission.branchName,
+          });
+          this.store.appendAudit(project.id, "engine", "git.commit", `${missionId}: ${commit}`);
+        }
+        const existingPr = this.store.listPullRequests(project.id).find((pr) => pr.missionId === missionId);
+        if (!existingPr) {
+          this.store.recordPullRequest({
+            projectId: project.id,
+            missionId,
+            branch: mission.branchName,
+            title: mission.title,
+            state: "open",
+          });
+        }
+      } catch (err) {
+        this.failValidation(mission, `commit failed: ${String(err).slice(0, 300)}`);
+        return;
+      }
+    }
+
+    this.store.transitionMission(missionId, "review_required", "validation passed; awaiting independent review");
+    await this.reviewMission(missionId);
+  }
+
+  /** Run a check command: leased to an online worker when available, in-process otherwise. */
+  private async runCheckCommand(
+    projectId: string,
+    argv: string[],
+    cwd: string,
+  ): Promise<{ ok: boolean; exitCode: number | null; detail: string }> {
+    const verdict = isCommandAllowed(this.config.checkCommandPolicy, argv);
+    this.store.appendEvent("policy.decision", { projectId }, {
+      action: "check.exec",
+      resource: argv.join(" "),
+      effect: verdict.effect,
+      reason: verdict.reason,
+    });
+    if (verdict.effect !== "allow") {
+      this.store.appendAudit(projectId, "policy", "check.denied", `${argv.join(" ")}: ${verdict.reason}`);
+      return { ok: false, exitCode: null, detail: verdict.reason };
+    }
+
+    if (this.onlineWorkerId()) {
+      const terminal = this.store.createTerminal(projectId, argv, cwd, null);
+      const deadline = Date.now() + this.config.checkTimeoutMs;
+      while (Date.now() < deadline) {
+        if (this.stopped) return { ok: false, exitCode: null, detail: "engine stopped" };
+        const t = this.store.getTerminal(terminal.id)!;
+        if (["succeeded", "failed", "cancelled", "timed_out"].includes(t.state)) {
+          const logs = this.store.terminalLogs(terminal.id).map((l) => l.text).join("");
+          return { ok: t.state === "succeeded", exitCode: t.exitCode, detail: logs.slice(-500) };
+        }
+        await sleep(150);
+      }
+      this.store.setTerminalState(terminal.id, "cancelling");
+      return { ok: false, exitCode: null, detail: "check timed out waiting for worker" };
+    }
+
+    try {
+      const { stdout, stderr } = await execFileAsync(argv[0]!, argv.slice(1), {
+        cwd,
+        timeout: this.config.checkTimeoutMs,
+        env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      return { ok: true, exitCode: 0, detail: (stdout + stderr).slice(-500) };
+    } catch (err) {
+      const e = err as { code?: number; stdout?: string; stderr?: string };
+      return {
+        ok: false,
+        exitCode: typeof e.code === "number" ? e.code : 1,
+        detail: `${e.stdout ?? ""}${e.stderr ?? ""}`.slice(-500),
+      };
+    }
+  }
+
+  private onlineWorkerId(): string | null {
+    const cutoff = new Date(Date.now() - 15_000).toISOString();
+    const row = this.store.db
+      .prepare("SELECT id FROM workers WHERE status = 'online' AND last_heartbeat_at > ? LIMIT 1")
+      .get(cutoff) as { id: string } | undefined;
+    return row?.id ?? null;
   }
 
   failValidation(mission: Mission, reason: string): void {
@@ -503,12 +717,16 @@ export class Engine {
     }
   }
 
+  // ── independent review ───────────────────────────────────────────────────
+
   /**
-   * Independent review: performed by a separate run (review role) when
-   * autonomy allows automatic approval; supervised projects always create a
-   * human approval instead.
+   * Genuine independent review: a separate reviewer run with a distinct
+   * identity (dedicated review model; a different provider from the author
+   * when the chain offers one) receives the diff, requirements and check
+   * evidence, and must return an explicit VERDICT. review_required never
+   * auto-approves. Supervised projects require a human instead.
    */
-  reviewMission(missionId: string): void {
+  async reviewMission(missionId: string): Promise<void> {
     const mission = this.store.getMission(missionId);
     if (!mission || mission.state !== "review_required") return;
     const project = this.store.getProject(mission.projectId)!;
@@ -523,15 +741,116 @@ export class Engine {
       return;
     }
 
-    // autonomous profiles: independent reviewer approves; failures loop back
-    this.store.transitionMission(missionId, "approved", "independent review passed");
-    this.integrateMission(missionId);
+    const authorRun = this.store.listRuns({ missionId, states: ["succeeded"] }).at(-1);
+    const authorProvider = authorRun?.providerId ?? this.defaultProvider;
+    const reviewerProvider =
+      this.providerChain.find((p) => p !== authorProvider && this.providers.has(p)) ?? authorProvider;
+    const adapter = this.providers.get(reviewerProvider);
+    if (!adapter) {
+      this.store.createApproval(project.id, missionId, "No reviewer available", "Configure a review provider.");
+      return;
+    }
+    const reviewModel =
+      this.reviewModels.get(reviewerProvider) ?? this.defaultModels.get(reviewerProvider) ?? "default";
+
+    let diff = "";
+    if (mission.worktreePath && mission.branchName && project.repoPath) {
+      diff = await git(project.repoPath, "diff", `${project.defaultBranch}...${mission.branchName}`)
+        .then((d) => d.slice(0, 20_000))
+        .catch(() => "");
+    }
+    const checkpoints = this.store.listCheckpoints(missionId);
+    const evidence = checkpoints.map((c) => `${c.kind}: ${c.status} (${c.detail.slice(0, 120)})`).join("\n");
+
+    const run = this.store.createRun({
+      projectId: project.id,
+      missionId,
+      providerId: reviewerProvider,
+      model: reviewModel,
+    });
+    this.store.transitionRun(run.id, "starting");
+    this.store.appendRunLog(run.id, `independent review by ${reviewerProvider}/${reviewModel} (author: ${authorProvider})\n`);
+
+    const handle = adapter.startRun({
+      runId: run.id,
+      model: reviewModel,
+      systemPrompt:
+        "You are an independent reviewer. You did not author this change. " +
+        "Verify the diff against the requirements and evidence. " +
+        "End your answer with exactly 'VERDICT: APPROVE' or 'VERDICT: REJECT'.",
+      userPrompt: [
+        `Mission: ${mission.title}`,
+        `Acceptance criteria:\n${mission.contract.acceptanceCriteria.join("\n") || "(from objective)"}`,
+        `Check evidence:\n${evidence || "(none)"}`,
+        `Diff:\n${diff || "(no file changes)"}`,
+      ].join("\n\n"),
+      timeoutMs: 300_000,
+    });
+    this.activeRuns.set(run.id, handle);
+    this.store.transitionRun(run.id, "running");
+
+    let resultText: string | null = null;
+    try {
+      for await (const ev of handle.events) {
+        if (ev.type === "output") this.store.appendRunLog(run.id, ev.text);
+        if (ev.type === "usage") {
+          this.store.recordUsage({
+            projectId: project.id,
+            runId: run.id,
+            providerId: reviewerProvider,
+            model: reviewModel,
+            inputTokens: ev.inputTokens,
+            outputTokens: ev.outputTokens,
+            costUsd: ev.costUsd,
+          });
+        }
+        if (ev.type === "completed") resultText = ev.resultText;
+        if (ev.type === "error") {
+          this.store.appendRunLog(run.id, `review error(${ev.category}): ${ev.message}\n`);
+        }
+      }
+    } finally {
+      this.activeRuns.delete(run.id);
+    }
+
+    if (this.stopped) return;
+
+    if (resultText === null) {
+      this.store.transitionRun(run.id, "failed", { exitReason: "reviewer did not complete" });
+      this.failValidation(this.store.getMission(missionId)!, "independent review run failed");
+      return;
+    }
+    this.store.transitionRun(run.id, "succeeded", { exitReason: "review completed" });
+
+    const approved = /VERDICT:\s*APPROVE/i.test(resultText) && !/VERDICT:\s*REJECT/i.test(resultText);
+    this.store.upsertCheckpoint(
+      project.id,
+      missionId,
+      "review",
+      approved ? "passed" : "failed",
+      resultText.slice(0, 1000),
+    );
+    this.store.addBrainEntry(
+      project.id,
+      approved ? "fact" : "risk",
+      `Independent review: ${approved ? "approved" : "rejected"} — ${mission.title.slice(0, 60)}`,
+      resultText.slice(0, 2000),
+      [`mission:${missionId}`, `run:${run.id}`],
+    );
+
+    if (approved) {
+      this.store.transitionMission(missionId, "approved", `independent review approved (run ${run.id})`);
+      await this.integrateMission(missionId);
+    } else {
+      this.failValidation(this.store.getMission(missionId)!, "independent review rejected the result");
+    }
   }
 
-  integrateMission(missionId: string): void {
+  async integrateMission(missionId: string): Promise<void> {
     const mission = this.store.getMission(missionId);
     if (!mission || mission.state !== "approved") return;
-    this.store.transitionMission(missionId, "integrated", "result recorded in project brain");
+    this.store.transitionMission(missionId, "integrated", "result recorded; branch retained for merge");
+    await this.cleanupWorktree(mission);
     this.store.transitionMission(missionId, "completed", "mission completed with evidence");
     const project = this.store.getProject(mission.projectId)!;
 
@@ -542,7 +861,6 @@ export class Engine {
     }
   }
 
-  /** Resolve an approval that was blocking a mission. */
   applyApprovalDecision(approvalId: string): void {
     const approval = this.store.getApproval(approvalId);
     if (!approval || !approval.missionId || approval.decision === null) return;
@@ -558,14 +876,16 @@ export class Engine {
         void this.executeMission(mission.id);
       } else if (mission.state === "review_required") {
         this.store.transitionMission(mission.id, "approved", "approved by user review");
-        this.integrateMission(mission.id);
+        void this.integrateMission(mission.id);
       }
     } else {
       if (["blocked", "review_required"].includes(mission.state)) {
         this.store.transitionMission(mission.id, "cancelled", "rejected by user");
+        void this.cleanupWorktree(mission);
       } else if (mission.state === "failed") {
         this.store.transitionMission(mission.id, "retrying", "transitioning to cancel");
         this.store.transitionMission(mission.id, "cancelled", "rejected by user");
+        void this.cleanupWorktree(mission);
       }
     }
   }
@@ -588,7 +908,24 @@ export class Engine {
     if (!["completed", "cancelled"].includes(mission.state)) {
       this.store.transitionMission(missionId, "cancelled", "cancelled by user", "user");
     }
+    await this.cleanupWorktree(mission);
   }
+}
+
+/** Changed files: committed relative to base plus uncommitted worktree changes. */
+async function worktreeChangedFiles(
+  worktreePath: string,
+  repoPath: string,
+  baseBranch: string,
+  branch: string,
+): Promise<string[]> {
+  const committed = await changedFiles(repoPath, baseBranch, branch).catch(() => [] as string[]);
+  const status = await git(worktreePath, "status", "--porcelain").catch(() => "");
+  const uncommitted = status
+    .split("\n")
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean);
+  return [...new Set([...committed, ...uncommitted])];
 }
 
 function inferRole(criterion: string): Mission["role"] {
@@ -607,6 +944,7 @@ function buildSystemPrompt(project: Project, mission: Mission): string {
     `Mission: ${mission.title}`,
     `Acceptance criteria: ${mission.contract.acceptanceCriteria.join("; ") || "see objective"}`,
     `Forbidden paths: ${mission.contract.forbiddenPaths.join(", ") || "none"}`,
+    "Work only inside the provided working directory.",
     "Produce a complete, verifiable result. Do not claim completion without evidence.",
   ].join("\n");
 }

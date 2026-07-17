@@ -65,9 +65,16 @@ export class CommandProviderAdapter implements ProviderAdapter {
       a.replaceAll("{prompt}", input.userPrompt).replaceAll("{model}", input.model),
     );
 
+    // Scoped environment only: the control plane's process.env (API keys,
+    // tokens) is never inherited by CLI agents. Adapter config supplies
+    // exactly what the agent needs.
     const child = spawn(this.config.executable, argv, {
       cwd: input.cwd,
-      env: { ...process.env, ...this.config.env },
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        ...this.config.env,
+      },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true, // own process group → clean group kill on cancel
     });

@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { ProviderErrorCategory } from "@avityos/contracts";
 import type {
   ProviderAdapter,
@@ -19,13 +21,26 @@ import { ADAPTER_CONTRACT_VERSION } from "./types.js";
  *   fake:slow                wait until cancelled or timeout (exercises
  *                            cancellation/timeout paths)
  *   fake:checkpoint          request a checkpoint, then complete
+ *   fake:code                CODING AGENT: writes AVITY.md in input.cwd
+ *                            containing the mission objective, then completes
+ *   fake:code-defect-once    first run per cwd writes a DEFECT marker into
+ *                            AVITY.md; the correction run writes clean content
+ *   fake:review-approve      REVIEWER: emits "VERDICT: APPROVE"
+ *   fake:review-reject-once  rejects with findings on the first review per
+ *                            prompt, approves on re-review
  *
  * No randomness, no wall-clock dependence except fake:slow's timer.
  */
 export class FakeProviderAdapter implements ProviderAdapter {
-  readonly name = "fake";
+  readonly name: string = "fake";
   readonly contractVersion = ADAPTER_CONTRACT_VERSION;
   private rateLimitedRuns = new Set<string>();
+  private defectiveRuns = new Set<string>();
+  private rejectedReviews = new Set<string>();
+
+  constructor(name = "fake") {
+    this.name = name;
+  }
 
   capabilities(): ProviderCapabilities {
     return {
@@ -46,6 +61,10 @@ export class FakeProviderAdapter implements ProviderAdapter {
       "fake:rate-limit-once",
       "fake:slow",
       "fake:checkpoint",
+      "fake:code",
+      "fake:code-defect-once",
+      "fake:review-approve",
+      "fake:review-reject-once",
     ];
   }
 
@@ -96,6 +115,37 @@ export class FakeProviderAdapter implements ProviderAdapter {
 
       if (model === "fake:checkpoint") {
         yield { type: "checkpoint_request", reason: "scripted checkpoint before completion" };
+      }
+
+      if ((model === "fake:code" || model === "fake:code-defect-once") && input.cwd) {
+        const target = join(input.cwd, "AVITY.md");
+        const firstAttempt = model === "fake:code-defect-once" && !self.defectiveRuns.has(input.cwd);
+        if (firstAttempt) self.defectiveRuns.add(input.cwd);
+        const content = firstAttempt
+          ? `# Mission result\n\nDEFECT: intentionally wrong first attempt\n`
+          : `# Mission result\n\n${input.userPrompt}\n`;
+        writeFileSync(target, content);
+        yield { type: "output", text: `fake coding agent wrote ${target}\n` };
+        yield { type: "artifact", path: target, description: "mission result file" };
+        yield { type: "usage", inputTokens: 150, outputTokens: 90, costUsd: 0 };
+        yield { type: "completed", resultText: `edited AVITY.md (${firstAttempt ? "defective" : "clean"})` };
+        return;
+      }
+
+      if (model === "fake:review-approve" || model === "fake:review-reject-once") {
+        // keyed on the first prompt line (the mission title): stable across
+        // re-reviews even though evidence/diff sections change
+        const reviewKey = input.userPrompt.split("\n")[0] ?? input.userPrompt;
+        const reject = model === "fake:review-reject-once" && !self.rejectedReviews.has(reviewKey);
+        if (reject) self.rejectedReviews.add(reviewKey);
+        yield { type: "usage", inputTokens: 80, outputTokens: 40, costUsd: 0 };
+        yield {
+          type: "completed",
+          resultText: reject
+            ? "FINDINGS: result file contains a defect marker\nVERDICT: REJECT"
+            : "FINDINGS: none\nVERDICT: APPROVE",
+        };
+        return;
       }
 
       yield { type: "output", text: `fake run ${input.runId}: analyzing objective\n` };

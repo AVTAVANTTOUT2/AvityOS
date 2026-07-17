@@ -1,8 +1,46 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { commitAll, git, initRepo, listWorktrees } from "@avityos/git";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import { openDatabase, type DB } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
 import { Store } from "./store.js";
+
+/** node script used as a real check: AVITY.md must exist and be defect-free. */
+const CHECK_AVITY_MD = [
+  "node",
+  "-e",
+  "const s=require('fs').readFileSync('AVITY.md','utf8'); if(/DEFECT/.test(s)){console.error('defect marker found');process.exit(1)}",
+];
+
+async function makeFixtureRepo(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "avity-fixture-"));
+  const repo = join(dir, "repo");
+  await git(dir, "init", "-b", "main", repo);
+  await initRepo(repo);
+  await writeFile(join(repo, "README.md"), "# fixture\n");
+  await commitAll(repo, "chore: initial commit");
+  return repo;
+}
+
+function repoMissionContract(objective: string) {
+  return {
+    objective,
+    rationale: "",
+    context: [],
+    allowedPaths: [],
+    forbiddenPaths: ["**/.env", "**/secrets/**"],
+    acceptanceCriteria: [objective],
+    requiredChecks: ["test" as const],
+    checkCommands: { test: CHECK_AVITY_MD },
+    budgetUsd: null,
+    timeoutSeconds: 120,
+    expectedArtifacts: ["AVITY.md"],
+  };
+}
 
 const TEST_CONFIG = {
   ...DEFAULT_ENGINE_CONFIG,
@@ -10,12 +48,20 @@ const TEST_CONFIG = {
   maxWaitMs: 5000,
   maxProviderRetries: 1,
   allowModelSwitch: false,
+  allowProviderSwitch: false,
 };
 
-function makeEngine(db: DB, model = "fake:succeed"): { store: Store; engine: Engine } {
+function makeEngine(db: DB, model = "fake:succeed", reviewModel = "fake:review-approve"): { store: Store; engine: Engine } {
   const store = new Store(db);
   const providers = new Map<string, ProviderAdapter>([["fake", new FakeProviderAdapter()]]);
-  const engine = new Engine(store, providers, TEST_CONFIG, "fake", model);
+  const engine = new Engine(
+    store,
+    providers,
+    TEST_CONFIG,
+    ["fake"],
+    new Map([["fake", model]]),
+    new Map([["fake", reviewModel]]),
+  );
   return { store, engine };
 }
 
@@ -62,13 +108,15 @@ describe("scenario 1: clear objective reaches completion via fake provider", () 
     await waitFor(() => store.getProject(project.id)!.status === "completed", 8000);
 
     const missions = store.listMissions(project.id);
-    expect(missions.length).toBe(3); // 2 impl + 1 review
+    expect(missions.length).toBe(2); // one impl mission per criterion
     expect(missions.every((m) => m.state === "completed")).toBe(true);
 
-    // evidence: checkpoints passed, runs succeeded, events recorded
-    for (const m of missions.filter((x) => x.contract.requiredChecks.length > 0)) {
+    // evidence: every mission passed an explicit independent review run
+    for (const m of missions) {
       const checkpoints = store.listCheckpoints(m.id);
-      expect(checkpoints.some((c) => c.kind === "build" && c.status === "passed")).toBe(true);
+      expect(checkpoints.some((c) => c.kind === "review" && c.status === "passed")).toBe(true);
+      // author run + reviewer run
+      expect(store.listRuns({ missionId: m.id, states: ["succeeded"] }).length).toBeGreaterThanOrEqual(2);
     }
     const events = store.eventsAfter(0, project.id);
     expect(events.some((e) => e.type === "mission.state_changed")).toBe(true);
@@ -174,7 +222,7 @@ describe("scenario 5: failures go through bounded loops and escalate", () => {
     expect(store.listApprovals("open", project.id)[0]!.title).toMatch(/blocked|Correction/i);
   }, 15_000);
 
-  it("failed validation retries within the correction limit then succeeds", async () => {
+  it("unfulfillable required check loops within the bound then escalates", async () => {
     const project = store.createProject({ name: "Corr", description: "", repoPath: null, repoRemoteUrl: null, autonomyProfile: "autonomous_with_checkpoints" });
     const mission = store.createMission({
       projectId: project.id,
@@ -184,26 +232,25 @@ describe("scenario 5: failures go through bounded loops and escalate", () => {
       role: "backend",
       contract: {
         objective: "x", rationale: "", context: [], allowedPaths: [], forbiddenPaths: [],
-        acceptanceCriteria: [], requiredChecks: ["test"], budgetUsd: null, timeoutSeconds: 60, expectedArtifacts: [],
+        acceptanceCriteria: [], requiredChecks: ["test"], checkCommands: {},
+        budgetUsd: null, timeoutSeconds: 60, expectedArtifacts: [],
       },
       priority: 50,
       dependsOn: [],
     });
     store.setProjectStatus(project.id, "active");
-    // force the mission into validating with no successful run behind it
     store.transitionMission(mission.id, "ready", "");
     store.transitionMission(mission.id, "assigned", "");
-    store.transitionMission(mission.id, "running", "");
-    store.transitionMission(mission.id, "result_submitted", "");
-    store.transitionMission(mission.id, "validating", "");
-    engine.validateMission(mission.id);
+    await engine.executeMission(mission.id);
 
-    // correction loop kicks in: retry via a real (fake:succeed) run
-    await waitFor(() => store.getMission(mission.id)!.state === "completed", 8000);
+    // a required check with no command can never pass: bounded retries
+    // (3 attempts) then failed + approval, never an infinite loop
+    await waitFor(() => store.getMission(mission.id)!.state === "failed", 8000);
     const updated = store.getMission(mission.id)!;
-    expect(updated.correctionAttempts).toBe(1);
+    expect(updated.correctionAttempts).toBe(updated.maxCorrectionAttempts);
     const events = store.eventsAfter(0, project.id);
-    expect(events.some((e) => e.type === "mission.correction_loop")).toBe(true);
+    expect(events.filter((e) => e.type === "mission.correction_loop").length).toBe(updated.maxCorrectionAttempts);
+    expect(store.listApprovals("open", project.id).some((a) => a.title.includes("Correction"))).toBe(true);
   });
 });
 
@@ -222,7 +269,7 @@ describe("scenario 6: restart recovery without duplicate side effects", () => {
     // new control plane process over the same database, faster model this time
     const store2 = new Store(db);
     const providers = new Map<string, ProviderAdapter>([["fake", new FakeProviderAdapter()]]);
-    const engine2 = new Engine(store2, providers, TEST_CONFIG, "fake", "fake:succeed");
+    const engine2 = new Engine(store2, providers, TEST_CONFIG, ["fake"], new Map([["fake", "fake:succeed"]]), new Map([["fake", "fake:review-approve"]]));
     engine2.start();
     try {
       await waitFor(() => store2.getProject(project.id)!.status === "completed", 10_000);
@@ -231,7 +278,10 @@ describe("scenario 6: restart recovery without duplicate side effects", () => {
       expect(runs.filter((r) => r.exitReason?.includes("restarted")).length).toBe(1);
       const missionIds = new Set(runs.map((r) => r.missionId));
       for (const id of missionIds) {
-        const succeeded = runs.filter((r) => r.missionId === id && r.state === "succeeded");
+        // exactly one successful AUTHOR run; the reviewer run is separate
+        const succeeded = runs.filter(
+          (r) => r.missionId === id && r.state === "succeeded" && !r.model?.startsWith("fake:review"),
+        );
         expect(succeeded.length).toBeLessThanOrEqual(1); // no duplicate side effects
       }
     } finally {
@@ -271,12 +321,149 @@ describe("illegal transitions are refused and audited state stays consistent", (
       role: "backend",
       contract: {
         objective: "x", rationale: "", context: [], allowedPaths: [], forbiddenPaths: [],
-        acceptanceCriteria: [], requiredChecks: [], budgetUsd: null, timeoutSeconds: null, expectedArtifacts: [],
+        acceptanceCriteria: [], requiredChecks: [], checkCommands: {}, budgetUsd: null, timeoutSeconds: null, expectedArtifacts: [],
       },
       priority: 50,
       dependsOn: [],
     });
     expect(() => store.transitionMission(mission.id, "completed", "cheating")).toThrow();
     expect(store.getMission(mission.id)!.state).toBe("proposed");
+  });
+});
+
+describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () => {
+  let repo: string;
+
+  beforeEach(async () => {
+    repo = await makeFixtureRepo();
+  });
+
+  afterEach(async () => {
+    await rm(join(repo, ".."), { recursive: true, force: true });
+  });
+
+  it("delivers a defective first attempt through correction to a reviewed commit", async () => {
+    ({ store, engine } = makeEngine(db, "fake:code-defect-once"));
+    const project = store.createProject({
+      name: "Fixture", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Write AVITY.md result file", role: "backend",
+      contract: repoMissionContract("Create AVITY.md describing the delivered feature"),
+      priority: 50, dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+    await waitFor(() => store.getMission(mission.id)!.state === "completed", 15_000);
+
+    const done = store.getMission(mission.id)!;
+    // worktree + branch were real and persisted
+    expect(done.branchName).toMatch(/^mission\//);
+    expect(done.worktreePath).toContain(".avity/worktrees");
+    // forced defect went through exactly one correction loop
+    expect(done.correctionAttempts).toBe(1);
+    const events = store.eventsAfter(0, project.id);
+    expect(events.some((e) => e.type === "mission.correction_loop")).toBe(true);
+
+    // the check ran the real command (defect run failed it, clean run passed)
+    const checkpoints = store.listCheckpoints(mission.id);
+    const testCheck = checkpoints.find((c) => c.kind === "test")!;
+    expect(testCheck.status).toBe("passed");
+    expect(testCheck.detail).toContain("exit 0");
+
+    // a real commit exists on the mission branch with AVITY.md
+    const files = (await git(repo, "show", "--name-only", "--format=", done.branchName!)).trim().split("\n");
+    expect(files).toContain("AVITY.md");
+    const content = await git(repo, "show", `${done.branchName}:AVITY.md`);
+    expect(content).not.toContain("DEFECT");
+    expect(events.some((e) => e.type === "git.commit_created")).toBe(true);
+
+    // PR recorded exactly once, review checkpoint passed, worktree cleaned
+    const prs = store.listPullRequests(project.id).filter((pr) => pr.missionId === mission.id);
+    expect(prs.length).toBe(1);
+    expect(checkpoints.find((c) => c.kind === "review")!.status).toBe("passed");
+    expect(existsSync(done.worktreePath!)).toBe(false);
+    expect((await listWorktrees(repo)).some((w) => w.branch === done.branchName)).toBe(false);
+    expect(store.verifyAuditChain()).toBe(true);
+  });
+
+  it("review rejection sends the mission through a corrective loop, then approves", async () => {
+    ({ store, engine } = makeEngine(db, "fake:code", "fake:review-reject-once"));
+    const project = store.createProject({
+      name: "ReviewLoop", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Reviewed delivery", role: "backend",
+      contract: repoMissionContract("Create AVITY.md for the reviewed delivery"),
+      priority: 50, dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+    await waitFor(() => store.getMission(mission.id)!.state === "completed", 15_000);
+
+    const done = store.getMission(mission.id)!;
+    expect(done.correctionAttempts).toBe(1); // one rejection, one approval
+    const reviewRuns = store.listRuns({ missionId: mission.id }).filter((r) => r.model?.startsWith("fake:review"));
+    expect(reviewRuns.length).toBe(2); // reject then approve — never auto-approved
+    const reviewCheck = store.listCheckpoints(mission.id).find((c) => c.kind === "review")!;
+    expect(reviewCheck.status).toBe("passed");
+    const brain = store.listBrainEntries(project.id);
+    expect(brain.some((b) => b.title.startsWith("Independent review: rejected"))).toBe(true);
+    expect(brain.some((b) => b.title.startsWith("Independent review: approved"))).toBe(true);
+
+    // idempotency across the replayed validation (correction after review
+    // rejection re-validates the same tree): no duplicate commit, no
+    // duplicate PR record
+    const commits = (await git(repo, "rev-list", "--count", `main..${done.branchName}`)).trim();
+    expect(commits).toBe("1");
+    expect(store.listPullRequests(project.id).filter((pr) => pr.missionId === mission.id).length).toBe(1);
+  });
+
+});
+
+describe("cross-provider fallback", () => {
+  it("switches to the next provider in the chain when rate limits exhaust retries", async () => {
+    const limited = new FakeProviderAdapter("limited");
+    const healthy = new FakeProviderAdapter("fake");
+    store = new Store(db);
+    engine = new Engine(
+      store,
+      new Map<string, ProviderAdapter>([["limited", limited], ["fake", healthy]]),
+      { ...TEST_CONFIG, allowProviderSwitch: true },
+      ["limited", "fake"],
+      new Map([["limited", "fake:fail-rate_limited"], ["fake", "fake:succeed"]]),
+      new Map([["limited", "fake:review-approve"], ["fake", "fake:review-approve"]]),
+    );
+    const project = store.createProject({ name: "XProv", description: "", repoPath: null, repoRemoteUrl: null, autonomyProfile: "autonomous_with_checkpoints" });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "cross-provider mission", role: "backend",
+      contract: {
+        objective: "x", rationale: "", context: [], allowedPaths: [], forbiddenPaths: [],
+        acceptanceCriteria: [], requiredChecks: [], checkCommands: {}, budgetUsd: null, timeoutSeconds: 60, expectedArtifacts: [],
+      },
+      priority: 50, dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+    await waitFor(() => store.getMission(mission.id)!.state === "completed", 10_000);
+
+    const events = store.eventsAfter(0, project.id);
+    const switchEvent = events.find((e) => e.type === "provider.fallback" && e.payload.action === "switch_provider");
+    expect(switchEvent).toBeDefined();
+    expect(switchEvent!.payload.provider).toBe("limited");
+    const runs = store.listRuns({ projectId: project.id });
+    expect(runs.some((r) => r.providerId === "limited" && r.state === "failed")).toBe(true);
+    expect(runs.some((r) => r.providerId === "fake" && r.state === "succeeded")).toBe(true);
   });
 });

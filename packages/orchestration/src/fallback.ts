@@ -34,14 +34,23 @@ export function decideFallback(ctx: FallbackContext): FallbackDecision {
         reason: `${ctx.category} errors are not retryable`,
       };
     case "rate_limited":
-      if (ctx.retryAfterMs !== null && ctx.retryAfterMs <= ctx.maxWaitMs) {
+      if (
+        ctx.retryAfterMs !== null &&
+        ctx.retryAfterMs <= ctx.maxWaitMs &&
+        ctx.attempt < ctx.maxRetries
+      ) {
         return {
           action: "wait_for_reset",
           waitMs: ctx.retryAfterMs,
           reason: `rate limit resets in ${ctx.retryAfterMs}ms (within policy wait budget)`,
         };
       }
-      return switchOrEscalate(ctx, "rate limit reset exceeds policy wait budget");
+      return switchOrEscalate(
+        ctx,
+        ctx.attempt >= ctx.maxRetries
+          ? "rate limited and retry budget exhausted"
+          : "rate limit reset exceeds policy wait budget",
+      );
     case "quota_exhausted":
       return switchOrEscalate(ctx, "provider quota exhausted");
     case "context_overflow":

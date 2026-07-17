@@ -102,6 +102,11 @@ export const MissionContract = z.object({
   forbiddenPaths: z.array(z.string()).default([]),
   acceptanceCriteria: z.array(z.string()).default([]),
   requiredChecks: z.array(CheckpointKind).default([]),
+  /**
+   * Real commands (argv arrays) to run for each required check, executed in
+   * the mission worktree. A check without a command cannot pass.
+   */
+  checkCommands: z.record(z.array(z.string())).default({}),
   budgetUsd: z.number().nonnegative().nullable().default(null),
   timeoutSeconds: z.number().int().positive().nullable().default(null),
   expectedArtifacts: z.array(z.string()).default([]),
