@@ -2,10 +2,10 @@
   "name": "avityos",
   "private": true,
   "version": "0.1.0",
-  "description": "AvityOS — local-first, multi-project autonomous engineering operating system",
+  "description": "AvityOS \u2014 local-first, multi-project autonomous engineering operating system",
   "type": "module",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.5.0"
   },
   "packageManager": "pnpm@11.11.0",
   "scripts": {
@@ -13,7 +13,7 @@
     "dev": "pnpm --filter @avityos/web dev",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "verify": "pnpm -r typecheck && pnpm -r test && pnpm -r build"
+    "verify": "pnpm -r build && pnpm -r test && pnpm -r typecheck"
   },
   "devDependencies": {
     "typescript": "5.7.3",
