@@ -16,6 +16,10 @@ export interface CommandAdapterConfig {
    * Example (Claude Code): ["-p", "{prompt}", "--output-format", "text"]
    */
   args: readonly string[];
+  /** Configured model identifiers exposed to the scheduler. */
+  models?: readonly string[];
+  /** Whether this command is trusted/capable to make repository edits. */
+  workspaceEdits?: boolean;
   /** Extra environment variables (e.g. non-interactive flags). */
   env?: Readonly<Record<string, string>>;
 }
@@ -47,13 +51,14 @@ export class CommandProviderAdapter implements ProviderAdapter {
       streaming: true,
       structuredOutput: false,
       toolCalls: false,
+      workspaceEdits: this.config.workspaceEdits ?? true,
       resumption: false,
       checkpointRequests: false,
     };
   }
 
   async listModels(): Promise<string[]> {
-    return ["default"];
+    return this.config.models?.length ? [...this.config.models] : ["default"];
   }
 
   async healthy(): Promise<boolean> {
@@ -61,8 +66,16 @@ export class CommandProviderAdapter implements ProviderAdapter {
   }
 
   startRun(input: StartRunInput): RunHandle {
+    const combinedPrompt = [input.systemPrompt.trim(), input.userPrompt.trim()]
+      .filter(Boolean)
+      .join("\n\n--- MISSION ---\n\n");
     const argv = this.config.args.map((a) =>
-      a.replaceAll("{prompt}", input.userPrompt).replaceAll("{model}", input.model),
+      a
+        .replaceAll("{prompt}", combinedPrompt)
+        .replaceAll("{systemPrompt}", input.systemPrompt)
+        .replaceAll("{userPrompt}", input.userPrompt)
+        .replaceAll("{cwd}", input.cwd ?? process.cwd())
+        .replaceAll("{model}", input.model),
     );
 
     // Scoped environment only: the control plane's process.env (API keys,

@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { Mission, Project } from "@avityos/contracts";
+import type { CheckpointKind, Mission, Project } from "@avityos/contracts";
 import {
   decideCorrection,
   decideFallback,
@@ -16,10 +16,12 @@ import {
   git,
   isCleanWorkingTree,
   listWorktrees,
+  markGitHubPullRequestReady,
   missionBranchName,
+  publishGitHubPullRequest,
   removeWorktree,
 } from "@avityos/git";
-import { checkBudget, isCommandAllowed, isPathAllowed, type CommandPolicy } from "@avityos/policy";
+import { checkBudget, isCommandAllowed, isPathAllowed, sandboxCommand, type CommandPolicy } from "@avityos/policy";
 import type { ProviderAdapter } from "@avityos/providers";
 import type { Store } from "./store.js";
 
@@ -50,7 +52,7 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
   allowModelSwitch: true,
   allowProviderSwitch: true,
   checkCommandPolicy: {
-    allowedExecutables: ["git", "pnpm", "npm", "node", "ls", "echo", "cat", "pwd", "sleep"],
+    allowedExecutables: ["git", "pnpm", "npm", "node", "swift", "ls", "echo", "cat", "pwd", "sleep"],
     deniedExecutables: ["rm", "sudo", "curl", "wget", "ssh", "scp"],
   },
   checkTimeoutMs: 10 * 60 * 1000,
@@ -83,6 +85,8 @@ export class Engine {
     readonly defaultModels: Map<string, string> = new Map([["fake", "fake:succeed"]]),
     /** Reviewer model per provider — a distinct identity from the author. */
     readonly reviewModels: Map<string, string> = new Map([["fake", "fake:review-approve"]]),
+    /** Optional team-role routing; remaining providers stay available as fallbacks. */
+    readonly roleProviderChains: ReadonlyMap<Mission["role"], readonly string[]> = new Map(),
   ) {}
 
   /** Kept for API compatibility: the preferred provider name. */
@@ -220,12 +224,15 @@ export class Engine {
 
   /**
    * Deterministic planner v1: one implementation mission per acceptance
-   * criterion. Checks are only required when a real command exists to run
-   * them — a check that cannot execute cannot pass, so none are invented.
+   * criterion, serialized in the user's declared order. Projects may progress
+   * concurrently, but a single project never fans out every criterion before
+   * prior evidence exists. Checks are required only when a real command exists.
    */
   generatePlan(projectId: string, objectiveId: string): void {
     const objective = this.store.getObjective(objectiveId);
     if (!objective) throw new Error(`objective ${objectiveId} not found`);
+    const project = this.store.getProject(projectId);
+    if (!project) throw new Error(`project ${projectId} not found`);
     const criteria = objective.acceptanceCriteria.length
       ? objective.acceptanceCriteria
       : [objective.text.slice(0, 200)];
@@ -236,8 +243,10 @@ export class Engine {
       [{ id: "ms_1", title: "Deliver objective", description: objective.text.slice(0, 500), order: 0 }],
     );
 
+    const detectedChecks = detectProjectChecks(project);
+    let previousMissionId: string | null = null;
     for (const [i, criterion] of criteria.entries()) {
-      this.store.createMission({
+      const mission = this.store.createMission({
         projectId,
         planId: plan.id,
         milestoneId: "ms_1",
@@ -247,18 +256,20 @@ export class Engine {
           objective: criterion,
           rationale: `Derived from objective revision ${objective.revision}`,
           context: [objective.text],
-          allowedPaths: [],
+          allowedPaths: project.repoPath ? ["**"] : [],
           forbiddenPaths: ["**/.env", "**/secrets/**"],
           acceptanceCriteria: [criterion],
-          requiredChecks: [],
-          checkCommands: {},
+          requiredChecks: detectedChecks.requiredChecks,
+          checkCommands: detectedChecks.checkCommands,
           budgetUsd: null,
           timeoutSeconds: 900,
           expectedArtifacts: [],
+          workspaceChangesRequired: project.repoPath !== null,
         },
         priority: 60 - i,
-        dependsOn: [],
+        dependsOn: previousMissionId ? [previousMissionId] : [],
       });
+      previousMissionId = mission.id;
     }
 
     this.store.addBrainEntry(
@@ -376,7 +387,30 @@ export class Engine {
       return;
     }
 
-    this.store.transitionMission(missionId, "running", `run starting on ${this.providerChain[0]}`);
+    const rolePreferred = this.roleProviderChains.get(mission.role) ?? [];
+    const orderedProviderChain = [...new Set([...rolePreferred, ...this.providerChain])];
+    const eligibleProviders = orderedProviderChain.filter((name) => {
+      const adapter = this.providers.get(name);
+      return adapter && (!worktreePath || adapter.capabilities().workspaceEdits);
+    });
+    if (eligibleProviders.length === 0) {
+      this.store.transitionMission(
+        missionId,
+        "blocked",
+        worktreePath
+          ? "no configured provider can edit a mission workspace"
+          : "no configured provider is available",
+      );
+      this.store.createApproval(
+        project.id,
+        missionId,
+        "No capable coding provider",
+        "Configure Claude Code, Cursor CLI, Codex CLI, or another adapter that advertises workspace editing.",
+      );
+      return;
+    }
+
+    this.store.transitionMission(missionId, "running", `run starting on ${eligibleProviders[0]}`);
 
     let providerIdx = 0;
     let attempt = 0;
@@ -387,7 +421,7 @@ export class Engine {
       const current = this.store.getMission(missionId);
       if (!current || current.state !== "running") return;
 
-      const providerName = this.providerChain[providerIdx];
+      const providerName = eligibleProviders[providerIdx];
       const adapter = providerName ? this.providers.get(providerName) : undefined;
       if (!providerName || !adapter) {
         this.store.transitionMission(missionId, "blocked", "no provider available in the configured chain");
@@ -405,7 +439,7 @@ export class Engine {
       const handle = adapter.startRun({
         runId: run.id,
         model,
-        systemPrompt: buildSystemPrompt(project, current),
+        systemPrompt: buildSystemPrompt(project, current, this.store.listBrainEntries(project.id)),
         userPrompt: current.contract.objective,
         ...(worktreePath ? { cwd: worktreePath } : {}),
         timeoutMs: (current.contract.timeoutSeconds ?? 900) * 1000,
@@ -480,7 +514,7 @@ export class Engine {
         alternateModelsAvailable:
           this.config.allowModelSwitch && models.length > 1 && models.indexOf(model) < models.length - 1,
         alternateProvidersAllowed:
-          this.config.allowProviderSwitch && providerIdx < this.providerChain.length - 1,
+          this.config.allowProviderSwitch && providerIdx < eligibleProviders.length - 1,
       });
       this.store.appendEvent("provider.fallback", { projectId: project.id, missionId, runId: run.id }, {
         provider: providerName,
@@ -529,7 +563,8 @@ export class Engine {
    * Deterministic validation. Evidence-based only:
    * - changed files must respect the mission's path contract;
    * - every required check runs its configured real command in the worktree
-   *   (via a worker when one is online, in-process otherwise) and passes
+   *   (via a capable worker when available, OS-sandboxed locally otherwise)
+   *   and passes
    *   solely on its exit code;
    * - a required check with no configured command fails — checks are never
    *   assumed.
@@ -548,6 +583,11 @@ export class Engine {
     // 1) path-scope enforcement on actual changed files
     if (mission.worktreePath && mission.branchName && project.repoPath) {
       const changed = await worktreeChangedFiles(mission.worktreePath, project.repoPath, project.defaultBranch, mission.branchName);
+      if ((mission.contract.workspaceChangesRequired ?? true) && changed.length === 0) {
+        this.store.upsertCheckpoint(project.id, missionId, "policy", "failed", "coding mission produced no file changes");
+        this.failValidation(mission, "validation failed: coding mission produced no file changes");
+        return;
+      }
       for (const file of changed) {
         const verdict = isPathAllowed(
           mission.worktreePath,
@@ -569,6 +609,20 @@ export class Engine {
         "passed",
         changed.length ? `${changed.length} changed file(s) within contract paths` : "no file changes",
       );
+
+      for (const artifact of mission.contract.expectedArtifacts) {
+        const target = join(mission.worktreePath, artifact);
+        const verdict = isPathAllowed(
+          mission.worktreePath,
+          mission.contract.allowedPaths,
+          mission.contract.forbiddenPaths,
+          target,
+        );
+        if (verdict.effect !== "allow" || !existsSync(target)) {
+          this.failValidation(mission, `expected artifact missing or forbidden: ${artifact}`);
+          return;
+        }
+      }
     }
 
     // 2) required checks execute their real commands
@@ -614,9 +668,37 @@ export class Engine {
           });
           this.store.appendAudit(project.id, "engine", "git.commit", `${missionId}: ${commit}`);
         }
-        const existingPr = this.store.listPullRequests(project.id).find((pr) => pr.missionId === missionId);
-        if (!existingPr) {
-          this.store.recordPullRequest({
+        if (project.repoRemoteUrl) {
+          try {
+            const published = await publishGitHubPullRequest({
+              repoPath: project.repoPath,
+              remoteUrl: project.repoRemoteUrl,
+              branch: mission.branchName,
+              baseBranch: project.defaultBranch,
+              title: mission.title,
+              body: buildPullRequestBody(project, mission, this.store.listCheckpoints(missionId)),
+            });
+            this.store.upsertPullRequest({
+              projectId: project.id,
+              missionId,
+              branch: mission.branchName,
+              title: mission.title,
+              state: published.state,
+              number: published.number,
+              url: published.url,
+            });
+          } catch (err) {
+            this.store.transitionMission(missionId, "blocked", `GitHub publication failed: ${String(err).slice(0, 300)}`);
+            this.store.createApproval(
+              project.id,
+              missionId,
+              "GitHub publication requires attention",
+              "Verify gh authentication, repository permissions and the configured remote, then approve to retry.",
+            );
+            return;
+          }
+        } else {
+          this.store.upsertPullRequest({
             projectId: project.id,
             missionId,
             branch: mission.branchName,
@@ -634,7 +716,7 @@ export class Engine {
     await this.reviewMission(missionId);
   }
 
-  /** Run a check command: leased to an online worker when available, in-process otherwise. */
+  /** Run a check command: leased to a compatible worker, OS-sandboxed locally otherwise. */
   private async runCheckCommand(
     projectId: string,
     argv: string[],
@@ -652,7 +734,7 @@ export class Engine {
       return { ok: false, exitCode: null, detail: verdict.reason };
     }
 
-    if (this.onlineWorkerId()) {
+    if (this.store.hasAvailableWorker(argv)) {
       const terminal = this.store.createTerminal(projectId, argv, cwd, null);
       const deadline = Date.now() + this.config.checkTimeoutMs;
       while (Date.now() < deadline) {
@@ -668,11 +750,13 @@ export class Engine {
       return { ok: false, exitCode: null, detail: "check timed out waiting for worker" };
     }
 
+    let invocation: ReturnType<typeof sandboxCommand> | null = null;
     try {
-      const { stdout, stderr } = await execFileAsync(argv[0]!, argv.slice(1), {
+      invocation = sandboxCommand(argv, cwd);
+      const { stdout, stderr } = await execFileAsync(invocation.executable, invocation.args, {
         cwd,
         timeout: this.config.checkTimeoutMs,
-        env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+        env: invocation.env,
         maxBuffer: 8 * 1024 * 1024,
       });
       return { ok: true, exitCode: 0, detail: (stdout + stderr).slice(-500) };
@@ -683,15 +767,9 @@ export class Engine {
         exitCode: typeof e.code === "number" ? e.code : 1,
         detail: `${e.stdout ?? ""}${e.stderr ?? ""}`.slice(-500),
       };
+    } finally {
+      invocation?.cleanup();
     }
-  }
-
-  private onlineWorkerId(): string | null {
-    const cutoff = new Date(Date.now() - 15_000).toISOString();
-    const row = this.store.db
-      .prepare("SELECT id FROM workers WHERE status = 'online' AND last_heartbeat_at > ? LIMIT 1")
-      .get(cutoff) as { id: string } | undefined;
-    return row?.id ?? null;
   }
 
   failValidation(mission: Mission, reason: string): void {
@@ -781,9 +859,11 @@ export class Engine {
       userPrompt: [
         `Mission: ${mission.title}`,
         `Acceptance criteria:\n${mission.contract.acceptanceCriteria.join("\n") || "(from objective)"}`,
+        `Project brain:\n${formatBrainContext(this.store.listBrainEntries(project.id)) || "(no recorded decisions)"}`,
         `Check evidence:\n${evidence || "(none)"}`,
         `Diff:\n${diff || "(no file changes)"}`,
       ].join("\n\n"),
+      ...(mission.worktreePath ? { cwd: mission.worktreePath } : {}),
       timeoutMs: 300_000,
     });
     this.activeRuns.set(run.id, handle);
@@ -849,10 +929,26 @@ export class Engine {
   async integrateMission(missionId: string): Promise<void> {
     const mission = this.store.getMission(missionId);
     if (!mission || mission.state !== "approved") return;
-    this.store.transitionMission(missionId, "integrated", "result recorded; branch retained for merge");
+    const project = this.store.getProject(mission.projectId)!;
+    const pr = this.store.listPullRequests(project.id).find((candidate) => candidate.missionId === missionId);
+    if (project.repoRemoteUrl && pr?.number && pr.state === "draft") {
+      try {
+        await markGitHubPullRequestReady(project.repoRemoteUrl, pr.number);
+        this.store.setPullRequestState(pr.id, "open");
+      } catch (err) {
+        this.store.transitionMission(missionId, "blocked", `could not mark GitHub PR ready: ${String(err).slice(0, 300)}`);
+        this.store.createApproval(
+          project.id,
+          missionId,
+          "GitHub PR could not be marked ready",
+          "Verify GitHub CLI authentication and approve to retry. AvityOS will never self-merge this PR.",
+        );
+        return;
+      }
+    }
+    this.store.transitionMission(missionId, "integrated", "approved PR/branch published and retained for policy-controlled merge");
     await this.cleanupWorktree(mission);
     this.store.transitionMission(missionId, "completed", "mission completed with evidence");
-    const project = this.store.getProject(mission.projectId)!;
 
     const all = this.store.listMissions(project.id);
     if (all.every((m) => ["completed", "cancelled"].includes(m.state))) {
@@ -938,14 +1034,100 @@ function inferRole(criterion: string): Mission["role"] {
   return "backend";
 }
 
-function buildSystemPrompt(project: Project, mission: Mission): string {
+function buildSystemPrompt(
+  project: Project,
+  mission: Mission,
+  brain: ReturnType<Store["listBrainEntries"]>,
+): string {
   return [
     `You are an AvityOS ${mission.role} agent working on project "${project.name}".`,
     `Mission: ${mission.title}`,
     `Acceptance criteria: ${mission.contract.acceptanceCriteria.join("; ") || "see objective"}`,
+    `Allowed paths: ${mission.contract.allowedPaths.join(", ") || "all paths inside the worktree"}`,
     `Forbidden paths: ${mission.contract.forbiddenPaths.join(", ") || "none"}`,
+    `Required checks: ${mission.contract.requiredChecks.join(", ") || "repository policy checks"}`,
+    `Expected artifacts: ${mission.contract.expectedArtifacts.join(", ") || "none declared"}`,
+    `Project brain (durable decisions, risks and prior evidence):\n${formatBrainContext(brain) || "(empty)"}`,
+    ...mission.contract.context.map((entry) => `Context: ${entry}`),
     "Work only inside the provided working directory.",
+    "Inspect the repository and its architecture rules before editing. Keep the worktree clean and make only mission-scoped changes.",
     "Produce a complete, verifiable result. Do not claim completion without evidence.",
+  ].join("\n");
+}
+
+function formatBrainContext(entries: ReturnType<Store["listBrainEntries"]>): string {
+  const selected = entries
+    .filter((entry) => ["decision", "convention", "risk", "fact", "assumption"].includes(entry.kind))
+    .slice(-20)
+    .map((entry) => `[${entry.kind}] ${entry.title}: ${entry.body}`.trim());
+  return selected.join("\n").slice(-8_000);
+}
+
+function detectProjectChecks(project: Project): {
+  requiredChecks: CheckpointKind[];
+  checkCommands: Record<string, string[]>;
+} {
+  if (!project.repoPath) return { requiredChecks: [], checkCommands: {} };
+
+  const requiredChecks: CheckpointKind[] = ["architecture_rule"];
+  const checkCommands: Record<string, string[]> = {
+    architecture_rule: ["git", "diff", "--check", "HEAD"],
+  };
+  const packageJsonPath = join(project.repoPath, "package.json");
+  if (existsSync(packageJsonPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
+      const scripts = pkg.scripts ?? {};
+      const runner = existsSync(join(project.repoPath, "pnpm-lock.yaml")) ? "pnpm" : "npm";
+      for (const kind of ["lint", "typecheck", "test", "build"] as const) {
+        if (!scripts[kind]) continue;
+        requiredChecks.push(kind);
+        checkCommands[kind] = [runner, "run", kind];
+      }
+    } catch {
+      // Malformed project metadata is surfaced by the architecture check and
+      // the coding agent; never invent a passing package command.
+    }
+  } else if (existsSync(join(project.repoPath, "Package.swift"))) {
+    requiredChecks.push("build", "test");
+    checkCommands.build = ["swift", "build"];
+    checkCommands.test = ["swift", "test"];
+  }
+  return { requiredChecks, checkCommands };
+}
+
+function buildPullRequestBody(
+  project: Project,
+  mission: Mission,
+  checkpoints: ReturnType<Store["listCheckpoints"]>,
+): string {
+  const evidence = checkpoints
+    .map((checkpoint) => `- ${checkpoint.kind}: **${checkpoint.status}** — ${checkpoint.detail.slice(0, 300)}`)
+    .join("\n");
+  return [
+    "## AvityOS mission",
+    "",
+    `Project: ${project.name}`,
+    `Mission: ${mission.id}`,
+    `Role: ${mission.role}`,
+    "",
+    "## Objective",
+    "",
+    mission.contract.objective,
+    "",
+    "## Acceptance criteria",
+    "",
+    ...(mission.contract.acceptanceCriteria.length
+      ? mission.contract.acceptanceCriteria.map((criterion) => `- ${criterion}`)
+      : ["- See objective"]),
+    "",
+    "## Verification evidence",
+    "",
+    evidence || "- No checkpoint evidence recorded",
+    "",
+    "## Risk and rollback",
+    "",
+    "Review the scoped diff and CI evidence. Roll back by closing this PR; AvityOS does not self-merge.",
   ].join("\n");
 }
 

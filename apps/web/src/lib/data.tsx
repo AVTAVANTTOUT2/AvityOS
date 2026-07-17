@@ -5,11 +5,12 @@ import { api, eventStream, type ApiEvent } from "./api";
 /**
  * Single data source for every screen. In live mode the control plane is the
  * source of truth (REST snapshot + SSE-triggered refresh); demo mode serves
- * the labeled fixtures and is active only when the backend is unreachable or
- * VITE_AVITY_DEMO=1 is set.
+ * labeled fixtures only when VITE_AVITY_DEMO=1 is set. A backend failure is
+ * represented honestly as offline state, optionally retaining the last live
+ * snapshot rather than replacing it with fictional data.
  */
 
-export type BackendMode = "connecting" | "live" | "demo";
+export type BackendMode = "connecting" | "live" | "offline" | "demo";
 
 export interface AppData {
   mode: BackendMode;
@@ -117,6 +118,19 @@ const demoData: Omit<AppData, "refresh" | "actions" | "mode"> = {
   prs: demo.PRS,
   termOut: demo.TERM_OUT,
   diff: demo.DIFF,
+};
+
+const emptyData: Omit<AppData, "refresh" | "actions" | "mode"> = {
+  projects: [] as unknown as typeof demo.PROJECTS,
+  agents: [] as unknown as typeof demo.AGENTS,
+  kanban: Object.fromEntries(KANBAN_COLUMNS.map((column) => [column, []])) as typeof demo.KANBAN,
+  interventions: [] as unknown as typeof demo.INTERVENTIONS,
+  providers: [] as unknown as typeof demo.PROVIDERS,
+  consumption: [] as unknown as typeof demo.CONSUMPTION,
+  activity: [] as unknown as typeof demo.ACTIVITY_LOG,
+  prs: [] as unknown as typeof demo.PRS,
+  termOut: [],
+  diff: [],
 };
 
 async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">> {
@@ -322,7 +336,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         setLive(data);
         setMode("live");
       })
-      .catch(() => setMode((m) => (m === "live" ? "live" : "demo")));
+      .catch(() => setMode("offline"));
   }, []);
 
   const scheduleRefresh = useCallback(() => {
@@ -342,7 +356,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       .then(() => {
         close = eventStream(() => scheduleRefresh());
       })
-      .catch(() => setMode("demo"));
+      .catch(() => setMode("offline"));
     const poll = setInterval(refresh, 15_000);
     return () => {
       close?.();
@@ -351,7 +365,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh, scheduleRefresh]);
 
-  const base = mode === "live" && live ? live : demoData;
+  const base = mode === "demo" ? demoData : (live ?? emptyData);
 
   const value: AppData = {
     ...base,

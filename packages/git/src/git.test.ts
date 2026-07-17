@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
   isCleanWorkingTree,
   listWorktrees,
   missionBranchName,
+  parseGitHubRemote,
   removeWorktree,
 } from "./index.js";
 
@@ -33,6 +34,12 @@ afterEach(async () => {
 });
 
 describe("git package", () => {
+  it("parses supported GitHub remotes without accepting lookalike hosts", () => {
+    expect(parseGitHubRemote("https://github.com/acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
+    expect(parseGitHubRemote("git@github.com:acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
+    expect(parseGitHubRemote("ssh://git@github.com/acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
+    expect(parseGitHubRemote("https://github.example/acme/widget")).toBeNull();
+  });
   it("derives predictable, safe branch names from missions", () => {
     expect(missionBranchName("m_42", "Implement User Login!")).toBe(
       "mission/m_42-implement-user-login",
@@ -46,6 +53,16 @@ describe("git package", () => {
     expect(await currentBranch(repo)).toBe("main");
     await writeFile(join(repo, "dirty.txt"), "x");
     expect(await isCleanWorkingTree(repo)).toBe(false);
+  });
+
+  it("never executes repository-controlled commit hooks", async () => {
+    const marker = join(scratch, "hook-ran");
+    const hook = join(repo, ".git", "hooks", "pre-commit");
+    await writeFile(hook, `#!/bin/sh\nprintf compromised > '${marker}'\n`);
+    await chmod(hook, 0o755);
+    await writeFile(join(repo, "safe.txt"), "validated\n");
+    await commitAll(repo, "test: safe automated commit");
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("creates and removes isolated mission worktrees", async () => {

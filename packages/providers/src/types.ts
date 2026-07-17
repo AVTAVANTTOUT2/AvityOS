@@ -12,6 +12,8 @@ export interface ProviderCapabilities {
   streaming: boolean;
   structuredOutput: boolean;
   toolCalls: boolean;
+  /** The adapter can make durable file changes inside StartRunInput.cwd. */
+  workspaceEdits: boolean;
   resumption: boolean;
   checkpointRequests: boolean;
 }

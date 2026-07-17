@@ -467,3 +467,122 @@ describe("cross-provider fallback", () => {
     expect(runs.some((r) => r.providerId === "fake" && r.state === "succeeded")).toBe(true);
   });
 });
+
+describe("repository-aware planning and provider capability gates", () => {
+  let repo: string;
+
+  beforeEach(async () => { repo = await makeFixtureRepo(); });
+  afterEach(async () => { await rm(join(repo, ".."), { recursive: true, force: true }); });
+
+  it("detects deterministic repository checks and requires a real diff", async () => {
+    ({ store, engine } = makeEngine(db, "fake:code"));
+    const project = store.createProject({
+      name: "AutoContract", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(project.id, "Create a durable project delivery report in the repository", ["delivery report exists"]);
+    engine.analyzeObjective(project.id, objective.id);
+    const mission = store.listMissions(project.id)[0]!;
+    expect(mission.contract.workspaceChangesRequired).toBe(true);
+    expect(mission.contract.allowedPaths).toEqual(["**"]);
+    expect(mission.contract.requiredChecks).toContain("architecture_rule");
+    expect(mission.contract.checkCommands.architecture_rule).toEqual(["git", "diff", "--check", "HEAD"]);
+
+    engine.start();
+    await waitFor(() => store.getProject(project.id)!.status === "completed", 10_000);
+    expect(store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "architecture_rule")?.status).toBe("passed");
+  });
+
+  it("serializes a project's generated missions while preserving cross-project concurrency", () => {
+    ({ store, engine } = makeEngine(db, "fake:code"));
+    const project = store.createProject({
+      name: "Ordered", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Deliver the ordered product stages with deterministic verification",
+      ["architecture baseline exists", "backend implementation exists", "QA evidence exists"],
+    );
+    engine.analyzeObjective(project.id, objective.id);
+    const missions = store.listMissions(project.id);
+    const dependencies = store.listDependencies(project.id);
+    expect(missions).toHaveLength(3);
+    expect(dependencies).toEqual([
+      { missionId: missions[1]!.id, dependsOnMissionId: missions[0]!.id },
+      { missionId: missions[2]!.id, dependsOnMissionId: missions[1]!.id },
+    ]);
+  });
+
+  it("blocks a repository mission before execution when the provider cannot edit workspaces", async () => {
+    class TextOnlyFakeProvider extends FakeProviderAdapter {
+      override capabilities() { return { ...super.capabilities(), workspaceEdits: false }; }
+    }
+    store = new Store(db);
+    engine = new Engine(
+      store,
+      new Map<string, ProviderAdapter>([["text-only", new TextOnlyFakeProvider("text-only")]]),
+      TEST_CONFIG,
+      ["text-only"],
+      new Map([["text-only", "fake:succeed"]]),
+      new Map([["text-only", "fake:review-approve"]]),
+    );
+    const project = store.createProject({
+      name: "CapabilityGate", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Must edit files", role: "backend", contract: repoMissionContract("edit a file"), priority: 50, dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+
+    expect(store.getMission(mission.id)!.state).toBe("blocked");
+    expect(store.listRuns({ missionId: mission.id })).toHaveLength(0);
+    expect(store.listApprovals("open", project.id)[0]?.title).toContain("capable coding provider");
+  });
+});
+
+describe("durable project brain context", () => {
+  it("injects project-specific decisions into author prompts", async () => {
+    class RecordingFake extends FakeProviderAdapter {
+      readonly prompts: string[] = [];
+      override startRun(input: Parameters<FakeProviderAdapter["startRun"]>[0]) {
+        this.prompts.push(input.systemPrompt);
+        return super.startRun(input);
+      }
+    }
+    const recording = new RecordingFake();
+    store = new Store(db);
+    engine = new Engine(
+      store,
+      new Map<string, ProviderAdapter>([["fake", recording]]),
+      TEST_CONFIG,
+      ["fake"],
+      new Map([["fake", "fake:succeed"]]),
+      new Map([["fake", "fake:review-approve"]]),
+    );
+    const project = store.createProject({
+      name: "Brain", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.addBrainEntry(project.id, "decision", "Architecture boundary", "Use ports and adapters; never couple UI to SQLite.", ["user"]);
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Respect architecture", role: "architecture",
+      contract: {
+        objective: "document the boundary", rationale: "", context: [], allowedPaths: [], forbiddenPaths: [],
+        acceptanceCriteria: [], requiredChecks: [], checkCommands: {}, budgetUsd: null, timeoutSeconds: 60,
+        expectedArtifacts: [], workspaceChangesRequired: false,
+      },
+      priority: 50, dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+    expect(recording.prompts[0]).toContain("Use ports and adapters; never couple UI to SQLite.");
+  });
+});

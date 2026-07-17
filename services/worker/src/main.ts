@@ -7,15 +7,18 @@ async function main(): Promise<void> {
     name: process.env.AVITY_WORKER_NAME ?? "",
     pollMs: Number(process.env.AVITY_WORKER_POLL_MS ?? 1000),
     capabilities: (process.env.AVITY_WORKER_CAPABILITIES ?? "shell,git,node").split(","),
+    maxConcurrentRuns: Number(process.env.AVITY_WORKER_MAX_CONCURRENT_RUNS ?? 4),
+    ...(process.env.AVITY_API_TOKEN ? { apiToken: process.env.AVITY_API_TOKEN } : {}),
     ...(process.env.AVITY_WORKER_ID ? { workerId: process.env.AVITY_WORKER_ID } : {}),
     ...(process.env.AVITY_WORKER_TOKEN ? { workerToken: process.env.AVITY_WORKER_TOKEN } : {}),
+    ...(process.env.AVITY_ALLOW_INSECURE === "1" ? { allowInsecureTransport: true } : {}),
   };
 
   // Remote control planes require TLS: worker credentials must never cross
   // the network in cleartext. Loopback is exempt for local development.
   const url = new URL(config.controlPlaneUrl);
   const loopback = ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
-  if (url.protocol !== "https:" && !loopback && process.env.AVITY_ALLOW_INSECURE !== "1") {
+  if (url.protocol !== "https:" && !loopback && !config.allowInsecureTransport) {
     console.error(
       `refusing plain HTTP to non-loopback control plane ${config.controlPlaneUrl}; use https or set AVITY_ALLOW_INSECURE=1 (not recommended)`,
     );

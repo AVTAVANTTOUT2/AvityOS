@@ -322,6 +322,17 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE terminal_sessions ADD COLUMN required_capabilities TEXT NOT NULL DEFAULT '["shell"]';
+      ALTER TABLE terminal_sessions ADD COLUMN lease_expires_at TEXT;
+      ALTER TABLE terminal_sessions ADD COLUMN lease_token_hash TEXT;
+      ALTER TABLE terminal_sessions ADD COLUMN lease_attempts INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX idx_terminals_worker_state ON terminal_sessions(worker_id, state);
+      CREATE UNIQUE INDEX idx_pull_requests_mission ON pull_requests(mission_id) WHERE mission_id IS NOT NULL;
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {

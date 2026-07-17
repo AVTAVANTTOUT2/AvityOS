@@ -45,8 +45,9 @@ export class FakeProviderAdapter implements ProviderAdapter {
   capabilities(): ProviderCapabilities {
     return {
       streaming: true,
-      structuredOutput: true,
-      toolCalls: true,
+      structuredOutput: false,
+      toolCalls: false,
+      workspaceEdits: true,
       resumption: false,
       checkpointRequests: true,
     };

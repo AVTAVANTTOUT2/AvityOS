@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { sandboxCommand } from "@avityos/policy";
 
 export interface RunnerCallbacks {
   onOutput: (text: string) => void | Promise<void>;
@@ -22,21 +23,30 @@ export function runCommand(
   argv: readonly string[],
   cwd: string,
   callbacks: RunnerCallbacks,
-  options: { timeoutMs?: number; env?: Record<string, string> } = {},
+  options: { timeoutMs?: number; env?: Record<string, string>; sandbox?: boolean; allowNetwork?: boolean } = {},
 ): RunnerHandle {
+  const sandbox = options.sandbox ?? true;
   const [executable, ...args] = argv;
   if (!executable) throw new Error("empty command");
-
-  const child: ChildProcess = spawn(executable, args, {
+  const invocation = sandbox
+    ? sandboxCommand(argv, cwd, { allowNetwork: options.allowNetwork, env: options.env })
+    : {
+        executable,
+        args,
+        env: { PATH: process.env.PATH ?? "", ...options.env },
+        cleanup: () => undefined,
+      };
+  const child: ChildProcess = spawn(invocation.executable, invocation.args, {
     cwd,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     // scoped environment: only what the lease provides, plus PATH for resolution
-    env: { PATH: process.env.PATH ?? "", ...options.env },
+    env: invocation.env,
   });
 
   let cancelled = false;
   let timedOut = false;
+  const cleanup = invocation.cleanup;
 
   child.stdout?.on("data", (chunk: Buffer) => void callbacks.onOutput(chunk.toString("utf8")));
   child.stderr?.on("data", (chunk: Buffer) => void callbacks.onOutput(chunk.toString("utf8")));
@@ -52,10 +62,12 @@ export function runCommand(
     child.on("error", (err) => {
       void callbacks.onOutput(`spawn error: ${err.message}\n`);
       if (timeout) clearTimeout(timeout);
+      cleanup();
       void Promise.resolve(callbacks.onExit({ exitCode: null, state: "failed" })).then(resolve);
     });
     child.on("close", (code) => {
       if (timeout) clearTimeout(timeout);
+      cleanup();
       const state = cancelled ? "cancelled" : timedOut ? "timed_out" : code === 0 ? "succeeded" : "failed";
       void Promise.resolve(callbacks.onExit({ exitCode: code, state })).then(resolve);
     });

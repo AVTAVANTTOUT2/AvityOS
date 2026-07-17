@@ -804,7 +804,13 @@ export class Store {
 
   // ── terminal sessions ────────────────────────────────────────────────────
 
-  createTerminal(projectId: string, command: string[], cwd: string, runId: string | null = null): {
+  createTerminal(
+    projectId: string,
+    command: string[],
+    cwd: string,
+    runId: string | null = null,
+    requiredCapabilities: string[] = commandCapabilities(command),
+  ): {
     id: string;
     state: string;
   } {
@@ -813,10 +819,11 @@ export class Store {
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO terminal_sessions (id, project_id, run_id, command, cwd, state, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`,
+          `INSERT INTO terminal_sessions
+             (id, project_id, run_id, command, cwd, state, required_capabilities, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
         )
-        .run(id, projectId, runId, JSON.stringify(command), cwd, ts, ts);
+        .run(id, projectId, runId, JSON.stringify(command), cwd, JSON.stringify(requiredCapabilities), ts, ts);
       this.appendEvent("terminal.output", { projectId, runId }, {
         terminalId: id,
         state: "queued",
@@ -836,6 +843,9 @@ export class Store {
     cwd: string;
     state: string;
     exitCode: number | null;
+    requiredCapabilities: string[];
+    leaseExpiresAt: string | null;
+    leaseAttempts: number;
   } | null {
     const r = this.db.prepare("SELECT * FROM terminal_sessions WHERE id = ?").get(id) as
       | Record<string, unknown>
@@ -850,24 +860,140 @@ export class Store {
       cwd: r.cwd as string,
       state: r.state as string,
       exitCode: (r.exit_code as number) ?? null,
+      requiredCapabilities: JSON.parse((r.required_capabilities as string) ?? '["shell"]') as string[],
+      leaseExpiresAt: (r.lease_expires_at as string) ?? null,
+      leaseAttempts: (r.lease_attempts as number) ?? 0,
     };
   }
 
-  /** Atomically lease the oldest queued terminal session to a worker. */
-  leaseTerminal(workerId: string): ReturnType<Store["getTerminal"]> {
+  /** Whether a live worker has both free capacity and every capability required by this command. */
+  hasAvailableWorker(command: readonly string[], heartbeatWindowMs = 15_000): boolean {
+    const required = commandCapabilities(command);
+    const cutoff = new Date(Date.now() - heartbeatWindowMs).toISOString();
+    const workers = this.db
+      .prepare(
+        `SELECT w.id, w.capabilities, w.max_concurrent_runs,
+                (SELECT COUNT(*) FROM terminal_sessions t
+                 WHERE t.worker_id = w.id AND t.state IN ('starting', 'running', 'cancelling')) AS active_runs
+         FROM workers w
+         WHERE w.status = 'online' AND w.last_heartbeat_at > ?`,
+      )
+      .all(cutoff) as unknown as Array<{
+        id: string;
+        capabilities: string;
+        max_concurrent_runs: number;
+        active_runs: number;
+      }>;
+    return workers.some((worker) => {
+      if (worker.active_runs >= worker.max_concurrent_runs) return false;
+      const capabilities = new Set(JSON.parse(worker.capabilities) as string[]);
+      return required.every((capability) => capabilities.has(capability));
+    });
+  }
+
+  /**
+   * Atomically lease the oldest compatible terminal to an online worker.
+   * Capacity and capability checks happen server-side; a short-lived opaque
+   * token fences stale/revoked workers from reporting a later result.
+   */
+  leaseTerminal(workerId: string, leaseSeconds = 30): (NonNullable<ReturnType<Store["getTerminal"]>> & { leaseToken: string }) | null {
     let leasedId: string | null = null;
+    let leaseToken: string | null = null;
     const tx = this.db.transaction(() => {
-      const row = this.db
-        .prepare("SELECT id FROM terminal_sessions WHERE state = 'queued' ORDER BY created_at ASC LIMIT 1")
-        .get() as { id: string } | undefined;
+      this.reconcileExpiredTerminalLeases();
+      const worker = this.db
+        .prepare("SELECT status, capabilities, max_concurrent_runs FROM workers WHERE id = ?")
+        .get(workerId) as { status: string; capabilities: string; max_concurrent_runs: number } | undefined;
+      if (!worker || worker.status !== "online") return;
+      const active = this.db
+        .prepare("SELECT COUNT(*) AS count FROM terminal_sessions WHERE worker_id = ? AND state IN ('starting', 'running', 'cancelling')")
+        .get(workerId) as { count: number };
+      if (active.count >= worker.max_concurrent_runs) return;
+      const capabilities = new Set(JSON.parse(worker.capabilities) as string[]);
+      const rows = this.db
+        .prepare("SELECT id, required_capabilities FROM terminal_sessions WHERE state = 'queued' ORDER BY created_at ASC")
+        .all() as unknown as { id: string; required_capabilities: string }[];
+      const row = rows.find((candidate) =>
+        (JSON.parse(candidate.required_capabilities) as string[]).every((capability) => capabilities.has(capability)),
+      );
       if (!row) return;
+      leaseToken = randomUUID().replaceAll("-", "");
+      const tokenHash = createHash("sha256").update(leaseToken).digest("hex");
+      const expiresAt = new Date(Date.now() + leaseSeconds * 1000).toISOString();
       this.db
-        .prepare("UPDATE terminal_sessions SET state = 'starting', worker_id = ?, updated_at = ? WHERE id = ?")
-        .run(workerId, now(), row.id);
+        .prepare(
+          `UPDATE terminal_sessions
+           SET state = 'starting', worker_id = ?, lease_expires_at = ?, lease_token_hash = ?,
+               lease_attempts = lease_attempts + 1, updated_at = ?
+           WHERE id = ? AND state = 'queued'`,
+        )
+        .run(workerId, expiresAt, tokenHash, now(), row.id);
       leasedId = row.id;
     });
     tx();
-    return leasedId ? this.getTerminal(leasedId) : null;
+    const terminal = leasedId ? this.getTerminal(leasedId) : null;
+    return terminal && leaseToken ? { ...terminal, leaseToken } : null;
+  }
+
+  heartbeatWorker(workerId: string, leaseSeconds = 30): void {
+    const ts = now();
+    const expiresAt = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+    const tx = this.db.transaction(() => {
+      this.db.prepare("UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, workerId);
+      this.db
+        .prepare(
+          `UPDATE terminal_sessions SET lease_expires_at = ?, updated_at = ?
+           WHERE worker_id = ? AND state IN ('starting', 'running', 'cancelling')`,
+        )
+        .run(expiresAt, ts, workerId);
+    });
+    tx();
+  }
+
+  validateTerminalLease(id: string, workerId: string, leaseToken: string): boolean {
+    const row = this.db
+      .prepare("SELECT worker_id, lease_token_hash, lease_expires_at, state FROM terminal_sessions WHERE id = ?")
+      .get(id) as { worker_id: string | null; lease_token_hash: string | null; lease_expires_at: string | null; state: string } | undefined;
+    if (!row || row.worker_id !== workerId || !row.lease_token_hash || !row.lease_expires_at) return false;
+    if (new Date(row.lease_expires_at).getTime() <= Date.now()) return false;
+    if (!["starting", "running", "cancelling"].includes(row.state)) return false;
+    return row.lease_token_hash === createHash("sha256").update(leaseToken).digest("hex");
+  }
+
+  reconcileExpiredTerminalLeases(): void {
+    const ts = now();
+    // A lease that expired before execution started is safe to retry. Once a
+    // worker reported output, automatic replay could duplicate side effects,
+    // so running work is failed and left to the bounded mission retry loop.
+    this.db
+      .prepare(
+        `UPDATE terminal_sessions
+         SET state = 'queued', worker_id = NULL, lease_expires_at = NULL, lease_token_hash = NULL, updated_at = ?
+         WHERE state = 'starting' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+      )
+      .run(ts, ts);
+    this.db
+      .prepare(
+        `UPDATE terminal_sessions
+         SET state = 'failed', exit_code = NULL, lease_expires_at = NULL, lease_token_hash = NULL, updated_at = ?
+         WHERE state IN ('running', 'cancelling') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+      )
+      .run(ts, ts);
+  }
+
+  revokeWorkerLeases(workerId: string): void {
+    const ts = now();
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE terminal_sessions
+           SET state = CASE WHEN state = 'starting' THEN 'queued' ELSE 'cancelled' END,
+               worker_id = NULL, lease_expires_at = NULL, lease_token_hash = NULL, updated_at = ?
+           WHERE worker_id = ? AND state IN ('starting', 'running', 'cancelling')`,
+        )
+        .run(ts, workerId);
+    });
+    tx();
   }
 
   setTerminalState(id: string, state: string, exitCode: number | null = null): void {
@@ -875,8 +1001,13 @@ export class Store {
     if (!terminal) throw new Error(`terminal ${id} not found`);
     const tx = this.db.transaction(() => {
       this.db
-        .prepare("UPDATE terminal_sessions SET state = ?, exit_code = ?, updated_at = ? WHERE id = ?")
-        .run(state, exitCode, now(), id);
+        .prepare(
+          `UPDATE terminal_sessions SET state = ?, exit_code = ?,
+           lease_expires_at = CASE WHEN ? IN ('succeeded','failed','cancelled','timed_out') THEN NULL ELSE lease_expires_at END,
+           lease_token_hash = CASE WHEN ? IN ('succeeded','failed','cancelled','timed_out') THEN NULL ELSE lease_token_hash END,
+           updated_at = ? WHERE id = ?`,
+        )
+        .run(state, exitCode, state, state, now(), id);
       this.appendEvent("terminal.output", { projectId: terminal.projectId, runId: terminal.runId }, {
         terminalId: id,
         state,
@@ -945,6 +1076,41 @@ export class Store {
       });
     });
     tx();
+    return this.getPullRequest(id)!;
+  }
+
+  upsertPullRequest(input: {
+    projectId: string;
+    missionId: string;
+    branch: string;
+    title: string;
+    state: "draft" | "open" | "merged" | "closed";
+    number?: number | null;
+    url?: string | null;
+  }): PullRequestRef {
+    const existing = this.db
+      .prepare("SELECT id FROM pull_requests WHERE mission_id = ?")
+      .get(input.missionId) as { id: string } | undefined;
+    if (!existing) return this.recordPullRequest(input);
+    this.db
+      .prepare(
+        `UPDATE pull_requests SET number = ?, url = ?, branch = ?, title = ?, state = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(input.number ?? null, input.url ?? null, input.branch, input.title, input.state, now(), existing.id);
+    this.appendEvent("git.pr_updated", { projectId: input.projectId, missionId: input.missionId }, {
+      prId: existing.id,
+      number: input.number ?? null,
+      url: input.url ?? null,
+      state: input.state,
+    });
+    return this.getPullRequest(existing.id)!;
+  }
+
+  setPullRequestState(id: string, state: PullRequestRef["state"]): PullRequestRef {
+    const pr = this.getPullRequest(id);
+    if (!pr) throw new Error(`pull request ${id} not found`);
+    this.db.prepare("UPDATE pull_requests SET state = ?, updated_at = ? WHERE id = ?").run(state, now(), id);
+    this.appendEvent("git.pr_updated", { projectId: pr.projectId, missionId: pr.missionId }, { prId: id, state });
     return this.getPullRequest(id)!;
   }
 
@@ -1056,4 +1222,12 @@ function rowToRun(r: Record<string, unknown>): AgentRun {
     outputTokens: r.output_tokens as number,
     costUsd: r.cost_usd as number,
   };
+}
+
+function commandCapabilities(command: readonly string[]): string[] {
+  const executable = command[0]?.split("/").pop() ?? "";
+  if (executable === "git") return ["shell", "git"];
+  if (["node", "npm", "npx", "pnpm"].includes(executable)) return ["shell", "node"];
+  if (executable === "swift") return ["shell", "swift"];
+  return ["shell"];
 }

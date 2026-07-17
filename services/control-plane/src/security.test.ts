@@ -68,15 +68,23 @@ describe("API authentication", () => {
     expect((await fetch(`${baseUrl}/v1/projects`, { headers: auth })).status).toBe(200);
   });
 
-  it("health stays reachable, the SSE stream accepts the token as a query param", async () => {
+  it("health stays reachable and SSE uses an HttpOnly session instead of a URL token", async () => {
     expect((await fetch(`${baseUrl}/v1/health`)).status).toBe(200);
+    const login = await fetch(`${baseUrl}/v1/session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(login.status).toBe(200);
+    expect(login.headers.get("set-cookie")).toContain("HttpOnly");
+    const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
     const controller = new AbortController();
-    const res = await fetch(`${baseUrl}/v1/events/stream?afterSeq=0&token=${TOKEN}`, {
+    const res = await fetch(`${baseUrl}/v1/events/stream?afterSeq=0`, {
+      headers: { cookie },
       signal: controller.signal,
     });
     expect(res.status).toBe(200);
     controller.abort();
-    const denied = await fetch(`${baseUrl}/v1/events/stream?afterSeq=0&token=nope`);
+    const denied = await fetch(`${baseUrl}/v1/events/stream?afterSeq=0&token=${TOKEN}`);
     expect(denied.status).toBe(401);
   });
 });

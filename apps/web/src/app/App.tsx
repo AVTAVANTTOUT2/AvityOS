@@ -13,6 +13,7 @@ import {
   BarChart, Bar,
 } from "recharts";
 import { DataProvider, useData } from "../lib/data";
+import { api, ApiRequestError } from "../lib/api";
 import type { Agent, Project as ProjectCardData } from "../demo/fixtures";
 
 // ─── UTILS ──────────────────────────────────────────────────────────────────
@@ -23,7 +24,7 @@ function cn(...c: (string | undefined | false | null)[]) {
 
 // ─── DATA ────────────────────────────────────────────────────────────────────
 // All data flows through DataProvider (src/lib/data.tsx): live control-plane
-// state when available, labeled demo fixtures otherwise.
+// state when available, explicit demo fixtures only with VITE_AVITY_DEMO=1.
 
 const NAV = [
   { id: "mission-control", label: "Vue générale", icon: LayoutGrid },
@@ -86,7 +87,7 @@ function Glass({ className, children, onClick }: { className?: string; children:
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 
 function Sidebar({ current, onChange, macOS }: { current: string; onChange: (s: string) => void; macOS: boolean }) {
-  const { interventions, consumption } = useData();
+  const { interventions, consumption, mode } = useData();
   const interventionCount = interventions.length;
   const monthCost = consumption.reduce((sum, c) => sum + c.cost, 0);
   return (
@@ -142,8 +143,8 @@ function Sidebar({ current, onChange, macOS }: { current: string; onChange: (s: 
 
       <div className="px-3 pb-4 border-t border-black/[0.05] pt-3 space-y-0.5">
         <div className="flex items-center gap-2 px-3 py-1.5">
-          <div className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
-          <span className="text-[11px] text-[#74716B]">Système opérationnel</span>
+          <div className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", mode === "live" ? "bg-green-400" : mode === "offline" ? "bg-red-400" : "bg-amber-400")} />
+          <span className="text-[11px] text-[#74716B]">{mode === "live" ? "Système opérationnel" : mode === "offline" ? "Control plane indisponible" : mode === "demo" ? "Mode démonstration" : "Connexion…"}</span>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5">
           <TrendingUp size={11} className="text-[#74716B]" />
@@ -179,6 +180,9 @@ function TopBar({ screen, onNewProject, onCmdK, macOS, onToggleMacOS }: {
       {mode === "live" && (
         <span className="text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide bg-green-50 text-green-700" title="Connecté au control plane">Live</span>
       )}
+      {mode === "offline" && (
+        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide bg-red-50 text-red-700" title="Control plane indisponible — aucune donnée de démonstration injectée">Hors ligne</span>
+      )}
       {mode === "connecting" && (
         <span className="text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide bg-blue-50 text-[#5267D9]">Connexion…</span>
       )}
@@ -202,9 +206,9 @@ function TopBar({ screen, onNewProject, onCmdK, macOS, onToggleMacOS }: {
         <Monitor size={12} />
         <span>macOS</span>
       </button>
-      <div className="flex items-center gap-1.5 text-[11px] text-green-600">
+      <div className={cn("flex items-center gap-1.5 text-[11px]", mode === "live" ? "text-green-600" : "text-[#74716B]")}>
         <RefreshCw size={11} />
-        <span>Sync</span>
+        <span>{mode === "live" ? "Sync" : "Non synchronisé"}</span>
       </div>
       <button className="relative p-2 rounded-xl hover:bg-black/[0.04] transition-all">
         <Bell size={14} strokeWidth={1.5} className="text-[#74716B]" />
@@ -1458,9 +1462,60 @@ function AgentsScreen() {
 
 export default function App() {
   return (
-    <DataProvider>
-      <AppShell />
-    </DataProvider>
+    <AuthGate>
+      <DataProvider>
+        <AppShell />
+      </DataProvider>
+    </AuthGate>
+  );
+}
+
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<"checking" | "ready" | "token">("checking");
+  const [token, setToken] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.projects()
+      .then(() => setState("ready"))
+      .catch((err) => setState(err instanceof ApiRequestError && err.status === 401 ? "token" : "ready"));
+  }, []);
+
+  if (state === "ready") return <>{children}</>;
+  if (state === "checking") {
+    return <div className="min-h-screen bg-[#F2EFE8] grid place-items-center text-sm text-[#74716B]">Connexion sécurisée…</div>;
+  }
+
+  return (
+    <main className="min-h-screen bg-[#F2EFE8] grid place-items-center p-6">
+      <form
+        className="w-full max-w-md bg-white/80 backdrop-blur-xl rounded-3xl border border-white shadow-[0_20px_80px_rgba(32,33,36,0.10)] p-8"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setError("");
+          api.login(token.trim())
+            .then(() => api.projects())
+            .then(() => { setToken(""); setState("ready"); })
+            .catch((err) => setError((err as Error).message));
+        }}
+      >
+        <div className="w-11 h-11 rounded-2xl bg-[#5267D9]/10 text-[#5267D9] grid place-items-center mb-5"><Lock size={20} /></div>
+        <h1 className="text-xl font-semibold text-[#202124]">Connecter AvityOS</h1>
+        <p className="text-sm text-[#74716B] mt-2 mb-6">Saisis le token généré au premier démarrage du control plane. Il sera échangé contre une session HTTP-only.</p>
+        <label htmlFor="avity-token" className="block text-xs font-medium text-[#202124] mb-2">Token du control plane</label>
+        <input
+          id="avity-token"
+          type="password"
+          autoComplete="off"
+          required
+          value={token}
+          onChange={(event) => setToken(event.target.value)}
+          className="w-full rounded-xl border border-black/10 bg-white px-3.5 py-3 text-sm outline-none focus:border-[#5267D9]/50 focus:ring-2 focus:ring-[#5267D9]/10"
+        />
+        {error && <p role="alert" className="text-xs text-red-600 mt-3">{error}</p>}
+        <button type="submit" className="w-full mt-5 rounded-xl bg-[#5267D9] text-white text-sm font-medium py-3 hover:bg-[#4255C4]">Se connecter</button>
+      </form>
+    </main>
   );
 }
 

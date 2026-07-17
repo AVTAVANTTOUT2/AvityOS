@@ -66,20 +66,24 @@ function apiError(reply: FastifyReply, status: number, code: ApiErrorCode, messa
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
   const { store, engine } = opts;
   const app = Fastify({ logger: false });
-  await app.register(cors, { origin: [...(opts.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS)] });
+  await app.register(cors, { origin: [...(opts.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS)], credentials: true });
   const startedAt = Date.now();
 
   app.addHook("onRequest", async (req, reply) => {
     if (!opts.apiToken) return;
     if (req.url.startsWith("/v1/health")) return;
-    // EventSource cannot send headers; the stream endpoint accepts the
-    // token as a query parameter instead.
-    if (req.url.startsWith("/v1/events/stream")) {
-      const token = (req.query as { token?: string }).token;
-      if (token === opts.apiToken) return;
-    }
+    // These routes authenticate with short-lived worker credentials and
+    // terminal lease tokens instead of the user/admin bearer token.
+    const path = req.url.split("?")[0] ?? req.url;
+    const workerAuthenticatedRoute =
+      req.method === "POST" &&
+      (path === "/v1/workers/lease" ||
+        /^\/v1\/workers\/[^/]+\/heartbeat$/.test(path) ||
+        /^\/v1\/terminals\/[^/]+\/(output|exit)$/.test(path));
+    if (workerAuthenticatedRoute) return;
     const header = req.headers.authorization;
-    if (header !== `Bearer ${opts.apiToken}`) {
+    const cookieToken = parseCookie(req.headers.cookie ?? "", "avity_session");
+    if (header !== `Bearer ${opts.apiToken}` && cookieToken !== opts.apiToken) {
       await reply.status(401).send({ error: { code: "policy_denied", message: "invalid or missing API token" } });
     }
   });
@@ -91,7 +95,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (err instanceof IllegalTransitionError) {
       return apiError(reply, 409, "illegal_transition", err.message);
     }
-    return apiError(reply, 500, "internal", err.message);
+    return apiError(reply, 500, "internal", err instanceof Error ? err.message : "unexpected internal error");
   });
 
   function parse<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
@@ -105,6 +109,18 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     version: opts.version,
     uptimeSeconds: (Date.now() - startedAt) / 1000,
   }));
+
+  // Exchange the user/admin bearer for an HttpOnly browser session. This
+  // keeps the long-lived token out of localStorage and SSE query strings.
+  app.post("/v1/session", async (_req, reply) => {
+    reply.header("set-cookie", "avity_session=" + encodeURIComponent(opts.apiToken ?? "") + "; HttpOnly; SameSite=Strict; Path=/");
+    return { ok: true };
+  });
+
+  app.delete("/v1/session", async (_req, reply) => {
+    reply.header("set-cookie", "avity_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+    return { ok: true };
+  });
 
   // ── projects ─────────────────────────────────────────────────────────────
 
@@ -420,7 +436,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.post("/v1/workers/lease", async (req, reply) => {
     const workerId = requireWorker(req, reply);
     if (!workerId) return;
-    store.db.prepare("UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), workerId);
+    store.heartbeatWorker(workerId);
     const lease = store.leaseTerminal(workerId);
     return { lease };
   });
@@ -432,7 +448,10 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const terminal = store.getTerminal(id);
     if (!terminal) return apiError(reply, 404, "not_found", `terminal ${id} not found`);
     if (terminal.workerId !== workerId) return apiError(reply, 403, "policy_denied", "terminal leased to another worker");
-    const body = parse(z.object({ text: z.string() }), req.body);
+    const body = parse(z.object({ text: z.string(), leaseToken: z.string().min(16) }), req.body);
+    if (!store.validateTerminalLease(id, workerId, body.leaseToken)) {
+      return apiError(reply, 409, "conflict", "expired or invalid terminal lease");
+    }
     if (terminal.state === "starting") store.setTerminalState(id, "running");
     store.appendTerminalLog(id, body.text);
     return { ok: true, cancelRequested: store.getTerminal(id)!.state === "cancelling" };
@@ -446,9 +465,16 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (!terminal) return apiError(reply, 404, "not_found", `terminal ${id} not found`);
     if (terminal.workerId !== workerId) return apiError(reply, 403, "policy_denied", "terminal leased to another worker");
     const body = parse(
-      z.object({ exitCode: z.number().int().nullable(), state: z.enum(["succeeded", "failed", "cancelled", "timed_out"]) }),
+      z.object({
+        exitCode: z.number().int().nullable(),
+        state: z.enum(["succeeded", "failed", "cancelled", "timed_out"]),
+        leaseToken: z.string().min(16),
+      }),
       req.body,
     );
+    if (!store.validateTerminalLease(id, workerId, body.leaseToken)) {
+      return apiError(reply, 409, "conflict", "expired or invalid terminal lease");
+    }
     store.setTerminalState(id, body.state, body.exitCode);
     return { ok: true };
   });
@@ -506,6 +532,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const row = store.db.prepare("SELECT id FROM workers WHERE id = ?").get(id);
     if (!row) return apiError(reply, 404, "not_found", `worker ${id} not found`);
     store.db.prepare("UPDATE workers SET status = 'revoked', updated_at = ? WHERE id = ?").run(now(), id);
+    store.revokeWorkerLeases(id);
     store.appendEvent("worker.status_changed", {}, { workerId: id, status: "revoked" });
     store.appendAudit(null, "user", "worker.revoke", id);
     return { ok: true };
@@ -573,6 +600,14 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function parseCookie(header: string, name: string): string | null {
+  for (const part of header.split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(value.join("="));
+  }
+  return null;
 }
 
 /** realpath that returns null instead of throwing (missing path). */

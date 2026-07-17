@@ -110,6 +110,8 @@ export const MissionContract = z.object({
   budgetUsd: z.number().nonnegative().nullable().default(null),
   timeoutSeconds: z.number().int().positive().nullable().default(null),
   expectedArtifacts: z.array(z.string()).default([]),
+  /** Coding missions cannot validate successfully without a real diff. */
+  workspaceChangesRequired: z.boolean().optional(),
 });
 export type MissionContract = z.infer<typeof MissionContract>;
 

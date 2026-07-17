@@ -5,6 +5,7 @@ import {
   FakeProviderAdapter,
   normalizeHttpStatus,
   OpenAICompatibleAdapter,
+  OpenAIResponsesAdapter,
   ProviderConfigError,
   type RunEvent,
 } from "./index.js";
@@ -80,11 +81,19 @@ describe("command adapter", () => {
       args: ["{prompt}"],
     });
     const events = await drain(
-      adapter.startRun({ runId: "r", model: "default", systemPrompt: "", userPrompt: "hello world" }).events,
+      adapter.startRun({ runId: "r", model: "default", systemPrompt: "architecture rule", userPrompt: "hello world" }).events,
     );
     const completed = events.find((e) => e.type === "completed");
     expect(completed).toBeDefined();
+    expect((completed as { resultText: string }).resultText).toContain("architecture rule");
     expect((completed as { resultText: string }).resultText).toContain("hello world");
+  });
+
+  it("advertises workspace editing while HTTP text adapters do not", () => {
+    const command = new CommandProviderAdapter("echo-agent", { executable: "echo", args: ["{prompt}"] });
+    const http = new OpenAICompatibleAdapter("openai", { baseUrl: "https://api.example/v1", apiKey: "k" });
+    expect(command.capabilities().workspaceEdits).toBe(true);
+    expect(http.capabilities()).toMatchObject({ workspaceEdits: false, streaming: false, toolCalls: false });
   });
 
   it("normalizes non-zero exits as agent_crash", async () => {
@@ -160,6 +169,32 @@ describe("openai-compatible adapter", () => {
       fetchImpl: async () => jsonResponse(200, { data: [{ id: "live-model" }] }),
     });
     expect(await adapter.listModels()).toEqual(["configured-model", "live-model"]);
+  });
+});
+
+describe("OpenAI Responses adapter", () => {
+  it("uses /responses with instructions and parses output_text", async () => {
+    let requestUrl = "";
+    let requestBody: Record<string, unknown> = {};
+    const adapter = new OpenAIResponsesAdapter({
+      baseUrl: "https://api.openai.example/v1",
+      apiKey: "k",
+      fetchImpl: async (url, init) => {
+        requestUrl = String(url);
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse(200, {
+          output: [{ type: "message", content: [{ type: "output_text", text: "review complete" }] }],
+          usage: { input_tokens: 12, output_tokens: 4 },
+        });
+      },
+    });
+    const events = await drain(
+      adapter.startRun({ runId: "r", model: "configured", systemPrompt: "review rules", userPrompt: "review diff" }).events,
+    );
+    expect(requestUrl).toBe("https://api.openai.example/v1/responses");
+    expect(requestBody).toMatchObject({ model: "configured", instructions: "review rules", input: "review diff", store: false });
+    expect(events).toContainEqual({ type: "usage", inputTokens: 12, outputTokens: 4, costUsd: 0 });
+    expect(events.at(-1)).toMatchObject({ type: "completed", resultText: "review complete" });
   });
 });
 

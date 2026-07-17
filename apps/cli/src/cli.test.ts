@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -9,9 +9,10 @@ import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 // Point the CLI at an isolated config before importing it.
 const configDir = mkdtempSync(join(tmpdir(), "avity-cli-"));
 process.env.AVITY_CONFIG = join(configDir, "cli.json");
+process.env.AVITY_DISABLE_KEYCHAIN = "1";
 
 const { main } = await import("./main.js");
-const { saveConfig } = await import("./client.js");
+const { CONFIG_PATH, loadConfig, saveConfig } = await import("./client.js");
 
 let app: FastifyInstance;
 let store: Store;
@@ -62,6 +63,14 @@ async function waitFor(cond: () => boolean, timeoutMs = 8000): Promise<void> {
 }
 
 describe("avity CLI", () => {
+  it("stores fallback config with owner-only permissions", () => {
+    const previous = loadConfig();
+    saveConfig({ ...previous, apiToken: "test-token" });
+    expect(statSync(CONFIG_PATH).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(CONFIG_PATH, "utf8")).apiToken).toBe("test-token");
+    saveConfig(previous);
+  });
+
   it("shows usage and exits 2 for unknown commands", async () => {
     expect((await run()).code).toBe(2);
     expect((await run("nonsense")).code).toBe(2);

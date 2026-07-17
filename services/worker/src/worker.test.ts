@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG } from "@avityos/control-plane";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
@@ -63,6 +67,45 @@ describe("runner", () => {
     );
     await handle.done;
     expect(result!.state).toBe("timed_out");
+  });
+
+  it("denies writes outside the sandboxed mission workspace", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "avity-runner-sandbox-"));
+    const workspace = join(scratch, "workspace");
+    const outside = join(scratch, "outside.txt");
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(workspace));
+    let state = "";
+    const handle = runCommand(
+      ["node", "-e", `require('fs').writeFileSync(${JSON.stringify(outside)}, 'escape')`],
+      workspace,
+      { onOutput: () => undefined, onExit: (result) => { state = result.state; } },
+    );
+    await handle.done;
+    expect(state).toBe("failed");
+    expect(existsSync(outside)).toBe(false);
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  it("denies reading secrets outside the sandboxed mission workspace", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "avity-runner-workspace-"));
+    const secretHome = await mkdtemp(join(homedir(), ".avity-runner-secret-"));
+    const workspace = join(scratch, "workspace");
+    const secret = join(secretHome, "control-plane-token");
+    await mkdir(workspace);
+    await writeFile(secret, "never-expose-this-value");
+    const output: string[] = [];
+    const handle = runCommand(
+      [process.execPath, "-e", `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(secret)}, 'utf8'))`],
+      workspace,
+      {
+        onOutput: (text) => output.push(text),
+        onExit: () => undefined,
+      },
+    );
+    await handle.done;
+    expect(output.join("")).not.toContain("never-expose-this-value");
+    await rm(scratch, { recursive: true, force: true });
+    await rm(secretHome, { recursive: true, force: true });
   });
 });
 
@@ -142,7 +185,7 @@ describe("worker <-> control plane integration", () => {
 
   it("cancelling a running terminal kills the child process", async () => {
     const projectId = makeProject();
-    agent = new WorkerAgent({ controlPlaneUrl: baseUrl, name: "w2", pollMs: 50, capabilities: ["shell"] });
+    agent = new WorkerAgent({ controlPlaneUrl: baseUrl, name: "w2", pollMs: 50, capabilities: ["shell", "node"] });
     await agent.enroll();
     agent.start();
 
@@ -162,5 +205,77 @@ describe("worker <-> control plane integration", () => {
       body: "{}",
     });
     expect(res.status).toBe(401);
+  });
+
+  it("leases only compatible work within worker capacity and fences stale tokens", () => {
+    const projectId = makeProject();
+    const ts = new Date().toISOString();
+    const insertWorker = (id: string, capabilities: string[], max = 1) => {
+      store.db.prepare(
+        `INSERT INTO workers (id, name, status, capabilities, max_concurrent_runs, token_hash, created_at, updated_at)
+         VALUES (?, ?, 'online', ?, ?, 'hash', ?, ?)`,
+      ).run(id, id, JSON.stringify(capabilities), max, ts, ts);
+    };
+    insertWorker("shell-only", ["shell"]);
+    insertWorker("node-worker", ["shell", "node"]);
+
+    const nodeTerminal = store.createTerminal(projectId, ["node", "-e", "process.exit(0)"], process.cwd());
+    expect(store.leaseTerminal("shell-only")).toBeNull();
+    const lease = store.leaseTerminal("node-worker")!;
+    expect(lease.id).toBe(nodeTerminal.id);
+    expect(store.validateTerminalLease(lease.id, "node-worker", "wrong-token")).toBe(false);
+    expect(store.validateTerminalLease(lease.id, "node-worker", lease.leaseToken)).toBe(true);
+
+    store.createTerminal(projectId, ["echo", "queued"], process.cwd());
+    expect(store.leaseTerminal("node-worker")).toBeNull(); // maxConcurrentRuns = 1
+    store.revokeWorkerLeases("node-worker");
+    expect(store.getTerminal(nodeTerminal.id)!.state).toBe("queued");
+    expect(store.validateTerminalLease(lease.id, "node-worker", lease.leaseToken)).toBe(false);
+  });
+
+  it("uses the admin bearer only for enrollment, then worker-scoped credentials", async () => {
+    const secureDb = openDatabase(":memory:");
+    const secureStore = new Store(secureDb);
+    const providers = new Map<string, ProviderAdapter>([["fake", new FakeProviderAdapter()]]);
+    const secureEngine = new Engine(secureStore, providers, { ...DEFAULT_ENGINE_CONFIG, tickMs: 50 });
+    const secureApp = await buildServer({ store: secureStore, engine: secureEngine, version: "test", apiToken: "admin-token" });
+    await secureApp.listen({ port: 0, host: "127.0.0.1" });
+    const address = secureApp.server.address();
+    const secureUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+    const secureAgent = new WorkerAgent({
+      controlPlaneUrl: secureUrl,
+      name: "secure-worker",
+      pollMs: 30,
+      capabilities: ["shell"],
+      apiToken: "admin-token",
+    });
+    try {
+      expect((await fetch(`${secureUrl}/v1/workers/enroll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "denied" }) })).status).toBe(401);
+      await secureAgent.enroll();
+      secureAgent.start();
+      const project = secureStore.createProject({
+        name: "secure", description: "", repoPath: null, repoRemoteUrl: null,
+        autonomyProfile: "autonomous_with_checkpoints",
+      });
+      const terminal = secureStore.createTerminal(project.id, ["echo", "authenticated worker"], process.cwd());
+      await waitFor(() => secureStore.getTerminal(terminal.id)!.state === "succeeded", 5000);
+      expect(secureStore.terminalLogs(terminal.id).map((log) => log.text).join("")).toContain("authenticated worker");
+    } finally {
+      await secureAgent.stop();
+      await secureEngine.stop();
+      await secureApp.close();
+      secureDb.close();
+    }
+  });
+});
+
+describe("worker transport policy", () => {
+  it("refuses plaintext credentials to a non-loopback control plane", () => {
+    expect(() => new WorkerAgent({
+      controlPlaneUrl: "http://worker.example",
+      name: "remote",
+      pollMs: 1000,
+      capabilities: ["shell"],
+    })).toThrow(/require HTTPS/);
   });
 });

@@ -36,6 +36,23 @@ struct RunInfo: Codable, Identifiable, Hashable {
     let costUsd: Double
 }
 
+struct TerminalInfo: Codable, Identifiable, Hashable {
+    let id: String
+    let projectId: String
+    let command: [String]
+    let state: String
+    let exitCode: Int?
+}
+
+struct TerminalLog: Codable, Hashable {
+    let seq: Int
+    let text: String
+}
+
+struct TerminalDetail: Codable {
+    let logs: [TerminalLog]
+}
+
 struct ItemsResponse<T: Codable>: Codable {
     let items: [T]
 }
@@ -45,9 +62,8 @@ struct HealthResponse: Codable {
     let version: String
 }
 
-/// Minimal control-plane client. Local-first: talks to 127.0.0.1 by default.
-/// API tokens, when configured, belong in the Keychain — see SECURITY.md;
-/// the development build connects tokenless to the local loopback plane.
+/// Authenticated control-plane client. The bearer lives only in Keychain and
+/// every protected REST/SSE request carries it in an Authorization header.
 @MainActor
 final class ApiClient: ObservableObject {
     @Published var baseURL: URL
@@ -57,25 +73,62 @@ final class ApiClient: ObservableObject {
     @Published var missions: [Mission] = []
     @Published var approvals: [Approval] = []
     @Published var runs: [RunInfo] = []
+    @Published var terminals: [TerminalInfo] = []
     @Published var lastError: String?
+    @Published private(set) var tokenConfigured: Bool
 
     private var timer: Timer?
+    private var eventTask: Task<Void, Never>?
+    private let credentials: CredentialStore
+    private var apiToken: String?
 
-    init(baseURL: URL = URL(string: "http://127.0.0.1:7717")!) {
-        self.baseURL = baseURL
+    init(
+        baseURL: URL? = nil,
+        credentials: CredentialStore = KeychainCredentialStore()
+    ) {
+        self.credentials = credentials
+        let savedURL = UserDefaults.standard.string(forKey: "controlPlaneURL").flatMap(URL.init(string:))
+        self.baseURL = baseURL ?? savedURL ?? URL(string: "http://127.0.0.1:7717")!
+        self.apiToken = try? credentials.loadToken()
+        self.tokenConfigured = !(self.apiToken?.isEmpty ?? true)
     }
 
     func startPolling() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
         }
+        startEventStream()
         Task { await refresh() }
     }
 
     func stopPolling() {
         timer?.invalidate()
         timer = nil
+        eventTask?.cancel()
+        eventTask = nil
+    }
+
+    func configure(baseURL: URL, token: String) {
+        do {
+            try credentials.saveToken(token)
+            apiToken = token
+            tokenConfigured = true
+            self.baseURL = baseURL
+            UserDefaults.standard.set(baseURL.absoluteString, forKey: "controlPlaneURL")
+            startEventStream()
+            Task { await refresh() }
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func clearCredentials() {
+        do { try credentials.deleteToken() } catch { lastError = error.localizedDescription }
+        apiToken = nil
+        tokenConfigured = false
+        connected = false
+        eventTask?.cancel()
     }
 
     func refresh() async {
@@ -99,6 +152,8 @@ final class ApiClient: ObservableObject {
 
             let runsRes: ItemsResponse<RunInfo> = try await get("/v1/runs")
             runs = runsRes.items
+            let terminalsRes: ItemsResponse<TerminalInfo> = try await get("/v1/terminals")
+            terminals = terminalsRes.items
             lastError = nil
         } catch {
             connected = false
@@ -116,17 +171,68 @@ final class ApiClient: ObservableObject {
         }
     }
 
+    func terminalLogs(id: String) async -> [TerminalLog] {
+        do {
+            let detail: TerminalDetail = try await get("/v1/terminals/\(id)")
+            return detail.logs
+        } catch {
+            lastError = error.localizedDescription
+            return []
+        }
+    }
+
     private func get<T: Codable>(_ path: String) async throws -> T {
-        let (data, _) = try await URLSession.shared.data(from: baseURL.appending(path: path))
-        return try JSONDecoder().decode(T.self, from: data)
+        try await send(path: path, method: "GET", body: Optional<Data>.none)
     }
 
     private func post<T: Codable>(_ path: String, body: some Codable) async throws -> T {
-        var request = URLRequest(url: baseURL.appending(path: path))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try JSONEncoder().encode(body)
-        let (data, _) = try await URLSession.shared.data(for: request)
+        try await send(path: path, method: "POST", body: JSONEncoder().encode(body))
+    }
+
+    private func send<T: Codable>(path: String, method: String, body: Data?) async throws -> T {
+        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        if let apiToken { request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "authorization") }
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = body
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.userAuthenticationRequired)
+        }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func startEventStream() {
+        eventTask?.cancel()
+        guard tokenConfigured else { return }
+        eventTask = Task { [weak self] in
+            var backoff: UInt64 = 1
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    guard let url = URL(string: "/v1/events/stream?afterSeq=0", relativeTo: self.baseURL)?.absoluteURL else { return }
+                    var request = URLRequest(url: url)
+                    if let token = self.apiToken { request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization") }
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                        throw URLError(.userAuthenticationRequired)
+                    }
+                    backoff = 1
+                    for try await line in bytes.lines where line.hasPrefix("data:") {
+                        if Task.isCancelled { return }
+                        await self.refresh()
+                    }
+                } catch {
+                    if Task.isCancelled { return }
+                    self.connected = false
+                    self.lastError = error.localizedDescription
+                    try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)
+                    backoff = min(backoff * 2, 30)
+                }
+            }
+        }
     }
 }

@@ -1,7 +1,7 @@
 /**
- * Demo-mode fixtures. This module is ONLY consumed when the control plane
- * is unreachable (or VITE_AVITY_DEMO=1): the UI then shows sample data with
- * an explicit "Démo" badge. No production screen reads these directly.
+ * Demo-mode fixtures. DataProvider exposes these only when
+ * VITE_AVITY_DEMO=1; production failures remain visibly offline and never
+ * substitute sample data for real control-plane state.
  */
 
 

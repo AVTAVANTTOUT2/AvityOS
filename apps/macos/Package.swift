@@ -7,7 +7,13 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "AvityOS",
-            path: "Sources/AvityOS"
-        )
+            path: "Sources/AvityOS",
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .testTarget(
+            name: "AvityOSTests",
+            dependencies: ["AvityOS"],
+            path: "Tests/AvityOSTests"
+        ),
     ]
 )

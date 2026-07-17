@@ -26,13 +26,13 @@
     "@avityos/orchestration": "workspace:*",
     "@avityos/policy": "workspace:*",
     "@avityos/providers": "workspace:*",
-    "fastify": "5.2.1",
     "@fastify/cors": "10.0.2",
+    "fastify": "5.8.5",
     "zod": "3.24.1"
   },
   "devDependencies": {
     "@types/node": "22.13.1",
     "typescript": "5.7.3",
-    "vitest": "3.0.5"
+    "vitest": "3.2.6"
   }
 }

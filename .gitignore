@@ -25,6 +25,10 @@ DerivedData/
 *.log
 .cache/
 coverage/
+apps/web/test-results/
+apps/web/playwright-report/
+license-report.json
+sbom.spdx.json
 
 # OS / editor
 .DS_Store

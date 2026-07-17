@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import { openDatabase } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
-import { buildProviders, parseModelMap } from "./providers.js";
+import { buildProviders, parseModelMap, parseRoleProviderMap } from "./providers.js";
 import { buildServer, DEFAULT_ALLOWED_ORIGINS } from "./server.js";
 import { Store } from "./store.js";
 
@@ -41,10 +41,11 @@ async function main(): Promise<void> {
   const providers: Map<string, ProviderAdapter> = buildProviders(process.env);
   if (!providers.has("fake")) providers.set("fake", new FakeProviderAdapter());
 
-  const providerChain = (process.env.AVITY_PROVIDER_CHAIN ?? "fake")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((name) => providers.has(name));
+  const providerChain = process.env.AVITY_PROVIDER_CHAIN
+    ? process.env.AVITY_PROVIDER_CHAIN.split(",").map((s) => s.trim()).filter((name) => providers.has(name))
+    : ["codex", "claude-code", "cursor", "command", "openai", "anthropic", "deepseek", "fake"].filter((name) =>
+        providers.has(name),
+      );
 
   const defaultModels = parseModelMap(process.env.AVITY_DEFAULT_MODELS);
   if (!defaultModels.has("fake")) defaultModels.set("fake", "fake:code");
@@ -64,6 +65,7 @@ async function main(): Promise<void> {
     providerChain.length ? providerChain : ["fake"],
     defaultModels,
     reviewModels,
+    parseRoleProviderMap(process.env.AVITY_ROLE_PROVIDERS),
   );
   engine.start();
 

@@ -13,7 +13,7 @@ export const MISSION_TRANSITIONS: Readonly<Record<MissionState, readonly Mission
   assigned: ["running", "ready", "paused", "blocked", "cancelled"],
   running: ["result_submitted", "paused", "blocked", "retrying", "cancelled", "failed"],
   result_submitted: ["validating", "cancelled"],
-  validating: ["review_required", "retrying", "failed", "cancelled"],
+  validating: ["review_required", "retrying", "blocked", "failed", "cancelled"],
   review_required: ["approved", "retrying", "blocked", "cancelled"],
   approved: ["integrated", "blocked", "cancelled"],
   integrated: ["completed", "failed"],

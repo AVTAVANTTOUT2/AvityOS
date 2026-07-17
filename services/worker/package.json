@@ -22,14 +22,14 @@
   },
   "dependencies": {
     "@avityos/contracts": "workspace:*",
-    "@avityos/policy": "workspace:*",
-    "@avityos/control-plane": "workspace:*"
+    "@avityos/control-plane": "workspace:*",
+    "@avityos/policy": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "22.13.1",
-    "typescript": "5.7.3",
-    "vitest": "3.0.5",
     "@avityos/providers": "workspace:*",
-    "fastify": "5.2.1"
+    "@types/node": "22.13.1",
+    "fastify": "5.8.5",
+    "typescript": "5.7.3",
+    "vitest": "3.2.6"
   }
 }

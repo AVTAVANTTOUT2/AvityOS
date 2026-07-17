@@ -8,6 +8,11 @@ export interface WorkerConfig {
   workerToken?: string;
   pollMs: number;
   capabilities: string[];
+  maxConcurrentRuns?: number;
+  /** Admin bearer used only for first enrollment. */
+  apiToken?: string;
+  /** Explicit development escape hatch; never enable for a remote worker. */
+  allowInsecureTransport?: boolean;
   fetchImpl?: typeof fetch;
 }
 
@@ -15,6 +20,7 @@ interface Lease {
   id: string;
   command: string[];
   cwd: string;
+  leaseToken: string;
 }
 
 /**
@@ -27,10 +33,16 @@ export class WorkerAgent {
   private timer: NodeJS.Timeout | null = null;
   private active = new Map<string, RunnerHandle>();
   private readonly fetchImpl: typeof fetch;
+  private pollInFlight = false;
   workerId: string | null;
   private workerToken: string | null;
 
   constructor(private readonly config: WorkerConfig) {
+    const url = new URL(config.controlPlaneUrl);
+    const loopback = ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
+    if (url.protocol !== "https:" && !loopback && !config.allowInsecureTransport) {
+      throw new Error(`refusing insecure worker transport to ${url.host}; remote control planes require HTTPS`);
+    }
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.workerId = config.workerId ?? null;
     this.workerToken = config.workerToken ?? null;
@@ -39,10 +51,14 @@ export class WorkerAgent {
   async enroll(): Promise<{ id: string; token: string }> {
     const res = await this.fetchImpl(`${this.config.controlPlaneUrl}/v1/workers/enroll`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(this.config.apiToken ? { authorization: `Bearer ${this.config.apiToken}` } : {}),
+      },
       body: JSON.stringify({
         name: this.config.name || hostname(),
         capabilities: this.config.capabilities,
+        maxConcurrentRuns: this.config.maxConcurrentRuns ?? 4,
       }),
     });
     if (!res.ok) throw new Error(`enrollment failed: HTTP ${res.status}`);
@@ -75,6 +91,8 @@ export class WorkerAgent {
   }
 
   async poll(): Promise<void> {
+    if (this.pollInFlight) return;
+    this.pollInFlight = true;
     try {
       const res = await this.fetchImpl(`${this.config.controlPlaneUrl}/v1/workers/lease`, {
         method: "POST",
@@ -83,9 +101,11 @@ export class WorkerAgent {
       });
       if (!res.ok) return;
       const { lease } = (await res.json()) as { lease: Lease | null };
-      if (lease) await this.execute(lease);
+      if (lease) void this.execute(lease);
     } catch {
       // control plane unreachable: keep polling; reconnection is automatic
+    } finally {
+      this.pollInFlight = false;
     }
   }
 
@@ -104,11 +124,11 @@ export class WorkerAgent {
       lease.cwd,
       {
         onOutput: async (text) => {
-          const ack = await post(`/v1/terminals/${lease.id}/output`, { text });
+          const ack = await post(`/v1/terminals/${lease.id}/output`, { text, leaseToken: lease.leaseToken });
           if (ack.cancelRequested) handle.cancel();
         },
         onExit: async ({ exitCode, state }) => {
-          await post(`/v1/terminals/${lease.id}/exit`, { exitCode, state });
+          await post(`/v1/terminals/${lease.id}/exit`, { exitCode, state, leaseToken: lease.leaseToken });
           this.active.delete(lease.id);
         },
       },
