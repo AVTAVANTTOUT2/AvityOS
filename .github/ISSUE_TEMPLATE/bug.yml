@@ -1,0 +1,112 @@
+name: Bug
+description: Signaler un comportement incorrect ou une régression
+title: "[Bug]: "
+labels: []
+assignees: []
+body:
+  - type: checkboxes
+    id: prerequis
+    attributes:
+      label: Vérification préalable
+      description: Confirmez ces points avant de soumettre le signalement.
+      options:
+        - label: J’ai recherché une issue similaire
+          required: true
+        - label: J’utilise une version récente
+          required: true
+        - label: Je n’inclurai aucun secret (token, cookie, clé API, fichier .env, données personnelles)
+          required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description du bug
+      description: Décrivez précisément le comportement incorrect observé.
+      placeholder: Ex. Après connexion, la page reste bloquée sur un état de chargement.
+    validations:
+      required: true
+  - type: textarea
+    id: comportement-attendu
+    attributes:
+      label: Comportement attendu
+      description: Indiquez ce qui devrait se produire.
+    validations:
+      required: true
+  - type: textarea
+    id: etapes-reproduction
+    attributes:
+      label: Étapes de reproduction
+      description: Listez les étapes minimales pour reproduire le problème.
+      placeholder: |
+        1.
+        2.
+        3.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: environnement
+    attributes:
+      label: Environnement
+      description: Précisez le contexte d’exécution.
+      placeholder: |
+        - Système d’exploitation :
+        - Version de Node :
+        - Version de pnpm :
+        - Navigateur (si pertinent) :
+        - Version ou commit AvityOS :
+        - Installation : locale / distante
+    validations:
+      required: true
+  - type: dropdown
+    id: composant
+    attributes:
+      label: Composant concerné
+      description: Sélectionnez la zone principale impactée.
+      multiple: false
+      options:
+        - Web
+        - Control plane
+        - Worker
+        - Providers
+        - Policy
+        - Contracts
+        - CLI
+        - macOS
+        - CI/CD
+        - Documentation
+        - Inconnu
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Facultatif. Supprimez les tokens, cookies, clés API et données personnelles.
+        Ne publiez jamais un fichier .env.
+      render: text
+    validations:
+      required: false
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: Indiquez la gravité perçue.
+      multiple: false
+      options:
+        - Bloquant
+        - Important
+        - Modéré
+        - Mineur
+    validations:
+      required: true
+  - type: textarea
+    id: infos-complementaires
+    attributes:
+      label: Informations complémentaires
+      description: Captures d’écran ou précisions utiles (sans secrets ni données personnelles).
+    validations:
+      required: false
