@@ -7,7 +7,7 @@
    scheduling, retries, budgets, checkpoints, audit, recovery. No project
    depends on hidden conversational memory.
 2. **Local-first** (ADR-0003). One `pnpm install`, one SQLite file, zero
-   external daemons; the fake provider makes the whole platform work offline.
+   required external daemons; the fake provider verifies orchestration offline.
 3. **Contracts as source of truth** (ADR-0004). Every entity, request and
    event is a zod schema in `packages/contracts`; services validate all input
    at runtime and clients import the same types.
@@ -25,13 +25,13 @@
         services/control-plane
         ┌───────────────────────────────┐
         │ Fastify API  (server.ts)      │  contract validation, error codes,
-        │ Engine       (engine.ts)      │  idempotency keys, SSE stream
+        │ Engine       (engine.ts)      │  worktrees, routing, checks, review
         │ Store        (store.ts)       │  transactions + event append
         │ SQLite       (db.ts)          │  node:sqlite, WAL, migrations
         └───────────────────────────────┘
                    |  lease/output/exit (authenticated per worker)
-            services/worker            argv-only subprocess runner,
-                                       process-group cleanup
+            services/worker            capabilities/capacity leases,
+                                       OS sandbox + process-group cleanup
 ```
 
 `packages/orchestration` is pure logic (no I/O): mission/run transition
@@ -53,10 +53,11 @@ event append — state and audit history cannot diverge.
 
 Every durable mutation appends to the `events` table (monotonic `seq`) in
 the same transaction. Clients resume streams with `?afterSeq=`; SSE replays
-missed events then streams live. On startup the engine reconciles: orphaned
-active runs are failed once (never replayed), their missions re-enter the
-bounded correction path, and stuck transient states are re-queued —
-restart produces no duplicate side effects (covered by scenario-6 test).
+missed events then streams live. On startup the engine marks orphaned active
+runs failed once, routes their missions through bounded correction and resumes
+validation/review states. Commits are skipped for clean trees and PR rows are
+unique per mission. A crashed provider call may be retried; external provider
+billing cannot be proven exactly-once without vendor idempotency support.
 
 ## Data
 
@@ -67,8 +68,9 @@ chain verified by `verifyAuditChain()`.
 
 ## Isolation model
 
-Projects are isolated by id at every query; missions get isolated git
-worktrees and branches (`packages/git`); workers run commands in their own
-detached process groups with scoped environments; budgets, usage and events
-are all per-project. Concurrency is bounded by configurable host limits
-(global and per-project), not a fixed product limit.
+Projects are isolated by id at every query and each has a durable brain whose
+decisions/risks/evidence are injected into author and reviewer prompts.
+Missions get isolated git worktrees and branches; CLI agents use vendor
+non-interactive sandbox controls; checks use macOS `sandbox-exec` or Linux
+Bubblewrap and workers use fenced leases. Concurrency is bounded by host
+configuration globally/per project/worker, not by a product-wide fixed limit.

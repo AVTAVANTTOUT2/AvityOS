@@ -1,9 +1,10 @@
 # AvityOS — native macOS app
 
 A SwiftUI application (Swift Package Manager executable) that connects to the
-local AvityOS control plane: sidebar navigation, project/mission/run views,
-approve/reject interventions, connection status, and a menu-bar companion
-showing live counts.
+local AvityOS control plane: Keychain authentication, SSE plus polling
+reconnection, project/mission/run/terminal views, approve/reject interventions,
+deep links, native notifications, Dock badge, settings, and a menu-bar
+companion showing live counts.
 
 ## Development build (no certificate required)
 
@@ -31,8 +32,8 @@ development workflow depends on it.
 
 ## Security notes
 
-- The app talks to the loopback control plane by default; remote planes
-  require the API token, which must be stored in the macOS Keychain
-  (see docs/SECURITY.md — never in UserDefaults or plists).
+- The app talks to the loopback control plane by default. The API token is
+  always stored in macOS Keychain, never UserDefaults or a plist. Remote
+  endpoints should use HTTPS.
 - The wire models in `ApiClient.swift` mirror `packages/contracts`; update
   them together.

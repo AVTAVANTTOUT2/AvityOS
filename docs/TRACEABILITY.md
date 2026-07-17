@@ -1,39 +1,39 @@
 # Definition-of-done traceability
 
-Status keys: ✅ done · 🟡 partial (gap stated) · Evidence = file/test/commit.
+Evidence date: 2026-07-17. Status: ✅ implemented and locally reproduced ·
+🟡 implemented/partial with the exact remaining proof or limitation stated.
 
-| Requirement | Status | Evidence |
+| Requirement | Status | Reproducible evidence / limitation |
 | --- | --- | --- |
-| Design → maintainable real web app | ✅ | apps/web: DataProvider (src/lib/data.tsx), typed client (src/lib/api.ts), demo fixtures isolated in src/demo; browser-verified live lifecycle |
-| Native macOS app builds and connects | ✅ | apps/macos (SwiftUI, `swift build` verified, launch-tested); menu-bar companion, approvals |
-| `avity` CLI works | ✅ | apps/cli + 6 integration tests against a real in-process control plane |
-| Durable, recoverable control plane | ✅ | services/control-plane; scenario-6 restart-recovery test (no duplicate side effects) |
-| Local/remote worker architecture, secured | ✅ | services/worker; hashed one-time tokens, revocation, lease binding, process-group cleanup (7 tests) |
-| Multiple projects concurrently isolated | ✅ | scenario-3 test (missions/events/usage/budgets isolation) |
-| Objectives/clarifications/plans/missions/memory persisted | ✅ | SQLite migrations v1–v3; brain entries with provenance |
-| Provider adapters + automatic fallback | ✅ | packages/providers (fake, command, OpenAI-compatible, Anthropic); decideFallback + scenario-4 test |
-| Terminal output streams live | ✅ | terminal lease/output/exit + SSE `terminal.output` events; worker integration test |
-| Git worktree/branch/commit/PR flows | 🟡 | packages/git (worktrees, branch naming, conflicts — 4 tests); PR tracking API. Gap: engine does not yet auto-drive repo worktrees per mission or open GitHub PRs (needs GitHub credential) |
-| Checkpoints, policies, independent review | ✅ | packages/policy (9 tests); checkpoints table; review mission depends on all impl missions; supervised → human approval |
-| Usage, quotas, budgets tracked | ✅ | usage_records/budgets, budget gate → approval; QuotaState contract |
-| Security boundaries and secret handling tested | ✅ | scenario-7 test (forbidden command denied + audited); redaction tests; worker auth tests |
-| Fake/demo mode demonstrates lifecycle without credentials | ✅ | FakeProviderAdapter; browser-verified; all tests credential-free |
-| Critical-path tests and CI pass | ✅ | 59 tests green; .github/workflows/ci.yml |
-| No critical screen on hardcoded mock data | ✅ | all screens read useData(); fixtures only behind explicit Démo badge |
-| No critical-path placeholder/fake button | 🟡 | Core loop fully wired (create, objective, interventions, activity). Some prototype panels remain presentational in live mode (settings forms, PR diff view shows empty when no data) |
-| Reproducible clean-Mac setup documented | ✅ | README + docs/LOCAL-DEVELOPMENT.md (pnpm install / verify verified from scratch) |
-| Repository clean | ✅ | git status clean at each commit; .gitignore covers state |
-| Final reviewable PR, no self-merge | ✅ | PR opened from feat/avityos-platform (see final report) |
+| Real web state, auth and browser behavior | 🟡 | Typed REST/SSE DataProvider, HttpOnly login, explicit offline/demo separation; 3 Vitest + 1 Playwright E2E pass. Remaining: split the large Figma-derived `App.tsx` and wire secondary presentational controls. |
+| Native macOS client | 🟡 | Swift build/test pass; Keychain, auth, SSE reconnect, terminal logs, deep links, notifications, Dock badge, settings/menu bar. Remaining: UI tests and signed/notarized `.app` packaging. |
+| `avity` CLI | ✅ | 6 integration tests against an in-process authenticated control plane. |
+| Durable/recoverable control plane | ✅ | SQLite migrations/event log; restart reconciliation scenario; idempotent clean-tree commits and unique PR row per mission. Vendor calls may be retried after a crash and are not exactly-once without vendor support. |
+| Multiple isolated projects | ✅ | Scenario 3 proves concurrent project/event/usage isolation; generated missions are ordered within each project. |
+| Per-project durable brain | ✅ | Decisions/results/risks with provenance persist and are injected into author and reviewer prompts; dedicated prompt test. |
+| Provider runtime + fallback | 🟡 | Codex/Claude/Cursor CLI, OpenAI Responses, Anthropic, DeepSeek, trusted generic and fake registered; honest capabilities, role routing and cross-provider test. Optional live API credentials were not used in CI. |
+| Worker execution architecture | ✅ | Capability/capacity matching, heartbeat, expiry, lease-token fencing, revocation, HTTPS policy, OS sandbox and cancellation; 12 tests. |
+| Worktree → checks → commit → review | ✅ | Fixture repository E2E creates a real branch/worktree, forces a defect, executes checks, corrects, commits, independently reviews and cleans up. |
+| Push + GitHub draft PR | 🟡 | Injection-safe push/`gh pr` implementation and idempotent DB record exist. A live external GitHub PR has not yet been created from the corrected branch. |
+| Checkpoints and independent review | ✅ | Required commands pass only on exit evidence; separate reviewer run with diff/brain/evidence; rejection loops and approval tested. |
+| Usage, quotas and budgets | ✅ | Transactional usage/budget accounting and budget escalation. Provider-reported cost remains zero unless pricing is configured. |
+| Execution security boundary | ✅ | 7 control-plane security tests, 12 worker tests, environment test, Git-hook test and sandbox read/write tests cover the audited boundary. |
+| Supply-chain gates | ✅ | Local: zero known vulnerabilities, license policy passes 440 installed packages, Gitleaks passes; CI includes blocking audit/license/Gitleaks and SPDX SBOM. |
+| Fake/demo honesty | ✅ | Fake is a deterministic engineering fixture; production backend failure shows `Hors ligne`; fixtures require `VITE_AVITY_DEMO=1`. |
+| Full local TS verification | ✅ | `pnpm verify`: all builds/typechecks and 99 tests pass. |
+| Browser + Swift verification | ✅ | Playwright: 1 passed. `swift build && swift test`: 1 XCTest passed. |
+| Green GitHub Actions from corrected checkout | 🟡 | Workflow is updated, but the corrected commits still need pushing so GitHub can produce external green evidence. |
+| No self-merge | ✅ | Engine only marks approved drafts ready; it contains no merge operation. This platform branch remains unmerged. |
 
-## Mandatory e2e scenarios
+## Mandatory scenarios
 
-| # | Scenario | Test |
+| # | Scenario | Evidence |
 | --- | --- | --- |
-| 1 | Clear objective → approved completion (fake provider) | controlplane.test.ts "scenario 1" |
-| 2 | Ambiguous objective → grouped clarification → auto-resume | "scenario 2" |
-| 3 | Two projects concurrently, isolation proven | "scenario 3" |
-| 4 | Simulated rate limit → wait/fallback policy | "scenario 4" |
-| 5 | Failed validation → bounded correction loop | "scenario 5" (2 tests) |
-| 6 | Control-plane restart mid-work, no duplicate side effects | "scenario 6" |
-| 7 | Forbidden command denied and audited | worker.test.ts "scenario 7" |
-| 8 | Cancel running mission, children cleaned up | controlplane "scenario 8" + runner cancel test |
+| 1 | Clear objective → completion | control-plane scenario 1 |
+| 2 | Ambiguous objective → grouped answer → resume | scenario 2 |
+| 3 | Concurrent projects remain isolated | scenario 3 |
+| 4 | Rate-limit fallback, including cross-provider | scenario 4 + cross-provider test |
+| 5 | Failed validation/review → bounded correction | scenario 5 + fixture defect/review rejection tests |
+| 6 | Restart reconciliation | scenario 6; orphan failed once, mission resumes |
+| 7 | Forbidden command/security boundary | control-plane security suite + worker scenario 7 |
+| 8 | Cancellation cleans process tree/worktree | scenario 8 + runner process-group test |

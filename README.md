@@ -19,7 +19,7 @@ services/control-plane Durable orchestration service (Fastify + SQLite)
 services/worker        Terminal/subprocess execution worker
 packages/contracts     zod schemas: domain model, API, events (source of truth)
 packages/orchestration Deterministic state machines, DAG, scheduler, fallback
-packages/providers     Provider adapters: fake, command, OpenAI-compatible, Anthropic
+packages/providers     Fake, Codex/Claude/Cursor CLI, OpenAI Responses, Anthropic, DeepSeek
 packages/git           Injection-safe git/worktree operations
 packages/policy        Policy engine, command/path allowlists, secret redaction
 docs/                  Architecture, security, lifecycle, ADRs, runbooks
@@ -54,10 +54,12 @@ node apps/cli/dist/main.js project create "My project"
 node apps/cli/dist/main.js objective submit <project-id> "Build X with tests" "criterion 1"
 ```
 
-No paid credentials are needed: the deterministic **fake provider** executes
-the complete lifecycle (plan → missions → runs → validation → review →
-completion) offline. The web UI shows a **Live** badge when connected and an
-explicit **Démo** badge with sample data when the control plane is down.
+No paid credentials are needed to verify the orchestration: the deterministic
+**fake provider** edits an isolated fixture repository and exercises the full
+worktree → checks → commit → review → correction lifecycle. Real software
+delivery uses a configured coding CLI (Codex, Claude Code, Cursor, or a trusted
+command adapter). The web UI shows **Live**, **Hors ligne**, or the explicit
+**Démo** mode enabled only with `VITE_AVITY_DEMO=1`.
 
 ## macOS app
 
@@ -82,6 +84,8 @@ cd apps/macos && swift run AvityOS
 ## Testing
 
 ```sh
-pnpm -r test    # 59 tests: state machines, policies, git, adapters,
-                # control-plane e2e scenarios, worker integration, CLI
+pnpm verify             # builds, 99 tests, strict typechecks
+pnpm verify:full        # above + Playwright browser E2E + Swift tests
+pnpm licenses:check     # dependency license policy + JSON evidence
+pnpm audit --audit-level high
 ```

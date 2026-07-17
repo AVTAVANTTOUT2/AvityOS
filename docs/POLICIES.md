@@ -17,11 +17,11 @@
 
 ## Command and path policy
 
-- `isCommandAllowed` operates on argv arrays only; executables are matched
-  by basename against allow/deny lists. The control plane's terminal
-  endpoint enforces this before queueing (default allowlist: git, pnpm,
-  npm, node, ls, echo, cat, pwd, sleep; denied: rm, sudo, curl, wget, ssh,
-  scp — configurable via `ServerOptions.commandPolicy`).
+- `isCommandAllowed` operates on argv arrays only. Ad-hoc human terminals use
+  an observation-only policy (`ls`, `echo`, `cat`, `pwd`, `sleep`); shells,
+  interpreters and package managers are denied. Mission-bound checks may use
+  git/node/package managers only inside their server-resolved worktree and OS
+  sandbox.
 - `isPathAllowed` confines writes to the mission worktree, minus forbidden
   globs, optionally restricted to allowed globs from the mission contract.
 

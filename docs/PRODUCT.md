@@ -23,16 +23,18 @@ human intervention, across many isolated projects in parallel.
 - **Web** — Mission Control dashboard, projects, missions kanban,
   interventions (answer/approve inline), agents, executions, GitHub & code,
   providers, activity log, settings; cream/indigo Liquid-Glass visual
-  identity from the original Figma design. Live/Démo/Connexion states are
-  always visible.
-- **macOS** — native SwiftUI app with sidebar, missions/runs tables,
-  intervention approval, menu-bar companion with live counts.
+  identity from the original Figma design. Live/Hors-ligne/Démo/Connexion
+  states are always visible; demo fixtures require an explicit build flag.
+- **macOS** — native SwiftUI app with Keychain-backed authentication, SSE
+  reconnection, projects/missions/runs/terminals, intervention approval,
+  deep links, notifications, Dock badge, settings and menu-bar companion.
 - **CLI** — `avity` covers the full loop headlessly with `--json` output
   for scripting.
 
 ## Quality bar
 
-Quality over speed: deterministic orchestration, bounded correction loops,
-policy-gated dangerous actions, evidence-based completion. The complete
-lifecycle runs offline on the fake provider — demos never require paid
-credentials, and demo data never masquerades as real state.
+Quality over speed: missions inside each project are ordered by dependencies,
+while separate projects progress concurrently. Completion requires real file
+changes, real command exits, a commit/PR record and an independent review.
+The fake provider is a deterministic verification fixture, never a claim that
+an objective was actually implemented; demo data never masquerades as live.

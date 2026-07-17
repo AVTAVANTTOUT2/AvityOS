@@ -1,49 +1,52 @@
 # Provider adapters
 
 All AI execution flows through `ProviderAdapter` v1
-(`packages/providers/src/types.ts`): capabilities, model discovery,
-`startRun` returning a streamed `RunEvent` generator plus `cancel()`,
-usage reporting, and a **closed** set of normalized error categories:
+(`packages/providers/src/types.ts`): honest capabilities, model discovery,
+streamed run events, cancellation, usage, and a closed set of normalized
+failures (`auth`, quota/rate limit, network, invalid request, context,
+tool/agent/policy failure, unknown).
 
-`auth · quota_exhausted · rate_limited · transient_network ·
-invalid_request · context_overflow · tool_failure · agent_crash ·
-policy_denied · unknown` (with optional `retryAfterMs`).
+## Runtime adapters
 
-## Shipped adapters
+| Name | Interface | Workspace edits | Runtime safety |
+| --- | --- | ---: | --- |
+| `codex` | official `codex exec` | yes | `workspace-write`, no approvals, ephemeral, no inherited shell environment |
+| `claude-code` | `claude -p` | yes | safe mode, no persistence, explicit tools/permission mode |
+| `cursor` | `cursor-agent -p` | yes | built-in sandbox, trusted explicit workspace, setup scripts disabled |
+| `command` | configured argv template | opt-in only | reviewer-only unless `AVITY_COMMAND_WORKSPACE_EDITS=1` |
+| `openai` | OpenAI Responses API | no | text/review runs; `store:false`; key scoped to HTTP adapter |
+| `anthropic` | Anthropic Messages API | no | text/review runs |
+| `deepseek` | OpenAI-compatible chat API | no | text/review runs |
+| `fake` | deterministic in-process fixture | fixture edits | tests correction, review, fallback, worktrees and checks offline |
 
-| Adapter | Class | Notes |
-| --- | --- | --- |
-| `fake` | `FakeProviderAdapter` | Deterministic, scripted by model name (`fake:succeed`, `fake:fail-<category>`, `fake:rate-limit-once`, `fake:slow`, `fake:checkpoint`). Test/demo backbone; zero credentials. |
-| `command` | `CommandProviderAdapter` | Runs any CLI agent non-interactively (argv only, `{prompt}`/`{model}` placeholders, detached process group, timeout). Integrates **Claude Code** (`claude -p "{prompt}"`) and **Cursor CLI** through their supported non-interactive modes — no TUI scraping. |
-| OpenAI-compatible | `OpenAICompatibleAdapter` | Chat-completions APIs: OpenAI and **DeepSeek** purely via `baseUrl`/`apiKey`/`models` config. Live model discovery merged with configured list. |
-| Anthropic | `AnthropicAdapter` | Messages API with content-block extraction and usage. |
+HTTP adapters intentionally advertise `workspaceEdits:false`: returning text is
+not equivalent to editing a repository. CLI adapters combine the architecture
+system prompt and mission prompt, execute inside the persisted worktree, and
+receive only explicitly scoped environment variables.
 
-Model names, base URLs and keys are configuration, never code. API-key auth
-and CLI-session auth are distinct `AuthMethod`s on the provider account.
-Pricing is configuration (adapters report tokens; `costUsd` is 0 unless a
-pricing table is configured) — the architecture is not tied to any vendor's
-current price list or model alias.
+Model names and base URLs are configuration. OpenAI uses `/v1/responses` with
+`instructions` + `input`; DeepSeek remains chat-compatible. Current claims are
+contract-tested with injected HTTP responses; live API smoke tests require the
+operator's credentials and are not part of credential-free CI.
 
-## Fallback policy
+## Routing and fallback
 
-`decideFallback` (packages/orchestration) implements: wait-for-reset (within
-the policy wait budget) → retry with capped exponential backoff → switch
-model (if allowed) → switch provider (if allowed) → escalate to the user.
-`auth`, `policy_denied` and `invalid_request` never retry. The engine emits
-a `provider.fallback` event for every decision.
+`AVITY_PROVIDER_CHAIN` defines the global order. `AVITY_ROLE_PROVIDERS` can
+prefer providers per team, for example:
+
+```text
+frontend=cursor|codex,backend=claude-code|codex,cybersecurity=codex|claude-code
+```
+
+Only adapters with workspace-edit capability can author repository missions.
+The deterministic policy applies wait-for-reset → bounded retry → next model →
+next provider → user escalation. An independent reviewer prefers a provider
+different from the author when one is configured.
 
 ## Adding a provider
 
-1. Implement `ProviderAdapter` in `packages/providers/src/<name>.ts`.
-2. Map every failure to a category (`normalizeHttpStatus` helps for HTTP).
-3. Register it in the control plane's provider map (`main.ts`).
-4. Add contract tests with an injected `fetchImpl` (see
-   `providers.test.ts`) — no network in tests.
-
-## Credentials status
-
-The OpenAI, Anthropic and DeepSeek adapters are implemented and
-contract-tested against injected responses. Final live verification
-requires real API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`DEEPSEEK_API_KEY`) — set them and register the adapters in
-`services/control-plane/src/main.ts`; nothing else changes.
+1. Implement `ProviderAdapter` and declare capabilities conservatively.
+2. Normalize every failure; never leak raw credentials in messages/logs.
+3. Register it from environment configuration in `providers.ts`.
+4. Add contract tests with injected transport/process behavior.
+5. Add an optional, separately invoked live smoke test if credentials exist.

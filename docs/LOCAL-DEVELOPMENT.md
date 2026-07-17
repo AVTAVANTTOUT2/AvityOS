@@ -22,15 +22,17 @@ pnpm --filter @avityos/worker start          # optional terminal worker
 cd apps/macos && swift run AvityOS           # optional native app
 ```
 
-The web UI badge shows **Live** when connected, **Démo** (with sample
-fixtures) when the control plane is down, so a broken backend is always
-visible.
+The web UI badge shows **Live** when connected and **Hors ligne** when the
+control plane cannot be reached. Sample fixtures are used only when
+`VITE_AVITY_DEMO=1`, with a visible **Démo** badge.
 
 ## Verification
 
 ```sh
-pnpm verify         # typecheck + tests + builds, every package
-pnpm -r test        # tests only (59 tests, no network, no credentials)
+pnpm verify         # build + 99 tests + strict typecheck, every TS package
+pnpm verify:full    # above + Playwright E2E + Swift build/test
+pnpm licenses:check # 440-package license policy on the current lock install
+gitleaks detect --source . --redact
 ```
 
 ## Environment

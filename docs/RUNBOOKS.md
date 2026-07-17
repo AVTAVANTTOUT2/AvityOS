@@ -19,8 +19,8 @@
 ## Provider rate-limited or down
 
 Nothing to do within policy: the engine waits for reset when the reset fits
-the wait budget, retries with backoff, switches models when allowed, and
-escalates an approval otherwise. To change behavior, adjust engine config
+the wait budget, retries with backoff, switches models/providers when allowed,
+and escalates an approval otherwise. To change behavior, adjust engine config
 (`AVITY_MAX_*`, `allowModelSwitch`) and the provider's configured models.
 
 ## Worker offline / compromised
@@ -31,16 +31,19 @@ escalates an approval otherwise. To change behavior, adjust engine config
 - Compromised: `avity worker revoke <id>` immediately invalidates its
   token (hash comparison fails on next call). Re-enroll a clean host.
 
-## Web UI shows "Démo"
+## Web UI shows "Hors ligne"
 
 The control plane is unreachable from the browser. Check it is running,
-CORS is default-open, and `VITE_AVITY_API` points at the right origin.
+`VITE_AVITY_API` points at the right URL, the browser origin is present in
+`AVITY_ALLOWED_ORIGINS`, and the API token/session is valid. `Démo` appears
+only when `VITE_AVITY_DEMO=1`.
 
 ## Restart during active work
 
-Safe by design: restart the process. The reconciler fails orphaned runs
-exactly once, re-queues missions through the bounded correction loop, and
-never duplicates commits, PRs or paid requests (see scenario-6 test).
+Restart the process. The reconciler fails each orphaned run once and routes the
+mission through bounded correction. Clean-tree commit checks and unique PR rows
+avoid duplicate local Git/DB side effects. A vendor request interrupted before
+its result was persisted can be retried and may be billed again; inspect usage.
 
 ## Database corruption suspected
 

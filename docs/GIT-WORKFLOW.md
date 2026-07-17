@@ -13,16 +13,17 @@
   scope.
 - **Conflict detection**: `hasConflicts` dry-runs a merge with
   `git merge-tree --write-tree` — no working-tree mutation.
-- **No shell**: every git call is `execFile` with an argv array and
-  `GIT_TERMINAL_PROMPT=0`.
+- **No shell or untrusted hooks**: every call is argv-based with a scoped
+  environment; automated commits use `--no-verify` after explicit checks.
 - Completed/abandoned worktrees are removed with `removeWorktree`.
-- Pull requests are tracked first-class (`pull_requests` table,
-  `/v1/prs`), with `git.pr_opened` events.
+- Validated changes are committed, pushed to the configured GitHub remote and
+  create/update one draft PR per mission through non-interactive `gh`. After
+  independent review, the draft is marked ready; AvityOS never self-merges.
 
 Direct pushes to protected branches and force pushes are dangerous actions
-in the policy engine (approval required by default). Opening real GitHub
-PRs requires a GitHub credential and is performed via `gh`/API by the
-integration mission — recorded through `POST /v1/projects/:id/prs`.
+in the policy engine (approval required by default). Opening real GitHub PRs
+requires authenticated `git`/`gh`; failure blocks the mission and creates an
+intervention rather than silently completing.
 
 ## For this repository (build discipline)
 
@@ -30,5 +31,6 @@ integration mission — recorded through `POST /v1/projects/:id/prs`.
 - Small conventional commits (`feat(scope):`, `refactor:`, `docs:`,
   `chore:`, `ci:`), each leaving the repo buildable.
 - The Figma-derived frontend history is preserved (moved with `git mv`).
-- CI (typecheck, tests, builds, secret scan) runs on every PR.
+- CI (build, 99 tests, typecheck, Playwright, Swift, audit, licences,
+  Gitleaks and SBOM) runs on every PR.
 - The platform PR is opened for review and **not self-merged**.
