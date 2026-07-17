@@ -224,6 +224,19 @@ importers:
         specifier: 3.0.5
         version: 3.0.5(jiti@2.7.0)(lightningcss@1.30.1)
 
+  packages/orchestration:
+    dependencies:
+      '@avityos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: 3.0.5
+        version: 3.0.5(jiti@2.7.0)(lightningcss@1.30.1)
+
 packages:
 
   '@babel/code-frame@7.29.7':
