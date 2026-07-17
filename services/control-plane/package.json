@@ -1,0 +1,38 @@
+{
+  "name": "@avityos/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "avity-control-plane": "./bin/avity-control-plane.mjs"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@avityos/contracts": "workspace:*",
+    "@avityos/git": "workspace:*",
+    "@avityos/orchestration": "workspace:*",
+    "@avityos/policy": "workspace:*",
+    "@avityos/providers": "workspace:*",
+    "@fastify/cors": "10.0.2",
+    "fastify": "5.8.5",
+    "zod": "3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.1",
+    "typescript": "5.7.3",
+    "vitest": "3.2.6"
+  }
+}

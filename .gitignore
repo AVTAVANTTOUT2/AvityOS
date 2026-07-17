@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+.swiftpm/
+.build/
+DerivedData/
+
+# Local state and databases
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.avity/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and caches
+*.log
+.cache/
+coverage/
+apps/web/test-results/
+apps/web/playwright-report/
+license-report.json
+sbom.spdx.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

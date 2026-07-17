@@ -1,10 +1,9 @@
 packages:
-  - '.'
-supportedArchitectures:
-  os:
-    - linux
-  cpu:
-    - x64
-    - arm64
-  libc:
-    - glibc
+  - 'apps/*'
+  - 'services/*'
+  - 'packages/*'
+allowBuilds:
+  '@tailwindcss/oxide': true
+  esbuild: true
+overrides:
+  vite: 6.4.3

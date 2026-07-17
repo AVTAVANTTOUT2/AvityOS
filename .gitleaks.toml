@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Exact non-secret strings used by the redaction unit test"
+regexTarget = "match"
+regexes = [
+  '''key=sk-abcdefghijklmnop1234''',
+  '''token=sk-abcdefghijklmnop1234''',
+]

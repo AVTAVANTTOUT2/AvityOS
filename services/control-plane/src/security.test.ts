@@ -1,0 +1,177 @@
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
+import { commitAll, git, initRepo } from "@avityos/git";
+import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
+import { openDatabase } from "./db.js";
+import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
+import { buildServer } from "./server.js";
+import { Store } from "./store.js";
+
+const TOKEN = "test-secret-token";
+
+let app: FastifyInstance;
+let store: Store;
+let engine: Engine;
+let baseUrl: string;
+let scratch: string;
+
+beforeEach(async () => {
+  scratch = await mkdtemp(join(tmpdir(), "avity-sec-"));
+  const db = openDatabase(":memory:");
+  store = new Store(db);
+  const providers = new Map<string, ProviderAdapter>([["fake", new FakeProviderAdapter()]]);
+  engine = new Engine(store, providers, { ...DEFAULT_ENGINE_CONFIG, tickMs: 50 });
+  app = await buildServer({
+    store,
+    engine,
+    version: "test",
+    apiToken: TOKEN,
+    allowedOrigins: ["http://allowed.example"],
+  });
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const address = app.server.address();
+  baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+});
+
+afterEach(async () => {
+  await engine.stop();
+  await app.close();
+  await rm(scratch, { recursive: true, force: true });
+});
+
+const auth = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+
+async function makeRepoProject(): Promise<{ projectId: string; repo: string }> {
+  const repo = join(scratch, "repo");
+  await git(scratch, "init", "-b", "main", repo);
+  await initRepo(repo);
+  await writeFile(join(repo, "README.md"), "# sec\n");
+  await commitAll(repo, "chore: init");
+  const project = store.createProject({
+    name: "sec",
+    description: "",
+    repoPath: repo,
+    repoRemoteUrl: null,
+    autonomyProfile: "autonomous_with_checkpoints",
+  });
+  return { projectId: project.id, repo };
+}
+
+describe("API authentication", () => {
+  it("rejects requests without the bearer token", async () => {
+    expect((await fetch(`${baseUrl}/v1/projects`)).status).toBe(401);
+    expect((await fetch(`${baseUrl}/v1/projects`, { headers: { authorization: "Bearer wrong" } })).status).toBe(401);
+    expect((await fetch(`${baseUrl}/v1/projects`, { headers: auth })).status).toBe(200);
+  });
+
+  it("health stays reachable and SSE uses an HttpOnly session instead of a URL token", async () => {
+    expect((await fetch(`${baseUrl}/v1/health`)).status).toBe(200);
+    const login = await fetch(`${baseUrl}/v1/session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(login.status).toBe(200);
+    expect(login.headers.get("set-cookie")).toContain("HttpOnly");
+    const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+    const controller = new AbortController();
+    const res = await fetch(`${baseUrl}/v1/events/stream?afterSeq=0`, {
+      headers: { cookie },
+      signal: controller.signal,
+    });
+    expect(res.status).toBe(200);
+    controller.abort();
+    const denied = await fetch(`${baseUrl}/v1/events/stream?afterSeq=0&token=${TOKEN}`);
+    expect(denied.status).toBe(401);
+  });
+});
+
+describe("CORS origin allowlist", () => {
+  it("grants only allowlisted origins", async () => {
+    const allowed = await fetch(`${baseUrl}/v1/health`, { headers: { origin: "http://allowed.example" } });
+    expect(allowed.headers.get("access-control-allow-origin")).toBe("http://allowed.example");
+
+    const malicious = await fetch(`${baseUrl}/v1/health`, { headers: { origin: "http://evil.example" } });
+    expect(malicious.headers.get("access-control-allow-origin")).toBeNull();
+  });
+});
+
+describe("terminal execution boundary", () => {
+  it("ignores client-supplied cwd and binds to the project repository", async () => {
+    const { projectId, repo } = await makeRepoProject();
+    const res = await fetch(`${baseUrl}/v1/projects/${projectId}/terminals`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ command: ["pwd"], cwd: "/tmp" }), // cwd must be ignored
+    });
+    expect(res.status).toBe(201);
+    const { id } = (await res.json()) as { id: string };
+    const terminal = store.getTerminal(id)!;
+    expect(terminal.cwd).not.toBe("/tmp");
+    expect(terminal.cwd.endsWith("/repo") || terminal.cwd.includes(repo)).toBe(true);
+  });
+
+  it("refuses terminals for projects without a repository", async () => {
+    const project = store.createProject({
+      name: "norepo", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const res = await fetch(`${baseUrl}/v1/projects/${project.id}/terminals`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ command: ["pwd"] }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects mission worktrees that symlink outside the repository", async () => {
+    const { projectId } = await makeRepoProject();
+    const outside = join(scratch, "outside");
+    mkdirSync(outside, { recursive: true });
+    const link = join(scratch, "repo", ".avity", "escape");
+    mkdirSync(join(scratch, "repo", ".avity"), { recursive: true });
+    await symlink(outside, link);
+
+    const mission = store.createMission({
+      projectId, planId: null, milestoneId: null, title: "escape", role: "backend",
+      contract: {
+        objective: "x", rationale: "", context: [], allowedPaths: [], forbiddenPaths: [],
+        acceptanceCriteria: [], requiredChecks: [], checkCommands: {}, budgetUsd: null,
+        timeoutSeconds: null, expectedArtifacts: [],
+      },
+      priority: 50, dependsOn: [],
+    });
+    store.updateMissionMeta(mission.id, { worktreePath: link });
+
+    const res = await fetch(`${baseUrl}/v1/projects/${projectId}/terminals`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ command: ["pwd"], missionId: mission.id }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toContain("escapes");
+  });
+
+  it("treats interpreters as arbitrary-code capability: denied on project terminals", async () => {
+    const { projectId } = await makeRepoProject();
+    for (const command of [["node", "-e", "1"], ["npm", "run", "x"], ["pnpm", "dlx", "x"], ["bash", "-c", "id"]]) {
+      const res = await fetch(`${baseUrl}/v1/projects/${projectId}/terminals`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ command }),
+      });
+      expect(res.status).toBe(403);
+    }
+    // observation commands remain fine
+    const ok = await fetch(`${baseUrl}/v1/projects/${projectId}/terminals`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ command: ["ls"] }),
+    });
+    expect(ok.status).toBe(201);
+  });
+});
