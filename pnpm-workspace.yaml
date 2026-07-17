@@ -5,4 +5,3 @@ packages:
 allowBuilds:
   '@tailwindcss/oxide': true
   esbuild: true
-  better-sqlite3: true

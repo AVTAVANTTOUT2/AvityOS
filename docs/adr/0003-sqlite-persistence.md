@@ -1,4 +1,4 @@
-# ADR-0003: SQLite (better-sqlite3) persistence with in-repo migrations
+# ADR-0003: SQLite (node:sqlite) persistence with in-repo migrations
 
 Status: accepted
 Date: 2026-07-17
@@ -11,7 +11,10 @@ daemon), transactional, and recoverable.
 
 ## Decision
 
-- Use SQLite via `better-sqlite3` (synchronous, transactional, zero-config).
+- Use SQLite via the built-in `node:sqlite` module (synchronous,
+  transactional, zero-config, **zero native dependencies** — Node ≥ 22.5 ships
+  it; the repo pins Node ≥ 20 for tooling but the control plane requires the
+  sqlite-capable runtime).
 - One database file per AvityOS instance under `~/.avity/` (configurable);
   every table carries `project_id` scoping enforced in the data layer.
 - Migrations are ordered SQL files applied transactionally at startup by a
