@@ -9,7 +9,11 @@ jobs:
   verify:
     runs-on: macos-14
     steps:
+      # Gitleaks compares the complete PR commit range. A shallow checkout
+      # omits the base commit and makes the action fail before scanning.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
