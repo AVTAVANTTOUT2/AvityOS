@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import * as demo from "../demo/fixtures";
 import { DataContext, type AppData } from "../lib/data";
 import { CommandPalette } from "./components/CommandPalette";
+import { NewProjectModal } from "./components/NewProjectModal";
 import { InterventionsScreen } from "./screens/InterventionsScreen";
 import { MissionsScreen } from "./screens/MissionsScreen";
 import { ProjectDetailScreen } from "./screens/ProjectDetailScreen";
@@ -29,6 +30,7 @@ function makeData(overrides: Partial<AppData> = {}): AppData {
     refresh: vi.fn(),
     actions: {
       createProject: vi.fn(async () => ({ ok: true, detail: "" })),
+      updateProject: vi.fn(async () => ({ ok: true, detail: "" })),
       answerIntervention: vi.fn(async () => undefined),
       transitionMission: vi.fn(async () => ({ ok: true, detail: "" })),
       cancelTerminal: vi.fn(async () => ({ ok: true, detail: "" })),
@@ -36,6 +38,78 @@ function makeData(overrides: Partial<AppData> = {}): AppData {
     ...overrides,
   };
 }
+
+describe("complete project onboarding", () => {
+  it("transmits every displayed field and multiple acceptance criteria", async () => {
+    const data = makeData({ mode: "live" });
+    renderWithData(<NewProjectModal onClose={vi.fn()} />, data);
+    await userEvent.type(screen.getByLabelText("Nom du projet"), "Imported project");
+    await userEvent.type(screen.getByLabelText("Objectif"), "Deliver a complete persisted onboarding flow");
+    await userEvent.type(screen.getByLabelText("Critère d'acceptation 1"), "repository is validated");
+    await userEvent.click(screen.getByRole("button", { name: "Ajouter un critère" }));
+    await userEvent.type(screen.getByLabelText("Critère d'acceptation 2"), "CLI and web agree");
+    await userEvent.click(screen.getByRole("button", { name: /Continuer/ }));
+
+    await userEvent.click(screen.getByRole("radio", { name: "Importer un dépôt existant" }));
+    await userEvent.type(screen.getByLabelText("Chemin local du dépôt"), "/srv/imported");
+    await userEvent.type(screen.getByLabelText("Remote GitHub"), "git@github.com:example/imported.git");
+    await userEvent.clear(screen.getByLabelText("Branche principale"));
+    await userEvent.type(screen.getByLabelText("Branche principale"), "develop");
+    await userEvent.click(screen.getByRole("button", { name: /Continuer/ }));
+
+    await userEvent.click(screen.getByRole("radio", { name: /Autonomie maximale/ }));
+    await userEvent.type(screen.getByLabelText("Budget maximal (USD)"), "125");
+    await userEvent.clear(screen.getByLabelText("Seuil d'alerte (%)"));
+    await userEvent.type(screen.getByLabelText("Seuil d'alerte (%)"), "70");
+    await userEvent.click(screen.getByRole("button", { name: "Créer le projet" }));
+
+    expect(data.actions.createProject).toHaveBeenCalledWith({
+      name: "Imported project",
+      objective: "Deliver a complete persisted onboarding flow",
+      acceptanceCriteria: ["repository is validated", "CLI and web agree"],
+      autonomyProfile: "maximum_autonomy",
+      repoPath: "/srv/imported",
+      repoRemoteUrl: "git@github.com:example/imported.git",
+      defaultBranch: "develop",
+      budgetUsd: 125,
+      budgetWarnAtFraction: 0.7,
+    });
+  });
+
+  it("uses the public update action when editing a persisted project", async () => {
+    const data = makeData({ mode: "live" });
+    renderWithData(<NewProjectModal project={demo.PROJECTS[0]} onClose={vi.fn()} />, data);
+    await userEvent.click(screen.getByRole("button", { name: /Continuer/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Continuer/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+    expect(data.actions.updateProject).toHaveBeenCalledWith(String(demo.PROJECTS[0]!.id), expect.objectContaining({
+      name: demo.PROJECTS[0]!.name,
+      repoPath: demo.PROJECTS[0]!.repoPath,
+    }));
+  });
+
+  it("creates a greenfield project without transmitting a client repository path", async () => {
+    const data = makeData({ mode: "live" });
+    renderWithData(<NewProjectModal onClose={vi.fn()} />, data);
+    await userEvent.type(screen.getByLabelText("Nom du projet"), "Greenfield");
+    await userEvent.type(screen.getByLabelText("Objectif"), "Deliver a greenfield project configuration");
+    await userEvent.type(screen.getByLabelText("Critère d'acceptation 1"), "configuration is durable");
+    await userEvent.click(screen.getByRole("button", { name: /Continuer/ }));
+    expect(screen.getByRole("radio", { name: "Créer sans dépôt" })).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: /Continuer/ }));
+    expect(screen.queryByLabelText("Seuil d'alerte (%)")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Créer le projet" }));
+    expect(data.actions.createProject).toHaveBeenCalledWith(expect.objectContaining({
+      repoPath: null,
+      repoRemoteUrl: null,
+      defaultBranch: "main",
+      budgetUsd: null,
+    }));
+    expect(data.actions.createProject).toHaveBeenCalledWith(expect.not.objectContaining({
+      budgetWarnAtFraction: expect.anything(),
+    }));
+  });
+});
 
 function renderWithData(ui: ReactNode, data = makeData()) {
   return render(<DataContext.Provider value={data}>{ui}</DataContext.Provider>);
@@ -64,6 +138,9 @@ describe("project selection", () => {
     renderWithData(<ProjectDetailScreen projectId={2} onBack={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Plateforme Réservation" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "SaaS Facturation" })).not.toBeInTheDocument();
+    expect(screen.getByText("/demo/reservation")).toBeInTheDocument();
+    expect(screen.getByText("https://github.com/demo/reservation.git")).toBeInTheDocument();
+    expect(screen.getByText("Réservations testées de bout en bout")).toBeInTheDocument();
   });
 });
 

@@ -40,7 +40,26 @@ function requireArg(ctx: Ctx, index: number, name: string): string {
 
 function flag(ctx: Ctx, name: string): string | undefined {
   const idx = ctx.args.indexOf(`--${name}`);
-  return idx >= 0 ? ctx.args[idx + 1] : undefined;
+  const value = idx >= 0 ? ctx.args[idx + 1] : undefined;
+  return value && !value.startsWith("--") ? value : undefined;
+}
+
+function flagValues(ctx: Ctx, name: string): string[] {
+  return ctx.args.flatMap((value, index) => value === `--${name}` && ctx.args[index + 1] && !ctx.args[index + 1]!.startsWith("--")
+    ? [ctx.args[index + 1]!]
+    : []);
+}
+
+function hasFlag(ctx: Ctx, name: string): boolean {
+  return ctx.args.includes(`--${name}`);
+}
+
+function numberFlag(ctx: Ctx, name: string): number | undefined {
+  const value = flag(ctx, name);
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`--${name} must be a number`);
+  return parsed;
 }
 
 type Handler = (ctx: Ctx) => Promise<void>;
@@ -102,13 +121,50 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
   project: {
     create: async (ctx) => {
       const name = requireArg(ctx, 1, "name");
+      const warningPercent = numberFlag(ctx, "warn-at") ?? 80;
       const project = await ctx.client.post<Record<string, unknown>>("/v1/projects", {
         name,
         description: flag(ctx, "description") ?? "",
         autonomyProfile: flag(ctx, "autonomy") ?? "autonomous_with_checkpoints",
         repoPath: flag(ctx, "repo") ?? null,
+        repoRemoteUrl: flag(ctx, "remote") ?? null,
+        defaultBranch: flag(ctx, "branch") ?? "main",
+        objective: flag(ctx, "objective") ?? "",
+        acceptanceCriteria: flagValues(ctx, "criterion"),
+        budgetUsd: numberFlag(ctx, "budget") ?? null,
+        budgetWarnAtFraction: warningPercent / 100,
       });
       out(ctx, project, (p: Record<string, unknown>) => `created project ${p.id} (${p.name})`);
+    },
+    update: async (ctx) => {
+      const id = requireArg(ctx, 1, "project-id");
+      const input: Record<string, unknown> = {};
+      const values: [string, string][] = [
+        ["name", "name"],
+        ["description", "description"],
+        ["repo", "repoPath"],
+        ["remote", "repoRemoteUrl"],
+        ["branch", "defaultBranch"],
+        ["objective", "objective"],
+        ["autonomy", "autonomyProfile"],
+      ];
+      for (const [option, field] of values) {
+        const value = flag(ctx, option);
+        if (value !== undefined) input[field] = value;
+      }
+      const criteria = flagValues(ctx, "criterion");
+      if (criteria.length > 0 || hasFlag(ctx, "clear-criteria")) input.acceptanceCriteria = criteria;
+      const budget = numberFlag(ctx, "budget");
+      if (budget !== undefined) input.budgetUsd = budget;
+      if (hasFlag(ctx, "no-budget")) input.budgetUsd = null;
+      const warningPercent = numberFlag(ctx, "warn-at");
+      if (warningPercent !== undefined) input.budgetWarnAtFraction = warningPercent / 100;
+      if (hasFlag(ctx, "no-repo")) {
+        input.repoPath = null;
+        input.repoRemoteUrl = null;
+      }
+      const configuration = await ctx.client.patch<Record<string, unknown>>(`/v1/projects/${id}`, input);
+      out(ctx, configuration, () => `updated project ${id}`);
     },
     list: async (ctx) => {
       const { items } = await ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/projects");
@@ -116,13 +172,24 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
     },
     show: async (ctx) => {
       const id = requireArg(ctx, 1, "project-id");
-      const project = await ctx.client.get<Record<string, unknown>>(`/v1/projects/${id}`);
+      const configuration = await ctx.client.get<{
+        project: Record<string, unknown>;
+        objective: { text: string; acceptanceCriteria: string[] } | null;
+        budget: { limitUsd: number; spentUsd: number; warnAtFraction: number } | null;
+      }>(`/v1/projects/${id}/configuration`);
+      const project = configuration.project;
       const usage = await ctx.client.get<Record<string, unknown>>(`/v1/projects/${id}/usage`);
-      out(ctx, { project, usage }, (d: { project: Record<string, unknown>; usage: Record<string, unknown> }) =>
+      out(ctx, { ...configuration, usage }, (d: typeof configuration & { usage: Record<string, unknown> }) =>
         [
           `${d.project.name} (${d.project.id})`,
           `status: ${d.project.status}`,
+          `objective: ${d.objective?.text ?? "(none)"}`,
+          `criteria: ${d.objective?.acceptanceCriteria.join("; ") ?? "(none)"}`,
+          `repository: ${d.project.repoPath ?? "(none)"}`,
+          `remote: ${d.project.repoRemoteUrl ?? "(none)"}`,
+          `default branch: ${d.project.defaultBranch}`,
           `autonomy: ${d.project.autonomyProfile}`,
+          `budget: ${d.budget ? `$${d.budget.limitUsd} (warning at ${Math.round(d.budget.warnAtFraction * 100)}%)` : "unlimited"}`,
           `tokens: ${d.usage.inputTokens} in / ${d.usage.outputTokens} out, cost $${d.usage.costUsd}`,
         ].join("\n"),
       );
@@ -289,7 +356,11 @@ commands:
   login --url <url> [--token <token>]   configure control plane access
   doctor                                environment and connectivity checks
   status                                global summary
-  project create <name> | list | show <id>
+  project create <name> [--objective <text>] [--criterion <text> ...]
+         [--repo <path> --remote <github-url> --branch <name>]
+         [--autonomy <profile> --budget <usd> --warn-at <percent>]
+  project update <id> [same options] [--no-repo] [--no-budget] [--clear-criteria]
+  project list | show <id>
   objective submit <project-id> <text> [criteria...]
   plan show <project-id>
   mission list <project-id>

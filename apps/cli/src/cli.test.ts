@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -109,6 +110,52 @@ describe("avity CLI", () => {
     const status = await run("status");
     expect(status.code).toBe(0);
     expect(status.out).toContain("projects:");
+  });
+
+  it("creates and idempotently updates every onboarding option", async () => {
+    const repo = join(configDir, "onboarding-repo");
+    execFileSync("git", ["init", "-b", "main", repo]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "cli-test@example.invalid"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "CLI Test"]);
+    writeFileSync(join(repo, "README.md"), "# CLI onboarding\n");
+    execFileSync("git", ["-C", repo, "add", "README.md"]);
+    execFileSync("git", ["-C", repo, "commit", "-m", "chore: init"]);
+    execFileSync("git", ["-C", repo, "remote", "add", "origin", "git@github.com:example/cli-onboarding.git"]);
+
+    const created = await run(
+      "project", "create", "CLI Onboarding",
+      "--repo", repo,
+      "--remote", "https://github.com/example/cli-onboarding.git",
+      "--branch", "main",
+      "--objective", "Maybe deliver complete CLI onboarding configuration",
+      "--criterion", "repository is validated",
+      "--criterion", "budget is enforced",
+      "--autonomy", "maximum_autonomy",
+      "--budget", "75",
+      "--warn-at", "60",
+      "--json",
+    );
+    expect(created.code).toBe(0);
+    const project = JSON.parse(created.out) as { id: string };
+    let configuration = store.getProjectConfiguration(project.id)!;
+    expect(configuration.project.repoRemoteUrl).toBe("git@github.com:example/cli-onboarding.git");
+    expect(configuration.objective?.acceptanceCriteria).toEqual(["repository is validated", "budget is enforced"]);
+    expect(configuration.budget).toMatchObject({ limitUsd: 75, warnAtFraction: 0.6 });
+
+    const updateArgs = [
+      "project", "update", project.id,
+      "--objective", "Maybe deliver the revised CLI onboarding configuration",
+      "--criterion", "updated criterion",
+      "--budget", "100",
+      "--warn-at", "70",
+      "--json",
+    ];
+    expect((await run(...updateArgs)).code).toBe(0);
+    expect((await run(...updateArgs)).code).toBe(0);
+    configuration = store.getProjectConfiguration(project.id)!;
+    expect(configuration.objective?.revision).toBe(2);
+    expect(configuration.objective?.acceptanceCriteria).toEqual(["updated criterion"]);
+    expect(configuration.budget).toMatchObject({ limitUsd: 100, warnAtFraction: 0.7 });
   });
 
   it("lists providers and workers, enrolls and revokes", async () => {

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import * as demo from "../demo/fixtures";
-import { api, eventStream, type ApiEvent } from "./api";
+import { api, eventStream, type ApiEvent, type ProjectOnboardingInput } from "./api";
 
 /**
  * Single data source for every screen. In live mode the control plane is the
@@ -26,12 +26,8 @@ export interface AppData {
   diff: typeof demo.DIFF;
   refresh: () => void;
   actions: {
-    createProject: (input: {
-      name: string;
-      objective: string;
-      autonomy: string;
-      criteria: string[];
-    }) => Promise<{ ok: boolean; detail: string }>;
+    createProject: (input: ProjectOnboardingInput) => Promise<{ ok: boolean; detail: string }>;
+    updateProject: (projectId: string, input: ProjectOnboardingInput) => Promise<{ ok: boolean; detail: string }>;
     answerIntervention: (id: string, answer: string, decision: "approved" | "rejected") => Promise<void>;
     transitionMission: (id: string, to: string) => Promise<{ ok: boolean; detail: string }>;
     cancelTerminal: (id: string) => Promise<{ ok: boolean; detail: string }>;
@@ -71,6 +67,7 @@ const PROJECT_PHASE: Record<string, string> = {
 
 const EVENT_LABELS: Record<string, string> = {
   "project.created": "Projet créé",
+  "project.updated": "Projet mis à jour",
   "objective.submitted": "Objectif soumis",
   "clarification.requested": "Clarification demandée",
   "clarification.answered": "Clarification répondue",
@@ -147,11 +144,15 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
   ]);
 
   const projectNames = new Map(projectsRes.items.map((p) => [p.id, p.name]));
+  const projectBranches = new Map(projectsRes.items.map((p) => [p.id, p.defaultBranch]));
   const missionsByProject = await Promise.all(
     projectsRes.items.map(async (p) => ({ id: p.id, missions: (await api.missions(p.id)).items })),
   );
   const usageByProject = await Promise.all(
     projectsRes.items.map(async (p) => ({ id: p.id, usage: await api.usage(p.id) })),
+  );
+  const configurationByProject = await Promise.all(
+    projectsRes.items.map(async (p) => ({ id: p.id, configuration: await api.projectConfiguration(p.id) })),
   );
   const clarifications = (
     await Promise.all(projectsRes.items.map(async (p) => (await api.clarifications(p.id)).items))
@@ -162,6 +163,8 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
   const activeRuns = runsRes.items.filter((r) => ["queued", "starting", "running", "paused"].includes(r.state));
 
   const projects: typeof demo.PROJECTS = projectsRes.items.map((p) => {
+    const configuration = configurationByProject.find((item) => item.id === p.id)?.configuration;
+    const persistedProject = configuration?.project ?? p;
     const missions = missionsByProject.find((m) => m.id === p.id)?.missions ?? [];
     const done = missions.filter((m) => m.state === "completed").length;
     const usage = usageByProject.find((u) => u.id === p.id)?.usage;
@@ -169,18 +172,24 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     return {
       // Keep the control-plane identifier stable across refreshes and sort changes.
       id: p.id,
-      name: p.name,
-      goal: p.description || "—",
+      name: persistedProject.name,
+      goal: configuration?.objective?.text || persistedProject.description || "—",
       phase: PROJECT_PHASE[p.status] ?? p.status,
       progress: missions.length ? Math.round((done / missions.length) * 100) : 0,
       health: p.status === "blocked" ? "blocked" : p.status === "clarifying" ? "warning" : "good",
       activeAgents: running,
-      branch: "main",
+      branch: persistedProject.defaultBranch,
       lastActivity: relTime(p.updatedAt),
       nextCheckpoint: missions.find((m) => !["completed", "cancelled"].includes(m.state))?.title ?? "—",
       cost: `$${(usage?.costUsd ?? 0).toFixed(2)}`,
       status: p.status === "blocked" ? "blocked" : "active",
       apiId: p.id,
+      repoPath: persistedProject.repoPath,
+      repoRemoteUrl: persistedProject.repoRemoteUrl,
+      autonomyProfile: persistedProject.autonomyProfile,
+      budgetUsd: configuration?.budget?.limitUsd ?? null,
+      budgetWarnAtFraction: configuration?.budget?.warnAtFraction ?? 0.8,
+      acceptanceCriteria: configuration?.objective?.acceptanceCriteria ?? [],
     };
   });
 
@@ -281,7 +290,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     reviewer: "—",
     project: projectNames.get(pr.projectId) ?? pr.projectId,
     projectId: pr.projectId,
-    branch: `${pr.branch} → main`,
+    branch: `${pr.branch} → ${projectBranches.get(pr.projectId) ?? "—"}`,
     files: 0,
     risk: "faible",
     tests: "passing",
@@ -394,17 +403,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
     mode,
     refresh,
     actions: {
-      createProject: async ({ name, objective, autonomy, criteria }) => {
+      createProject: async (input) => {
         try {
-          const project = await api.createProject({ name, description: objective, autonomyProfile: autonomy });
-          const result = await api.submitObjective(project.id, objective, criteria);
+          const project = await api.createProject(input);
           refresh();
           return {
             ok: true,
-            detail: result.clarificationId
+            detail: project.clarificationId
               ? "Objectif soumis — une clarification est demandée dans Interventions."
-              : "Objectif soumis — planification démarrée.",
+              : "Projet créé — configuration persistée.",
           };
+        } catch (err) {
+          return { ok: false, detail: (err as Error).message };
+        }
+      },
+      updateProject: async (projectId, input) => {
+        try {
+          await api.updateProject(projectId, input);
+          refresh();
+          return { ok: true, detail: "Projet mis à jour — configuration persistée." };
         } catch (err) {
           return { ok: false, detail: (err as Error).message };
         }
