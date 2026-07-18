@@ -489,7 +489,19 @@ describe("repository-aware planning and provider capability gates", () => {
     expect(mission.contract.checkCommands.architecture_rule).toEqual(["git", "diff", "--check", "HEAD"]);
 
     engine.start();
-    await waitFor(() => store.getProject(project.id)!.status === "completed", 10_000);
+    await waitFor(() => {
+      const state = store.getMission(mission.id)!.state;
+      return store.getProject(project.id)!.status === "completed" || ["blocked", "failed", "cancelled"].includes(state);
+    }, 10_000);
+    const finalMission = store.getMission(mission.id)!;
+    expect(
+      store.getProject(project.id)!.status,
+      JSON.stringify({
+        missionState: finalMission.state,
+        stateReason: finalMission.stateReason,
+        checkpoints: store.listCheckpoints(mission.id),
+      }),
+    ).toBe("completed");
     expect(store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "architecture_rule")?.status).toBe("passed");
   }, 15_000);
 
