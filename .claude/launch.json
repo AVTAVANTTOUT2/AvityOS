@@ -6,6 +6,12 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@avityos/web", "dev"],
       "port": 5173
+    },
+    {
+      "name": "web-demo",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["VITE_AVITY_DEMO=1", "pnpm", "--filter", "@avityos/web", "dev"],
+      "port": 5173
     }
   ]
 }
