@@ -84,7 +84,7 @@ function sandboxInvocation(
       executable: bwrap,
       args: [
         "--die-with-parent", "--unshare-all", ...(allowNetwork ? ["--share-net"] : []),
-        "--ro-bind", "/", "/", "--tmpfs", "/home", "--tmpfs", "/root",
+        "--ro-bind", "/", "/", "--dev", "/dev", "--tmpfs", "/home", "--tmpfs", "/root",
         "--bind", cwd, cwd, "--bind", home, home,
         "--chdir", cwd, "--setenv", "HOME", home, "--setenv", "TMPDIR", home,
         executable, ...args,

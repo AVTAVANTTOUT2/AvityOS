@@ -1,0 +1,95 @@
+name: CI Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.11.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Linux system dependencies
+        run: sudo apt-get update
+
+      - name: Install Bubblewrap
+        run: |
+          sudo apt-get install -y apparmor-profiles bubblewrap
+
+          # Ubuntu 24.04 restricts unprivileged user namespaces through
+          # AppArmor. Load Ubuntu's dedicated profile: it grants bwrap the
+          # setup capabilities, then strips them from the sandboxed child.
+          profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          if [[ -f "$profile" && -e /sys/module/apparmor/parameters/enabled ]]; then
+            sudo install -m 0644 "$profile" /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser --replace /etc/apparmor.d/bwrap-userns-restrict
+          fi
+
+          bwrap --version
+
+          # Exercise the same fail-closed boundary used by AvityOS before
+          # running the repository E2E suite.
+          workspace=$(mktemp -d)
+          sandbox_home=$(mktemp -d)
+          trap 'rm -rf "$workspace" "$sandbox_home"' EXIT
+          printf 'input\n' > "$workspace/input"
+          bwrap \
+            --die-with-parent --unshare-all \
+            --ro-bind / / --dev /dev --tmpfs /home --tmpfs /root \
+            --bind "$workspace" "$workspace" \
+            --bind "$sandbox_home" "$sandbox_home" \
+            --chdir "$workspace" \
+            --setenv HOME "$sandbox_home" --setenv TMPDIR "$sandbox_home" \
+            /bin/sh -c 'test "$(cat input)" = input && : > /dev/null && printf sandbox-ok > output'
+          test "$(cat "$workspace/output")" = sandbox-ok
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Topological build first: tests import built workspace dependencies.
+      # Typecheck resolves types from src (source-aware exports) and is
+      # independently verified after.
+      - name: Build
+        run: pnpm -r build
+
+      - name: Test
+        run: pnpm -r test
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter @avityos/web exec playwright install --with-deps chromium
+
+      - name: Web browser E2E
+        run: pnpm --filter @avityos/web test:e2e
+
+      - name: Dependency vulnerability audit
+        run: pnpm audit --audit-level high
+
+      - name: Dependency license inventory
+        run: pnpm licenses:check
