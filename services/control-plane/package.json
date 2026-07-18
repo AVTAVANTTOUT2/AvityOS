@@ -27,7 +27,7 @@
     "@avityos/policy": "workspace:*",
     "@avityos/providers": "workspace:*",
     "@fastify/cors": "10.0.2",
-    "fastify": "5.8.5",
+    "fastify": "5.10.0",
     "zod": "3.24.1"
   },
   "devDependencies": {
