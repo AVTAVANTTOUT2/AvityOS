@@ -39,6 +39,13 @@ export const Project = z.object({
 });
 export type Project = z.infer<typeof Project>;
 
+export const ProjectBudget = z.object({
+  limitUsd: z.number().finite().nonnegative(),
+  spentUsd: z.number().finite().nonnegative(),
+  warnAtFraction: z.number().finite().min(0.01).max(1),
+});
+export type ProjectBudget = z.infer<typeof ProjectBudget>;
+
 export const Objective = z.object({
   ...base,
   projectId: Id,
@@ -48,6 +55,14 @@ export const Objective = z.object({
   analysisSummary: z.string().nullable(),
 });
 export type Objective = z.infer<typeof Objective>;
+
+/** Persisted onboarding state assembled from its normalized project tables. */
+export const ProjectConfiguration = z.object({
+  project: Project,
+  objective: Objective.nullable(),
+  budget: ProjectBudget.nullable(),
+});
+export type ProjectConfiguration = z.infer<typeof ProjectConfiguration>;
 
 export const ClarificationQuestion = z.object({
   id: Id,

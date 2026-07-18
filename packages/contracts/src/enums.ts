@@ -144,6 +144,7 @@ export type WorkerStatus = z.infer<typeof WorkerStatus>;
 
 export const EventType = z.enum([
   "project.created",
+  "project.updated",
   "project.status_changed",
   "objective.submitted",
   "objective.analyzed",

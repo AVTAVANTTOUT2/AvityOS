@@ -9,3 +9,8 @@ export {
   type ServerOptions,
 } from "./server.js";
 export { buildProviders, parseModelMap } from "./providers.js";
+export {
+  ProjectValidationError,
+  validateRepositoryConfiguration,
+  type RepositoryConfiguration,
+} from "./project-validation.js";

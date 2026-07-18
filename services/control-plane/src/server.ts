@@ -10,6 +10,7 @@ import {
   ResolveApprovalRequest,
   SubmitObjectiveRequest,
   TransitionMissionRequest,
+  UpdateProjectRequest,
   type ApiErrorCode,
   type EventEnvelope,
 } from "@avityos/contracts";
@@ -18,6 +19,7 @@ import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
 import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { Engine } from "./engine.js";
+import { ProjectValidationError, validateRepositoryConfiguration } from "./project-validation.js";
 import { newId, now, type Store } from "./store.js";
 
 export interface ServerOptions {
@@ -95,6 +97,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (err instanceof IllegalTransitionError) {
       return apiError(reply, 409, "illegal_transition", err.message);
     }
+    if (err instanceof ProjectValidationError) {
+      return apiError(reply, 400, "validation_failed", err.message);
+    }
     return apiError(reply, 500, "internal", err instanceof Error ? err.message : "unexpected internal error");
   });
 
@@ -130,15 +135,30 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       const existing = store.findIdempotent(body.idempotencyKey);
       if (existing) return reply.status(200).send(store.getProject(existing.resourceId));
     }
-    const project = store.createProject({
-      name: body.name,
-      description: body.description,
+    const repository = await validateRepositoryConfiguration({
       repoPath: body.repoPath,
       repoRemoteUrl: body.repoRemoteUrl,
-      autonomyProfile: body.autonomyProfile,
+      defaultBranch: body.defaultBranch,
     });
+    if (!body.objective && body.acceptanceCriteria.length > 0) {
+      throw new ProjectValidationError("acceptance criteria require a non-empty objective");
+    }
+    const configuration = store.createOnboardedProject({
+      name: body.name,
+      description: body.description,
+      ...repository,
+      autonomyProfile: body.autonomyProfile,
+      objective: body.objective,
+      acceptanceCriteria: body.acceptanceCriteria,
+      budgetUsd: body.budgetUsd,
+      budgetWarnAtFraction: body.budgetWarnAtFraction,
+    });
+    const project = configuration.project;
     if (body.idempotencyKey) store.recordIdempotent(body.idempotencyKey, "project", project.id);
-    return reply.status(201).send(project);
+    const analysis = configuration.objective
+      ? engine.analyzeObjective(project.id, configuration.objective.id)
+      : { clarificationId: null };
+    return reply.status(201).send({ ...store.getProject(project.id)!, ...analysis });
   });
 
   app.get("/v1/projects", async () => ({ items: store.listProjects() }));
@@ -148,6 +168,55 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const project = store.getProject(id);
     if (!project) return apiError(reply, 404, "not_found", `project ${id} not found`);
     return project;
+  });
+
+  app.get("/v1/projects/:id/configuration", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const configuration = store.getProjectConfiguration(id);
+    if (!configuration) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    return configuration;
+  });
+
+  app.patch("/v1/projects/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const existing = store.getProjectConfiguration(id);
+    if (!existing) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    const body = parse(UpdateProjectRequest, req.body);
+    const repoPath = body.repoPath !== undefined ? body.repoPath : existing.project.repoPath;
+    const repoRemoteUrl = body.repoPath === null
+      ? null
+      : body.repoRemoteUrl !== undefined
+        ? body.repoRemoteUrl
+        : existing.project.repoRemoteUrl;
+    const repository = await validateRepositoryConfiguration({
+      repoPath,
+      repoRemoteUrl,
+      defaultBranch: body.defaultBranch ?? existing.project.defaultBranch,
+    });
+    const objective = body.objective ?? existing.objective?.text ?? "";
+    const acceptanceCriteria = body.acceptanceCriteria ?? existing.objective?.acceptanceCriteria ?? [];
+    if (!objective && acceptanceCriteria.length > 0) {
+      throw new ProjectValidationError("acceptance criteria require a non-empty objective");
+    }
+    const budgetUsd = body.budgetUsd !== undefined ? body.budgetUsd : existing.budget?.limitUsd ?? null;
+    if (budgetUsd === null && body.budgetWarnAtFraction !== undefined) {
+      throw new ProjectValidationError("budget warning threshold requires a project budget");
+    }
+    const updated = store.updateProjectConfiguration(id, {
+      name: body.name ?? existing.project.name,
+      description: body.description ?? existing.project.description,
+      ...repository,
+      objective,
+      acceptanceCriteria,
+      autonomyProfile: body.autonomyProfile ?? existing.project.autonomyProfile,
+      budgetUsd,
+      budgetWarnAtFraction: body.budgetWarnAtFraction ?? existing.budget?.warnAtFraction ?? 0.8,
+    });
+    if (updated.objective?.id !== existing.objective?.id && updated.objective) {
+      engine.analyzeObjective(id, updated.objective.id);
+      return store.getProjectConfiguration(id);
+    }
+    return updated;
   });
 
   app.get("/v1/projects/:id/brain", async (req, reply) => {

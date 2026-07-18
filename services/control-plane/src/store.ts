@@ -13,6 +13,7 @@ import type {
   Objective,
   Plan,
   Project,
+  ProjectConfiguration,
   PullRequestRef,
   RunState,
 } from "@avityos/contracts";
@@ -159,6 +160,7 @@ export class Store {
     description: string;
     repoPath: string | null;
     repoRemoteUrl: string | null;
+    defaultBranch?: string;
     autonomyProfile: Project["autonomyProfile"];
   }): Project {
     const id = newId("prj");
@@ -166,10 +168,10 @@ export class Store {
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO projects (id, workspace_id, name, status, repo_path, repo_remote_url, autonomy_profile, description, created_at, updated_at)
-           VALUES (?, 'default', ?, 'draft', ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO projects (id, workspace_id, name, status, repo_path, repo_remote_url, default_branch, autonomy_profile, description, created_at, updated_at)
+           VALUES (?, 'default', ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, input.name, input.repoPath, input.repoRemoteUrl, input.autonomyProfile, input.description, ts, ts);
+        .run(id, input.name, input.repoPath, input.repoRemoteUrl, input.defaultBranch ?? "main", input.autonomyProfile, input.description, ts, ts);
       this.appendEvent("project.created", { projectId: id }, { name: input.name });
       this.appendAudit(id, "user", "project.create", `created project ${input.name}`);
     });
@@ -188,6 +190,105 @@ export class Store {
     return (this.db.prepare("SELECT * FROM projects ORDER BY created_at ASC").all() as Record<string, unknown>[]).map(
       rowToProject,
     );
+  }
+
+  getProjectConfiguration(id: string): ProjectConfiguration | null {
+    const project = this.getProject(id);
+    if (!project) return null;
+    return { project, objective: this.latestObjective(id), budget: this.getBudget(id) };
+  }
+
+  createOnboardedProject(input: {
+    name: string;
+    description: string;
+    repoPath: string | null;
+    repoRemoteUrl: string | null;
+    defaultBranch: string;
+    autonomyProfile: Project["autonomyProfile"];
+    objective: string;
+    acceptanceCriteria: string[];
+    budgetUsd: number | null;
+    budgetWarnAtFraction: number;
+  }): ProjectConfiguration {
+    let projectId = "";
+    const tx = this.db.transaction(() => {
+      const project = this.createProject(input);
+      projectId = project.id;
+      if (input.budgetUsd !== null) this.setBudget(project.id, input.budgetUsd, input.budgetWarnAtFraction);
+      if (input.objective) this.createObjective(project.id, input.objective, input.acceptanceCriteria);
+    });
+    tx();
+    return this.getProjectConfiguration(projectId)!;
+  }
+
+  updateProjectConfiguration(id: string, input: {
+    name: string;
+    description: string;
+    repoPath: string | null;
+    repoRemoteUrl: string | null;
+    defaultBranch: string;
+    autonomyProfile: Project["autonomyProfile"];
+    objective: string;
+    acceptanceCriteria: string[];
+    budgetUsd: number | null;
+    budgetWarnAtFraction: number;
+  }): ProjectConfiguration {
+    const existing = this.getProjectConfiguration(id);
+    if (!existing) throw new Error(`project ${id} not found`);
+    const changedFields: string[] = [];
+    const tx = this.db.transaction(() => {
+      const projectChanged =
+        existing.project.name !== input.name ||
+        existing.project.description !== input.description ||
+        existing.project.repoPath !== input.repoPath ||
+        existing.project.repoRemoteUrl !== input.repoRemoteUrl ||
+        existing.project.defaultBranch !== input.defaultBranch ||
+        existing.project.autonomyProfile !== input.autonomyProfile;
+      if (projectChanged) {
+        this.db.prepare(
+          `UPDATE projects
+           SET name = ?, description = ?, repo_path = ?, repo_remote_url = ?, default_branch = ?, autonomy_profile = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(
+          input.name,
+          input.description,
+          input.repoPath,
+          input.repoRemoteUrl,
+          input.defaultBranch,
+          input.autonomyProfile,
+          now(),
+          id,
+        );
+        changedFields.push("project");
+      }
+
+      const currentCriteria = existing.objective?.acceptanceCriteria ?? [];
+      const objectiveChanged =
+        Boolean(input.objective) &&
+        (existing.objective?.text !== input.objective ||
+          JSON.stringify(currentCriteria) !== JSON.stringify(input.acceptanceCriteria));
+      if (objectiveChanged) {
+        this.createObjective(id, input.objective, input.acceptanceCriteria);
+        changedFields.push("objective");
+      }
+
+      const budgetChanged = input.budgetUsd === null
+        ? existing.budget !== null
+        : existing.budget?.limitUsd !== input.budgetUsd ||
+          existing.budget.warnAtFraction !== input.budgetWarnAtFraction;
+      if (budgetChanged) {
+        if (input.budgetUsd === null) this.clearBudget(id);
+        else this.setBudget(id, input.budgetUsd, input.budgetWarnAtFraction);
+        changedFields.push("budget");
+      }
+
+      if (changedFields.length > 0) {
+        this.appendEvent("project.updated", { projectId: id }, { fields: changedFields });
+        this.appendAudit(id, "user", "project.update", `updated ${changedFields.join(", ")}`);
+      }
+    });
+    tx();
+    return this.getProjectConfiguration(id)!;
   }
 
   setProjectStatus(id: string, status: Project["status"]): void {
@@ -1153,6 +1254,10 @@ export class Store {
          ON CONFLICT(project_id) DO UPDATE SET limit_usd = excluded.limit_usd, warn_at_fraction = excluded.warn_at_fraction, updated_at = excluded.updated_at`,
       )
       .run(newId("bdg"), projectId, limitUsd, warnAtFraction, ts, ts);
+  }
+
+  clearBudget(projectId: string): void {
+    this.db.prepare("DELETE FROM budgets WHERE project_id = ?").run(projectId);
   }
 
   getBudget(projectId: string): { limitUsd: number; spentUsd: number; warnAtFraction: number } | null {

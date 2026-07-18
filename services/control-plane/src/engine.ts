@@ -244,6 +244,7 @@ export class Engine {
     );
 
     const detectedChecks = detectProjectChecks(project);
+    const budget = this.store.getBudget(project.id);
     let previousMissionId: string | null = null;
     for (const [i, criterion] of criteria.entries()) {
       const mission = this.store.createMission({
@@ -261,7 +262,7 @@ export class Engine {
           acceptanceCriteria: [criterion],
           requiredChecks: detectedChecks.requiredChecks,
           checkCommands: detectedChecks.checkCommands,
-          budgetUsd: null,
+          budgetUsd: budget?.limitUsd ?? null,
           timeoutSeconds: 900,
           expectedArtifacts: [],
           workspaceChangesRequired: project.repoPath !== null,
@@ -371,7 +372,15 @@ export class Engine {
     const budget = this.store.getBudget(project.id);
     if (budget) {
       const check = checkBudget(budget.limitUsd, budget.spentUsd, 0, budget.warnAtFraction);
-      if (!check.allowed) {
+      if (check.warn) {
+        this.store.appendEvent("budget.threshold", { projectId: project.id, missionId }, {
+          limitUsd: budget.limitUsd,
+          spentUsd: budget.spentUsd,
+          warnAtFraction: budget.warnAtFraction,
+          remainingUsd: check.remainingUsd,
+        });
+      }
+      if (!check.allowed || check.remainingUsd <= 0) {
         this.store.transitionMission(missionId, "blocked", "project budget exhausted");
         this.store.createApproval(project.id, missionId, "Budget exhausted", "Increase the budget or cancel remaining missions.");
         return;
