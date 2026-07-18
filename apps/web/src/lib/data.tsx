@@ -99,7 +99,7 @@ function relTime(iso: string): string {
 
 const DEMO_FORCED = (import.meta as { env?: Record<string, string> }).env?.VITE_AVITY_DEMO === "1";
 
-const DataContext = createContext<AppData | null>(null);
+export const DataContext = createContext<AppData | null>(null);
 
 export function useData(): AppData {
   const value = useContext(DataContext);
