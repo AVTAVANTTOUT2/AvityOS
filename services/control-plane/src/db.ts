@@ -333,6 +333,48 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       CREATE UNIQUE INDEX idx_pull_requests_mission ON pull_requests(mission_id) WHERE mission_id IS NOT NULL;
     `,
   },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE brain_runs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        objective_id TEXT NOT NULL REFERENCES objectives(id),
+        step TEXT NOT NULL,
+        state TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        provider_id TEXT,
+        model TEXT,
+        provenance TEXT NOT NULL DEFAULT 'live',
+        error_category TEXT,
+        error_detail TEXT,
+        input TEXT,
+        output TEXT,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_brain_runs_project ON brain_runs(project_id, created_at);
+      CREATE INDEX idx_brain_runs_objective ON brain_runs(objective_id, step, state);
+
+      ALTER TABLE plans ADD COLUMN objective_id TEXT;
+      ALTER TABLE plans ADD COLUMN provenance TEXT;
+      ALTER TABLE plans ADD COLUMN provider_id TEXT;
+      ALTER TABLE plans ADD COLUMN model TEXT;
+      ALTER TABLE plans ADD COLUMN snapshot_hash TEXT;
+      ALTER TABLE plans ADD COLUMN replan_trigger TEXT;
+      ALTER TABLE plans ADD COLUMN replan_cause TEXT;
+      ALTER TABLE plans ADD COLUMN replan_sources TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE plans ADD COLUMN based_on_version INTEGER;
+      ALTER TABLE plans ADD COLUMN analysis_run_id TEXT;
+      ALTER TABLE plans ADD COLUMN architecture_run_id TEXT;
+      ALTER TABLE plans ADD COLUMN plan_run_id TEXT;
+
+      ALTER TABLE missions ADD COLUMN logical_key TEXT;
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {

@@ -482,6 +482,7 @@ describe("repository-aware planning and provider capability gates", () => {
     });
     const objective = store.createObjective(project.id, "Create a durable project delivery report in the repository", ["delivery report exists"]);
     engine.analyzeObjective(project.id, objective.id);
+    await waitFor(() => store.listMissions(project.id).length > 0);
     const mission = store.listMissions(project.id)[0]!;
     expect(mission.contract.workspaceChangesRequired).toBe(true);
     expect(mission.contract.allowedPaths).toEqual(["**"]);
@@ -505,7 +506,7 @@ describe("repository-aware planning and provider capability gates", () => {
     expect(store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "architecture_rule")?.status).toBe("passed");
   }, 15_000);
 
-  it("serializes a project's generated missions while preserving cross-project concurrency", () => {
+  it("serializes a project's generated missions while preserving cross-project concurrency", async () => {
     ({ store, engine } = makeEngine(db, "fake:code"));
     const project = store.createProject({
       name: "Ordered", description: "", repoPath: repo, repoRemoteUrl: null,
@@ -517,6 +518,7 @@ describe("repository-aware planning and provider capability gates", () => {
       ["architecture baseline exists", "backend implementation exists", "QA evidence exists"],
     );
     engine.analyzeObjective(project.id, objective.id);
+    await waitFor(() => store.listMissions(project.id).length === 3);
     const missions = store.listMissions(project.id);
     const dependencies = store.listDependencies(project.id);
     expect(missions).toHaveLength(3);

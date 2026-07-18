@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type {
   Approval,
+  BrainProvenance,
+  BrainRun,
+  BrainRunState,
+  BrainStep,
   Checkpoint,
   Clarification,
   EventEnvelope,
@@ -15,6 +19,7 @@ import type {
   Project,
   ProjectConfiguration,
   PullRequestRef,
+  ReplanTrigger,
   RunState,
 } from "@avityos/contracts";
 import { assertMissionTransition, assertRunTransition } from "@avityos/orchestration";
@@ -494,6 +499,18 @@ export class Store {
       summary: r.summary as string,
       milestones: JSON.parse(r.milestones as string) as Plan["milestones"],
       active: Boolean(r.active),
+      objectiveId: (r.objective_id as string) ?? null,
+      provenance: (r.provenance as Plan["provenance"]) ?? null,
+      providerId: (r.provider_id as string) ?? null,
+      model: (r.model as string) ?? null,
+      snapshotHash: (r.snapshot_hash as string) ?? null,
+      replanTrigger: (r.replan_trigger as Plan["replanTrigger"]) ?? null,
+      replanCause: (r.replan_cause as string) ?? null,
+      replanSources: JSON.parse((r.replan_sources as string) ?? "[]") as string[],
+      basedOnVersion: (r.based_on_version as number) ?? null,
+      analysisRunId: (r.analysis_run_id as string) ?? null,
+      architectureRunId: (r.architecture_run_id as string) ?? null,
+      planRunId: (r.plan_run_id as string) ?? null,
     };
   }
 
@@ -502,6 +519,275 @@ export class Store {
       .prepare("SELECT id FROM plans WHERE project_id = ? AND active = 1 ORDER BY version DESC LIMIT 1")
       .get(projectId) as { id: string } | undefined;
     return r ? this.getPlan(r.id) : null;
+  }
+
+  listPlans(projectId: string): Plan[] {
+    const rows = this.db
+      .prepare("SELECT id FROM plans WHERE project_id = ? ORDER BY version ASC")
+      .all(projectId) as { id: string }[];
+    return rows.map((r) => this.getPlan(r.id)!);
+  }
+
+  // ── brain runs (durable AI planning pipeline) ────────────────────────────
+
+  createBrainRun(input: {
+    projectId: string;
+    objectiveId: string;
+    step: BrainStep;
+    attempt: number;
+    providerId: string | null;
+    model: string | null;
+    provenance: BrainProvenance;
+    input: string | null;
+  }): BrainRun {
+    const id = newId("brr");
+    const ts = now();
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO brain_runs (id, project_id, objective_id, step, state, attempt, provider_id, model, provenance, input, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          input.projectId,
+          input.objectiveId,
+          input.step,
+          input.attempt,
+          input.providerId,
+          input.model,
+          input.provenance,
+          input.input === null ? null : redactSecrets(input.input),
+          ts,
+          ts,
+        );
+      this.appendEvent("brain.step_changed", { projectId: input.projectId }, {
+        brainRunId: id,
+        objectiveId: input.objectiveId,
+        step: input.step,
+        state: "running",
+        attempt: input.attempt,
+        provider: input.providerId,
+        model: input.model,
+        provenance: input.provenance,
+      });
+    });
+    tx();
+    return this.getBrainRun(id)!;
+  }
+
+  finishBrainRun(
+    id: string,
+    result: {
+      state: Exclude<BrainRunState, "running">;
+      output?: unknown;
+      errorCategory?: string | null;
+      errorDetail?: string | null;
+      inputTokens?: number;
+      outputTokens?: number;
+      costUsd?: number;
+    },
+  ): BrainRun {
+    const run = this.getBrainRun(id);
+    if (!run) throw new Error(`brain run ${id} not found`);
+    const ts = now();
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE brain_runs SET state = ?, output = ?, error_category = ?, error_detail = ?,
+             input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cost_usd = cost_usd + ?,
+             updated_at = ? WHERE id = ?`,
+        )
+        .run(
+          result.state,
+          result.output === undefined ? null : redactSecrets(JSON.stringify(result.output)),
+          result.errorCategory ?? null,
+          result.errorDetail === undefined || result.errorDetail === null
+            ? null
+            : redactSecrets(result.errorDetail).slice(0, 2000),
+          result.inputTokens ?? 0,
+          result.outputTokens ?? 0,
+          result.costUsd ?? 0,
+          ts,
+          id,
+        );
+      this.appendEvent("brain.step_changed", { projectId: run.projectId }, {
+        brainRunId: id,
+        objectiveId: run.objectiveId,
+        step: run.step,
+        state: result.state,
+        attempt: run.attempt,
+        provider: run.providerId,
+        model: run.model,
+        provenance: run.provenance,
+        ...(result.errorCategory ? { errorCategory: result.errorCategory } : {}),
+      });
+    });
+    tx();
+    return this.getBrainRun(id)!;
+  }
+
+  getBrainRun(id: string): BrainRun | null {
+    const r = this.db.prepare("SELECT * FROM brain_runs WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? rowToBrainRun(r) : null;
+  }
+
+  listBrainRuns(projectId: string, objectiveId?: string): BrainRun[] {
+    const rows = (
+      objectiveId
+        ? this.db
+            .prepare("SELECT * FROM brain_runs WHERE project_id = ? AND objective_id = ? ORDER BY rowid ASC")
+            .all(projectId, objectiveId)
+        : this.db.prepare("SELECT * FROM brain_runs WHERE project_id = ? ORDER BY rowid ASC").all(projectId)
+    ) as Record<string, unknown>[];
+    return rows.map(rowToBrainRun);
+  }
+
+  /** Orphaned pipeline attempts from a dead process (recovery, once). */
+  listOrphanBrainRuns(): BrainRun[] {
+    const rows = this.db
+      .prepare("SELECT * FROM brain_runs WHERE state = 'running' ORDER BY rowid ASC")
+      .all() as Record<string, unknown>[];
+    return rows.map(rowToBrainRun);
+  }
+
+  /**
+   * Persist a validated AI plan atomically: cancel the previous plan's
+   * legally cancellable missions, deactivate old plan versions, insert the
+   * new version, mint server ids for every proposed mission, resolve logical
+   * dependency keys and activate the project — all in one transaction.
+   * Refuses to persist against a superseded objective revision.
+   */
+  createBrainPlan(input: {
+    projectId: string;
+    objectiveId: string;
+    summary: string;
+    milestones: Plan["milestones"];
+    provenance: BrainProvenance;
+    providerId: string | null;
+    model: string | null;
+    snapshotHash: string | null;
+    analysisRunId: string | null;
+    architectureRunId: string | null;
+    planRunId: string | null;
+    replan: { trigger: ReplanTrigger; cause: string; sources: string[]; basedOnVersion: number } | null;
+    missions: {
+      logicalKey: string;
+      title: string;
+      role: Mission["role"];
+      milestoneId: string | null;
+      contract: Mission["contract"];
+      priority: number;
+      dependsOnKeys: string[];
+    }[];
+  }): { plan: Plan; missions: Mission[] } {
+    const CANCELLABLE: readonly MissionState[] = ["proposed", "ready", "paused", "blocked"];
+    let planId = "";
+    const missionIds: string[] = [];
+    const tx = this.db.transaction(() => {
+      const latest = this.latestObjective(input.projectId);
+      if (!latest || latest.id !== input.objectiveId) {
+        throw new Error(`objective ${input.objectiveId} was superseded; refusing to persist a stale plan`);
+      }
+
+      const version = (this.db
+        .prepare("SELECT COALESCE(MAX(version), 0) + 1 AS v FROM plans WHERE project_id = ?")
+        .get(input.projectId) as { v: number }).v;
+
+      for (const mission of this.listMissions(input.projectId)) {
+        if (mission.planId !== null && CANCELLABLE.includes(mission.state)) {
+          this.transitionMission(mission.id, "cancelled", `superseded by plan v${version}`);
+        }
+      }
+
+      planId = newId("pln");
+      const ts = now();
+      this.db.prepare("UPDATE plans SET active = 0, updated_at = ? WHERE project_id = ?").run(ts, input.projectId);
+      this.db
+        .prepare(
+          `INSERT INTO plans (id, project_id, version, summary, milestones, active, objective_id, provenance,
+             provider_id, model, snapshot_hash, replan_trigger, replan_cause, replan_sources, based_on_version,
+             analysis_run_id, architecture_run_id, plan_run_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          planId,
+          input.projectId,
+          version,
+          input.summary,
+          JSON.stringify(input.milestones),
+          input.objectiveId,
+          input.provenance,
+          input.providerId,
+          input.model,
+          input.snapshotHash,
+          input.replan?.trigger ?? null,
+          input.replan?.cause ?? null,
+          JSON.stringify(input.replan?.sources ?? []),
+          input.replan?.basedOnVersion ?? null,
+          input.analysisRunId,
+          input.architectureRunId,
+          input.planRunId,
+          ts,
+          ts,
+        );
+      this.appendEvent(version === 1 ? "plan.created" : "plan.updated", { projectId: input.projectId }, {
+        planId,
+        version,
+        provenance: input.provenance,
+        provider: input.providerId,
+        model: input.model,
+        snapshotHash: input.snapshotHash,
+      });
+      if (input.replan) {
+        this.appendEvent("plan.replanned", { projectId: input.projectId }, {
+          planId,
+          version,
+          basedOnVersion: input.replan.basedOnVersion,
+          trigger: input.replan.trigger,
+          cause: input.replan.cause,
+          sources: input.replan.sources,
+        });
+        this.appendAudit(
+          input.projectId,
+          "engine",
+          "plan.replanned",
+          `v${input.replan.basedOnVersion} -> v${version} (${input.replan.trigger}): ${input.replan.cause}`.slice(0, 500),
+        );
+      }
+
+      const idByKey = new Map<string, string>();
+      for (const mission of input.missions) {
+        const created = this.createMission({
+          projectId: input.projectId,
+          planId,
+          milestoneId: mission.milestoneId,
+          title: mission.title,
+          role: mission.role,
+          contract: mission.contract,
+          priority: mission.priority,
+          dependsOn: [],
+          logicalKey: mission.logicalKey,
+        });
+        idByKey.set(mission.logicalKey, created.id);
+        missionIds.push(created.id);
+      }
+      for (const mission of input.missions) {
+        const missionId = idByKey.get(mission.logicalKey)!;
+        for (const key of mission.dependsOnKeys) {
+          const dependsOnId = idByKey.get(key);
+          if (!dependsOnId) throw new Error(`unresolved mission dependency key: ${key}`);
+          this.db
+            .prepare("INSERT INTO mission_deps (mission_id, depends_on_mission_id) VALUES (?, ?)")
+            .run(missionId, dependsOnId);
+        }
+      }
+      this.setProjectStatus(input.projectId, "active");
+    });
+    tx();
+    return { plan: this.getPlan(planId)!, missions: missionIds.map((id) => this.getMission(id)!) };
   }
 
   // ── missions ─────────────────────────────────────────────────────────────
@@ -516,14 +802,15 @@ export class Store {
     priority: number;
     dependsOn: string[];
     maxCorrectionAttempts?: number;
+    logicalKey?: string | null;
   }): Mission {
     const id = newId("msn");
     const ts = now();
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO missions (id, project_id, plan_id, milestone_id, title, role, state, contract, priority, max_correction_attempts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?)`,
+          `INSERT INTO missions (id, project_id, plan_id, milestone_id, title, role, state, contract, priority, max_correction_attempts, logical_key, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -535,6 +822,7 @@ export class Store {
           JSON.stringify(input.contract),
           input.priority,
           input.maxCorrectionAttempts ?? 3,
+          input.logicalKey ?? null,
           ts,
           ts,
         );
@@ -1304,6 +1592,7 @@ function rowToMission(r: Record<string, unknown>): Mission {
     maxCorrectionAttempts: r.max_correction_attempts as number,
     priority: r.priority as number,
     stateReason: (r.state_reason as string) ?? null,
+    logicalKey: (r.logical_key as string) ?? null,
   };
 }
 
@@ -1326,6 +1615,28 @@ function rowToRun(r: Record<string, unknown>): AgentRun {
     inputTokens: r.input_tokens as number,
     outputTokens: r.output_tokens as number,
     costUsd: r.cost_usd as number,
+  };
+}
+
+function rowToBrainRun(r: Record<string, unknown>): BrainRun {
+  return {
+    id: r.id as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+    projectId: r.project_id as string,
+    objectiveId: r.objective_id as string,
+    step: r.step as BrainRun["step"],
+    state: r.state as BrainRun["state"],
+    attempt: r.attempt as number,
+    providerId: (r.provider_id as string) ?? null,
+    model: (r.model as string) ?? null,
+    provenance: r.provenance as BrainRun["provenance"],
+    errorCategory: (r.error_category as BrainRun["errorCategory"]) ?? null,
+    errorDetail: (r.error_detail as string) ?? null,
+    inputTokens: r.input_tokens as number,
+    outputTokens: r.output_tokens as number,
+    costUsd: r.cost_usd as number,
+    output: r.output === null || r.output === undefined ? null : (JSON.parse(r.output as string) as unknown),
   };
 }
 
