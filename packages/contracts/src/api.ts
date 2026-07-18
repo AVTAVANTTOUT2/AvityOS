@@ -116,7 +116,10 @@ export const CreateProjectRequest = z
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
 export const UpdateProjectRequest = z
-  .object(ProjectOnboardingFields)
+  .object({
+    ...ProjectOnboardingFields,
+    objective: ObjectiveText.min(1, "objective cannot be empty; omit it to keep the current objective"),
+  })
   .partial()
   .refine((value) => Object.keys(value).length > 0, "at least one project field is required")
   .superRefine(repositoryFieldsAgree);

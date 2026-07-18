@@ -133,7 +133,20 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const body = parse(CreateProjectRequest, req.body);
     if (body.idempotencyKey) {
       const existing = store.findIdempotent(body.idempotencyKey);
-      if (existing) return reply.status(200).send(store.getProject(existing.resourceId));
+      if (existing) {
+        if (existing.resourceType !== "project") {
+          return apiError(reply, 409, "conflict", "idempotency key is already used by another resource");
+        }
+        const project = store.getProject(existing.resourceId);
+        if (!project) {
+          return apiError(reply, 409, "conflict", "idempotency key references a missing project");
+        }
+        const objective = store.latestObjective(project.id);
+        const clarificationId = objective
+          ? store.listClarifications(project.id, "open").find((item) => item.objectiveId === objective.id)?.id ?? null
+          : null;
+        return reply.status(200).send({ ...project, clarificationId });
+      }
     }
     const repository = await validateRepositoryConfiguration({
       repoPath: body.repoPath,
@@ -202,6 +215,34 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (budgetUsd === null && body.budgetWarnAtFraction !== undefined) {
       throw new ProjectValidationError("budget warning threshold requires a project budget");
     }
+
+    const objectiveChanged =
+      Boolean(objective) &&
+      (existing.objective?.text !== objective ||
+        JSON.stringify(existing.objective?.acceptanceCriteria ?? []) !== JSON.stringify(acceptanceCriteria));
+    if (objectiveChanged) {
+      const safelyCancellableStates = new Set(["proposed", "ready", "paused", "blocked"]);
+      const stalePlanMissions = store.listMissions(id).filter(
+        (mission) =>
+          mission.planId !== null &&
+          !["completed", "cancelled"].includes(mission.state),
+      );
+      const inFlight = stalePlanMissions.filter((mission) => !safelyCancellableStates.has(mission.state));
+      if (inFlight.length > 0) {
+        return apiError(
+          reply,
+          409,
+          "conflict",
+          `objective cannot be revised while missions are in flight or awaiting a decision: ${inFlight
+            .map((mission) => `${mission.id} (${mission.state})`)
+            .join(", ")}`,
+        );
+      }
+      for (const mission of stalePlanMissions) {
+        store.transitionMission(mission.id, "cancelled", "superseded by objective revision", "user");
+      }
+    }
+
     const updated = store.updateProjectConfiguration(id, {
       name: body.name ?? existing.project.name,
       description: body.description ?? existing.project.description,

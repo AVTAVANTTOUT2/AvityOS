@@ -180,4 +180,142 @@ describe("project onboarding API", () => {
     expect(firstConfig.budget?.limitUsd).toBe(10);
     expect(secondConfig.budget?.limitUsd).toBe(20);
   });
+
+  it("preserves the clarification identifier on an idempotent create retry", async () => {
+    const payload = {
+      name: "Idempotent clarification",
+      objective: "Maybe build something",
+      idempotencyKey: "project-onboarding-clarification",
+    };
+    const first = await createProject(payload);
+    const second = await createProject(payload);
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(200);
+    const firstBody = first.json() as { id: string; clarificationId: string | null };
+    const secondBody = second.json() as { id: string; clarificationId: string | null };
+    expect(firstBody.clarificationId).not.toBeNull();
+    expect(secondBody).toMatchObject({ id: firstBody.id, clarificationId: firstBody.clarificationId });
+  });
+
+  it("rejects a project create key already used by another resource type", async () => {
+    store.recordIdempotent("shared-key", "objective", "obj_missing");
+    const response = await createProject({ name: "Collision", idempotencyKey: "shared-key" });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.message).toContain("another resource");
+  });
+
+  it("cancels queued missions from the previous plan before creating a revised plan", async () => {
+    const created = await createProject({
+      name: "Replannable",
+      objective: "Deliver the initial implementation with complete and observable acceptance evidence",
+      acceptanceCriteria: ["initial one", "initial two"],
+    });
+    const id = (created.json() as { id: string }).id;
+    const previous = store.listMissions(id);
+    expect(previous).toHaveLength(2);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${id}`,
+      payload: {
+        objective: "Deliver the revised implementation with complete and observable acceptance evidence",
+        acceptanceCriteria: ["revised only"],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    for (const mission of previous) {
+      expect(store.getMission(mission.id)?.state).toBe("cancelled");
+    }
+    const activePlan = store.activePlan(id)!;
+    const activeMissions = store.listMissions(id).filter((mission) => mission.planId === activePlan.id);
+    expect(activeMissions).toHaveLength(1);
+    expect(activeMissions[0]?.contract.acceptanceCriteria).toEqual(["revised only"]);
+    await engine.tick();
+    for (const mission of previous) {
+      expect(store.getMission(mission.id)?.state).toBe("cancelled");
+    }
+  });
+
+  it("rejects objective revision while a previous-plan mission is in flight", async () => {
+    const created = await createProject({
+      name: "In flight",
+      objective: "Deliver an implementation that can be protected from concurrent replanning safely",
+      acceptanceCriteria: ["one mission is created"],
+    });
+    const id = (created.json() as { id: string }).id;
+    const mission = store.listMissions(id)[0]!;
+    store.transitionMission(mission.id, "ready", "test");
+    store.transitionMission(mission.id, "assigned", "test");
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${id}`,
+      payload: {
+        objective: "Replace the objective while execution is already in flight",
+        acceptanceCriteria: ["replacement"],
+      },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.message).toContain("missions are in flight");
+    expect(store.getProjectConfiguration(id)?.objective?.revision).toBe(1);
+  });
+
+  it("rejects objective revision while a failed mission can still be retried", async () => {
+    const created = await createProject({
+      name: "Retryable failure",
+      objective: "Keep failed mission decisions attached to the objective that produced them",
+      acceptanceCriteria: ["failed work cannot be silently superseded"],
+    });
+    const id = (created.json() as { id: string }).id;
+    const mission = store.listMissions(id)[0]!;
+    store.transitionMission(mission.id, "ready", "test");
+    store.transitionMission(mission.id, "assigned", "test");
+    store.transitionMission(mission.id, "running", "test");
+    store.transitionMission(mission.id, "failed", "test");
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${id}`,
+      payload: { objective: "Replace the objective before retrying the failed mission" },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.message).toContain("awaiting a decision");
+    expect(store.getProjectConfiguration(id)?.objective?.revision).toBe(1);
+  });
+
+  it("does not supersede a plan when only non-objective project fields change", async () => {
+    const created = await createProject({
+      name: "Stable plan",
+      objective: "Keep the generated plan stable while editing unrelated project metadata",
+      acceptanceCriteria: ["the mission remains queued"],
+    });
+    const id = (created.json() as { id: string }).id;
+    const mission = store.listMissions(id)[0]!;
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${id}`,
+      payload: { name: "Renamed project" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(store.getMission(mission.id)?.state).toBe("proposed");
+    expect(store.getProjectConfiguration(id)?.objective?.revision).toBe(1);
+  });
+
+  it("rejects an explicit empty objective instead of silently keeping the old revision", async () => {
+    const created = await createProject({
+      name: "Objective retention",
+      objective: "Keep this durable objective unless an explicit supported replacement is provided",
+      acceptanceCriteria: ["objective remains durable"],
+    });
+    const id = (created.json() as { id: string }).id;
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${id}`,
+      payload: { objective: "", acceptanceCriteria: [] },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toContain("objective cannot be empty");
+    expect(store.getProjectConfiguration(id)?.objective?.revision).toBe(1);
+  });
 });
