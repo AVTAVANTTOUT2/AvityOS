@@ -38,8 +38,34 @@ jobs:
 
       - name: Install Bubblewrap
         run: |
-          sudo apt-get install -y bubblewrap
+          sudo apt-get install -y apparmor-profiles bubblewrap
+
+          # Ubuntu 24.04 restricts unprivileged user namespaces through
+          # AppArmor. Load Ubuntu's dedicated profile: it grants bwrap the
+          # setup capabilities, then strips them from the sandboxed child.
+          profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          if [[ -f "$profile" && -e /sys/module/apparmor/parameters/enabled ]]; then
+            sudo install -m 0644 "$profile" /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser --replace /etc/apparmor.d/bwrap-userns-restrict
+          fi
+
           bwrap --version
+
+          # Exercise the same fail-closed boundary used by AvityOS before
+          # running the repository E2E suite.
+          workspace=$(mktemp -d)
+          sandbox_home=$(mktemp -d)
+          trap 'rm -rf "$workspace" "$sandbox_home"' EXIT
+          printf 'input\n' > "$workspace/input"
+          bwrap \
+            --die-with-parent --unshare-all \
+            --ro-bind / / --tmpfs /home --tmpfs /root \
+            --bind "$workspace" "$workspace" \
+            --bind "$sandbox_home" "$sandbox_home" \
+            --chdir "$workspace" \
+            --setenv HOME "$sandbox_home" --setenv TMPDIR "$sandbox_home" \
+            /bin/sh -c 'test "$(cat input)" = input && printf sandbox-ok > output'
+          test "$(cat "$workspace/output")" = sandbox-ok
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
