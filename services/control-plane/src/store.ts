@@ -672,6 +672,8 @@ export class Store {
     analysisRunId: string | null;
     architectureRunId: string | null;
     planRunId: string | null;
+    /** Persisted in the same transaction as the plan for crash-safe replans. */
+    idempotencyKey: string | null;
     replan: { trigger: ReplanTrigger; cause: string; sources: string[]; basedOnVersion: number } | null;
     missions: {
       logicalKey: string;
@@ -682,11 +684,28 @@ export class Store {
       priority: number;
       dependsOnKeys: string[];
     }[];
-  }): { plan: Plan; missions: Mission[] } {
+  }): { plan: Plan; missions: Mission[]; created: boolean } {
     const CANCELLABLE: readonly MissionState[] = ["proposed", "ready", "paused", "blocked"];
     let planId = "";
+    let created = true;
     const missionIds: string[] = [];
     const tx = this.db.transaction(() => {
+      if (input.idempotencyKey) {
+        const existing = this.findIdempotent(input.idempotencyKey);
+        if (existing) {
+          if (existing.resourceType !== "plan") {
+            throw new Error(`idempotency key ${input.idempotencyKey} belongs to ${existing.resourceType}`);
+          }
+          const plan = this.getPlan(existing.resourceId);
+          if (!plan || plan.projectId !== input.projectId || plan.objectiveId !== input.objectiveId) {
+            throw new Error(`idempotency key ${input.idempotencyKey} points to an invalid plan`);
+          }
+          planId = plan.id;
+          created = false;
+          return;
+        }
+      }
+
       const latest = this.latestObjective(input.projectId);
       if (!latest || latest.id !== input.objectiveId) {
         throw new Error(`objective ${input.objectiveId} was superseded; refusing to persist a stale plan`);
@@ -697,6 +716,9 @@ export class Store {
         .get(input.projectId) as { v: number }).v;
 
       for (const mission of this.listMissions(input.projectId)) {
+        if (mission.planId !== null) {
+          this.withdrawOpenApprovalsForMission(mission.id, `superseded by plan v${version}`);
+        }
         if (mission.planId !== null && CANCELLABLE.includes(mission.state)) {
           this.transitionMission(mission.id, "cancelled", `superseded by plan v${version}`);
         }
@@ -784,10 +806,16 @@ export class Store {
             .run(missionId, dependsOnId);
         }
       }
+      if (input.idempotencyKey) {
+        this.recordIdempotent(input.idempotencyKey, "plan", planId);
+      }
       this.setProjectStatus(input.projectId, "active");
     });
     tx();
-    return { plan: this.getPlan(planId)!, missions: missionIds.map((id) => this.getMission(id)!) };
+    const missions = created
+      ? missionIds.map((id) => this.getMission(id)!)
+      : this.listMissions(input.projectId).filter((mission) => mission.planId === planId);
+    return { plan: this.getPlan(planId)!, missions, created };
   }
 
   // ── missions ─────────────────────────────────────────────────────────────
@@ -1143,6 +1171,32 @@ export class Store {
     });
     tx();
     return this.getApproval(id)!;
+  }
+
+  withdrawOpenApprovalsForMission(missionId: string, reason: string): number {
+    const mission = this.getMission(missionId);
+    if (!mission) throw new Error(`mission ${missionId} not found`);
+    let withdrawn = 0;
+    const tx = this.db.transaction(() => {
+      const approvals = this.db
+        .prepare("SELECT id FROM approvals WHERE mission_id = ? AND status = 'open' ORDER BY created_at ASC")
+        .all(missionId) as { id: string }[];
+      const ts = now();
+      for (const approval of approvals) {
+        const result = this.db
+          .prepare("UPDATE approvals SET status = 'withdrawn', updated_at = ? WHERE id = ? AND status = 'open'")
+          .run(ts, approval.id);
+        if (Number(result.changes) !== 1) continue;
+        withdrawn += 1;
+        this.appendEvent("approval.withdrawn", { projectId: mission.projectId, missionId }, {
+          approvalId: approval.id,
+          reason,
+        });
+        this.appendAudit(mission.projectId, "engine", "approval.withdraw", `${approval.id}: ${reason}`);
+      }
+    });
+    tx();
+    return withdrawn;
   }
 
   upsertCheckpoint(

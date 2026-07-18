@@ -194,6 +194,7 @@ export const EventType = z.enum([
   "checkpoint.updated",
   "approval.requested",
   "approval.resolved",
+  "approval.withdrawn",
   "policy.decision",
   "provider.status_changed",
   "provider.fallback",

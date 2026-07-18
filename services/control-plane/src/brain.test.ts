@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -339,6 +340,11 @@ describe("AI brain pipeline", () => {
     expect(planV2.replanCause).toContain("durable decision changed");
     expect(planV2.replanSources).toEqual(["decision:test"]);
     expect(planV2.basedOnVersion).toBe(planV1.version);
+    const causeHash = createHash("sha256").update("durable decision changed").digest("hex").slice(0, 16);
+    expect(store.findIdempotent(`replan:${project.id}:${objective.id}:new_evidence:${causeHash}`)).toEqual({
+      resourceType: "plan",
+      resourceId: planV2.id,
+    });
     // history preserved, old cancellable mission cancelled
     expect(store.getPlan(planV1.id)!.active).toBe(false);
     expect(store.getMission(mission.id)!.state).toBe("cancelled");
@@ -375,10 +381,27 @@ describe("AI brain pipeline", () => {
     expect(planV2.replanTrigger).toBe("mission_failed");
     expect(planV2.replanCause).toContain("failed after bounded correction");
     expect(planV2.replanSources.some((source) => source.startsWith("mission:"))).toBe(true);
-    // the failed mission is preserved with its intervention, never replaced
+    // the failed mission stays in history, but its stale intervention cannot
+    // restart v1 after v2 becomes active
     const failedV1 = store.listMissions(project.id).find((mission) => mission.planId === plans[0]!.id)!;
     expect(failedV1.state).toBe("failed");
-    expect(store.listApprovals("open", project.id).some((approval) => approval.title === "Correction limit reached")).toBe(true);
+    const staleApproval = store
+      .listApprovals(undefined, project.id)
+      .find((approval) => approval.missionId === failedV1.id && approval.title === "Correction limit reached")!;
+    expect(staleApproval.status).toBe("withdrawn");
+    expect(() => store.resolveApproval(staleApproval.id, "approved", "retry old work")).toThrow(/withdrawn/);
+
+    // defence in depth: even an already-answered stale approval from another
+    // process cannot execute a mission from an inactive plan
+    const injectedStale = store.createApproval(project.id, failedV1.id, "Stale retry", "test only");
+    store.resolveApproval(injectedStale.id, "approved", "simulate a cross-process race");
+    engine.applyApprovalDecision(injectedStale.id);
+    expect(store.getMission(failedV1.id)!.state).toBe("failed");
+    expect(
+      store.eventsAfter(0, project.id).some(
+        (event) => event.type === "approval.withdrawn" && event.payload.approvalId === staleApproval.id,
+      ),
+    ).toBe(true);
 
     // the second failure hits the replan bound: blocked, no infinite loop
     await waitFor(

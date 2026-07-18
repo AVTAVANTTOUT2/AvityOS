@@ -807,7 +807,8 @@ export class Engine {
   /**
    * Evidence-based replanning trigger: a plan mission that failed after its
    * bounded correction loop. Bounded and idempotent in the pipeline; the
-   * failed mission keeps its open approval and is never silently replaced.
+   * failed mission remains in history. If a replacement plan is committed,
+   * its stale approval is withdrawn atomically and cannot restart old work.
    */
   private maybeReplanAfterFailure(mission: Mission, reason: string): void {
     if (!mission.planId) return;
@@ -1016,7 +1017,19 @@ export class Engine {
       return;
     }
     const mission = this.store.getMission(approval.missionId);
-    if (!mission) return;
+    if (!mission || mission.projectId !== approval.projectId) return;
+    if (mission.planId) {
+      const activePlan = this.store.activePlan(mission.projectId);
+      if (!activePlan || activePlan.id !== mission.planId) {
+        this.store.appendAudit(
+          mission.projectId,
+          "engine",
+          "approval.stale_ignored",
+          `${approval.id}: mission ${mission.id} belongs to inactive plan ${mission.planId}`,
+        );
+        return;
+      }
+    }
     if (approval.decision === "approved") {
       if (mission.state === "blocked") {
         this.store.transitionMission(mission.id, "ready", "unblocked by user approval");

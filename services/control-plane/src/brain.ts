@@ -293,10 +293,12 @@ export class BrainPipeline {
         analysis: analysisResult,
         architecture: architectureResult,
         plan: planResult,
+        idempotencyKey: replanIdempotencyKey,
         replan: replan ? { ...replan, basedOnVersion: activePlan?.version ?? 0 } : null,
       });
-      if (replanIdempotencyKey) this.store.recordIdempotent(replanIdempotencyKey, "plan", persisted.plan.id);
-      return { status: "planned", plan: persisted.plan };
+      return persisted.created
+        ? { status: "planned", plan: persisted.plan }
+        : { status: "exists", plan: persisted.plan };
     } catch (err) {
       if (err instanceof BrainStopped || this.stopped) {
         return { status: "deferred", reason: "engine stopped during planning; recovery resumes it" };
@@ -524,8 +526,9 @@ export class BrainPipeline {
     analysis: StepResult<Analysis>;
     architecture: StepResult<Architecture>;
     plan: StepResult<PlanProposal>;
+    idempotencyKey: string | null;
     replan: (ReplanRequest & { basedOnVersion: number }) | null;
-  }): { plan: Plan; missions: Mission[] } {
+  }): { plan: Plan; missions: Mission[]; created: boolean } {
     const { project, objective } = input;
     const proposal = input.plan.value;
     const budget = this.store.getBudget(project.id);
@@ -547,6 +550,7 @@ export class BrainPipeline {
       analysisRunId: input.analysis.runId,
       architectureRunId: input.architecture.runId,
       planRunId: input.plan.runId,
+      idempotencyKey: input.idempotencyKey,
       replan: input.replan
         ? {
             trigger: input.replan.trigger,
@@ -579,6 +583,8 @@ export class BrainPipeline {
         },
       })),
     });
+
+    if (!persisted.created) return persisted;
 
     const fixtureNote =
       input.plan.provenance === "fake_fixture"
