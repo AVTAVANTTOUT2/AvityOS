@@ -82,7 +82,8 @@ function AppShell() {
   const [cmdK, setCmdK] = useState(false);
   const [macOS, setMacOS] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
-  const [showProject, setShowProject] = useState(false);
+  const [projectId, setProjectId] = useState<number | string | null>(null);
+  const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -93,20 +94,22 @@ function AppShell() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const handleNav = (s: string) => { setScreen(s); setShowProject(false); };
+  const showProject = projectId !== null;
+  const handleNav = (s: string) => { setScreen(s); setProjectId(null); setSettingsSection(undefined); };
+  const openProject = (id: number | string) => { setScreen("projects"); setProjectId(id); };
 
   const renderContent = () => {
-    if (showProject) return <ProjectDetailScreen onBack={() => setShowProject(false)} />;
+    if (projectId !== null) return <ProjectDetailScreen projectId={projectId} onBack={() => setProjectId(null)} />;
     switch (screen) {
       case "interventions": return <InterventionsScreen />;
       case "executions": return <TerminalsScreen />;
       case "github": return <CodePRScreen />;
-      case "providers": return <ProvidersScreen />;
+      case "providers": return <ProvidersScreen onConfigure={() => { setScreen("settings"); setProjectId(null); setSettingsSection("Providers"); }} />;
       case "activity": return <ActivityScreen />;
       case "agents": return <TeamScreen />;
-      case "settings": return <SettingsScreen />;
-      case "projects": return <ProjectsScreen onOpenProject={() => setShowProject(true)} onNewProject={() => setShowNewProject(true)} />;
-      default: return <MissionControl onNewProject={() => setShowNewProject(true)} onOpenProject={() => setShowProject(true)} />;
+      case "settings": return <SettingsScreen initialSection={settingsSection} />;
+      case "projects": return <ProjectsScreen onOpenProject={openProject} onNewProject={() => setShowNewProject(true)} />;
+      default: return <MissionControl onNewProject={() => setShowNewProject(true)} onOpenProject={openProject} onOpenInterventions={() => handleNav("interventions")} />;
     }
   };
 
@@ -118,6 +121,7 @@ function AppShell() {
           screen={showProject ? "projects" : screen}
           onNewProject={() => setShowNewProject(true)}
           onCmdK={() => setCmdK(true)}
+          onBell={() => handleNav("activity")}
           macOS={macOS}
           onToggleMacOS={() => setMacOS(v => !v)}
         />
@@ -138,9 +142,9 @@ function AppShell() {
             >
               <div className="h-10 bg-white/88 backdrop-blur-xl border-b border-black/[0.08] flex items-center px-4 gap-3 select-none flex-shrink-0">
                 <div className="flex gap-1.5">
-                  <div className="w-3 h-3 rounded-full bg-[#FF5F57] shadow-[0_0_0_0.5px_rgba(0,0,0,0.1)] cursor-pointer hover:brightness-90" />
-                  <div className="w-3 h-3 rounded-full bg-[#FEBC2E] shadow-[0_0_0_0.5px_rgba(0,0,0,0.1)] cursor-pointer hover:brightness-90" />
-                  <div className="w-3 h-3 rounded-full bg-[#28C840] shadow-[0_0_0_0.5px_rgba(0,0,0,0.1)] cursor-pointer hover:brightness-90" />
+                  <div className="w-3 h-3 rounded-full bg-[#FF5F57] shadow-[0_0_0_0.5px_rgba(0,0,0,0.1)]" />
+                  <div className="w-3 h-3 rounded-full bg-[#FEBC2E] shadow-[0_0_0_0.5px_rgba(0,0,0,0.1)]" />
+                  <div className="w-3 h-3 rounded-full bg-[#28C840] shadow-[0_0_0_0.5px_rgba(0,0,0,0.1)]" />
                 </div>
                 <div className="flex-1 text-center text-[11px] text-[#74716B] font-medium">AvityOS</div>
               </div>
@@ -152,7 +156,7 @@ function AppShell() {
         <div className="h-screen overflow-hidden">{inner}</div>
       )}
 
-      <CommandPalette open={cmdK} onClose={() => setCmdK(false)} onNavigate={handleNav} onNewProject={() => setShowNewProject(true)} />
+      <CommandPalette open={cmdK} onClose={() => setCmdK(false)} onNavigate={handleNav} onOpenProject={openProject} onNewProject={() => setShowNewProject(true)} />
       {showNewProject && <NewProjectModal onClose={() => setShowNewProject(false)} />}
     </>
   );

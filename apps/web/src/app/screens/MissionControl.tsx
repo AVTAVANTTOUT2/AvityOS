@@ -6,7 +6,11 @@ import { useData } from "../../lib/data";
 import { ProjectCard } from "../components/ProjectCard";
 import { Bar2, cn, Glass, StatusDot } from "../components/shared";
 
-export function MissionControl({ onNewProject, onOpenProject }: { onNewProject: () => void; onOpenProject: () => void }) {
+export function MissionControl({ onNewProject, onOpenProject, onOpenInterventions }: {
+  onNewProject: () => void;
+  onOpenProject: (id: number | string) => void;
+  onOpenInterventions: () => void;
+}) {
   const { projects: PROJECTS, interventions: INTERVENTIONS, consumption: CONSUMPTION, providers: PROVIDERS, agents, prs, kanban } = useData();
   const blocked = PROJECTS.filter(p => p.health === "blocked").length;
   const urgent = INTERVENTIONS.filter(i => i.urgency === "haute").length;
@@ -43,7 +47,7 @@ export function MissionControl({ onNewProject, onOpenProject }: { onNewProject: 
             </button>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            {PROJECTS.map(p => <ProjectCard key={p.id} p={p} onClick={onOpenProject} />)}
+            {PROJECTS.map(p => <ProjectCard key={p.id} p={p} onClick={() => onOpenProject(p.id)} />)}
           </div>
         </div>
 
@@ -56,7 +60,7 @@ export function MissionControl({ onNewProject, onOpenProject }: { onNewProject: 
             </div>
             <div className="space-y-2">
               {INTERVENTIONS.slice(0, 2).map(i => (
-                <div key={i.id} className="p-3 rounded-xl bg-[#F7F4EE] hover:bg-[#F0EDE7] cursor-pointer transition-colors">
+                <div key={i.id} onClick={onOpenInterventions} className="p-3 rounded-xl bg-[#F7F4EE] hover:bg-[#F0EDE7] cursor-pointer transition-colors">
                   <div className="flex items-start gap-2">
                     <div className={cn("w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0", i.urgency === "haute" ? "bg-orange-400" : "bg-blue-400")} />
                     <div>

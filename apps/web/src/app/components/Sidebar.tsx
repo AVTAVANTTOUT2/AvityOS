@@ -81,10 +81,10 @@ export function Sidebar({ current, onChange, macOS }: { current: string; onChang
           <TrendingUp size={11} className="text-[#74716B]" />
           <span className="text-[11px] text-[#74716B]">{`$${monthCost.toFixed(2)} ce mois`}</span>
         </div>
-        <button className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] text-[#74716B] hover:text-[#202124] hover:bg-black/[0.04] transition-all">
+        <div className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#74716B]">
           <div className="w-6 h-6 rounded-full bg-[#5267D9]/15 flex items-center justify-center text-[#5267D9] text-[10px] font-bold">A</div>
           <span>Alex Martin</span>
-        </button>
+        </div>
       </div>
     </div>
   );

@@ -57,17 +57,9 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
                 />
                 <p className="text-[10px] text-[#74716B] mt-1.5">Soyez précis — AvityOS adaptera le plan, l'équipe et les estimations.</p>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-1.5">Nom du projet</label>
-                  <input value={projectName} onChange={(e) => setProjectName(e.target.value)} className="w-full bg-[#F7F4EE] border border-black/[0.06] rounded-xl px-3 py-2.5 text-[12px] text-[#202124] focus:outline-none focus:ring-2 focus:ring-[#5267D9]/15" placeholder="Mon Projet SaaS" />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-1.5">Priorité</label>
-                  <select className="w-full bg-[#F7F4EE] border border-black/[0.06] rounded-xl px-3 py-2.5 text-[12px] text-[#202124] focus:outline-none focus:ring-2 focus:ring-[#5267D9]/15 appearance-none">
-                    <option>Haute</option><option>Normale</option><option>Faible</option>
-                  </select>
-                </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-1.5">Nom du projet</label>
+                <input value={projectName} onChange={(e) => setProjectName(e.target.value)} className="w-full bg-[#F7F4EE] border border-black/[0.06] rounded-xl px-3 py-2.5 text-[12px] text-[#202124] focus:outline-none focus:ring-2 focus:ring-[#5267D9]/15" placeholder="Mon Projet SaaS" />
               </div>
             </div>
           )}
@@ -94,20 +86,10 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
                   ))}
                 </div>
               </div>
-              <div>
-                <label className="block text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-1.5">Budget mensuel maximal (€)</label>
-                <input type="number" defaultValue={500} className="w-full bg-[#F7F4EE] border border-black/[0.06] rounded-xl px-3 py-2.5 text-[12px] focus:outline-none focus:ring-2 focus:ring-[#5267D9]/15" />
-              </div>
-              <div>
-                <label className="block text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-2">Providers autorisés</label>
-                <div className="flex flex-wrap gap-2">
-                  {["Anthropic Claude", "OpenAI GPT-4o", "DeepSeek", "Cursor"].map(pr => (
-                    <label key={pr} className="flex items-center gap-2 text-[11px] bg-[#F7F4EE] border border-black/[0.06] px-3 py-1.5 rounded-xl cursor-pointer hover:bg-[#F0EDE7] transition-all">
-                      <input type="checkbox" defaultChecked className="accent-[#5267D9]" />{pr}
-                    </label>
-                  ))}
-                </div>
-              </div>
+              <p className="text-[10px] text-[#74716B]">
+                Budget et providers autorisés se configurent côté control plane après création — seuls
+                le nom, l'objectif et le niveau d'autonomie sont transmis ici.
+              </p>
             </div>
           )}
           {step === 3 && (

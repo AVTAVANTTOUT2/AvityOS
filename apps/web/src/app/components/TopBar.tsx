@@ -2,8 +2,8 @@ import { Bell, Monitor, Plus, RefreshCw } from "lucide-react";
 import { useData } from "../../lib/data";
 import { cn } from "./shared";
 
-export function TopBar({ screen, onNewProject, onCmdK, macOS, onToggleMacOS }: {
-  screen: string; onNewProject: () => void; onCmdK: () => void;
+export function TopBar({ screen, onNewProject, onCmdK, onBell, macOS, onToggleMacOS }: {
+  screen: string; onNewProject: () => void; onCmdK: () => void; onBell: () => void;
   macOS: boolean; onToggleMacOS: () => void;
 }) {
   const { mode } = useData();
@@ -51,9 +51,13 @@ export function TopBar({ screen, onNewProject, onCmdK, macOS, onToggleMacOS }: {
         <RefreshCw size={11} />
         <span>{mode === "live" ? "Sync" : "Non synchronisé"}</span>
       </div>
-      <button className="relative p-2 rounded-xl hover:bg-black/[0.04] transition-all">
+      <button
+        onClick={onBell}
+        title="Voir le journal d'activité"
+        aria-label="Voir le journal d'activité"
+        className="relative p-2 rounded-xl hover:bg-black/[0.04] transition-all"
+      >
         <Bell size={14} strokeWidth={1.5} className="text-[#74716B]" />
-        <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#5267D9] rounded-full" />
       </button>
       <button
         onClick={onNewProject}

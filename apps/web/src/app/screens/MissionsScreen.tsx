@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Eye, Pause, Plus, RotateCcw, X } from "lucide-react";
+import { Bot, Pause, Play, X, XCircle } from "lucide-react";
 import { useData } from "../../lib/data";
 import { cn, Glass } from "../components/shared";
 
@@ -19,17 +19,29 @@ const TEST_LABELS: Record<string, string> = {
   passing: "✓ tests", running: "⟳ tests", pending: "· tests", failed: "✗ tests",
 };
 
-export function MissionsScreen() {
-  const { kanban: KANBAN } = useData();
+export function MissionsScreen({ project }: { project?: string }) {
+  const { kanban: KANBAN, actions, mode } = useData();
   const [sel, setSel] = useState<string | null>(null);
-  const allCards = Object.values(KANBAN).flat();
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const columns = Object.fromEntries(
+    Object.entries(KANBAN).map(([col, cards]) => [col, project ? cards.filter(c => c.project === project) : cards]),
+  );
+  const allCards = Object.values(columns).flat();
   const selCard = allCards.find(c => c.id === sel);
+
+  const runTransition = async (apiId: string, to: string) => {
+    setBusy(true);
+    const result = await actions.transitionMission(apiId, to);
+    setBusy(false);
+    setFeedback(result.detail);
+  };
 
   return (
     <div className="flex gap-4 h-full">
       <div className="flex-1 overflow-x-auto">
         <div className="flex gap-3 pb-4 min-w-max h-full">
-          {Object.entries(KANBAN).map(([col, cards]) => (
+          {Object.entries(columns).map(([col, cards]) => (
             <div key={col} className={cn("w-60 rounded-2xl p-3 flex-shrink-0", COL_STYLES[col])}>
               <div className="flex items-center gap-2 mb-3 px-1">
                 <span className="text-[11px] font-semibold text-[#202124]">{col}</span>
@@ -61,9 +73,6 @@ export function MissionsScreen() {
                     )}
                   </div>
                 ))}
-                <button className="w-full py-2 rounded-xl text-[10px] text-[#74716B] hover:text-[#202124] hover:bg-white/50 transition-all flex items-center justify-center gap-1">
-                  <Plus size={10} />Ajouter
-                </button>
               </div>
             </div>
           ))}
@@ -102,16 +111,59 @@ export function MissionsScreen() {
               </div>
             )}
           </div>
-          <div className="mt-5 pt-4 border-t border-black/[0.05] space-y-2">
-            <button className="w-full flex items-center gap-2 justify-center text-[11px] bg-[#5267D9] text-white py-2 rounded-xl hover:bg-[#4255C4] transition-all">
-              <Eye size={11} />Voir le terminal
-            </button>
-            <div className="grid grid-cols-2 gap-2">
-              <button className="flex items-center gap-1.5 justify-center text-[11px] bg-[#F7F4EE] text-[#202124] py-2 rounded-xl hover:bg-[#F0EDE7] transition-all"><Pause size={10} />Pause</button>
-              <button className="flex items-center gap-1.5 justify-center text-[11px] bg-[#F7F4EE] text-orange-600 py-2 rounded-xl hover:bg-orange-50 transition-all"><RotateCcw size={10} />Relancer</button>
-            </div>
-          </div>
+          <MissionActions
+            apiId={selCard.apiId}
+            state={selCard.state}
+            live={mode === "live"}
+            busy={busy}
+            feedback={feedback}
+            onTransition={runTransition}
+          />
         </Glass>
+      )}
+    </div>
+  );
+}
+
+const PAUSABLE_STATES = ["ready", "assigned", "running"];
+const TERMINAL_STATES = ["completed", "cancelled"];
+
+function MissionActions({ apiId, state, live, busy, feedback, onTransition }: {
+  apiId?: string;
+  state?: string;
+  live: boolean;
+  busy: boolean;
+  feedback: string | null;
+  onTransition: (apiId: string, to: string) => void;
+}) {
+  const canAct = live && !!apiId && !!state;
+  const offTitle = live ? "État de mission inconnu" : "Disponible uniquement connecté au control plane";
+  const resumable = state === "paused";
+  const pausable = !!state && PAUSABLE_STATES.includes(state);
+  const cancellable = !!state && !TERMINAL_STATES.includes(state);
+  return (
+    <div className="mt-5 pt-4 border-t border-black/[0.05] space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          disabled={!canAct || busy || (!pausable && !resumable)}
+          title={canAct ? (pausable || resumable ? undefined : `Transition indisponible depuis l'état « ${state} »`) : offTitle}
+          onClick={() => apiId && onTransition(apiId, resumable ? "ready" : "paused")}
+          className="flex items-center gap-1.5 justify-center text-[11px] bg-[#F7F4EE] text-[#202124] py-2 rounded-xl transition-all enabled:hover:bg-[#F0EDE7] disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {resumable ? <><Play size={10} />Reprendre</> : <><Pause size={10} />Pause</>}
+        </button>
+        <button
+          disabled={!canAct || busy || !cancellable}
+          title={canAct ? (cancellable ? undefined : "Mission déjà terminée") : offTitle}
+          onClick={() => apiId && onTransition(apiId, "cancelled")}
+          className="flex items-center gap-1.5 justify-center text-[11px] bg-[#F7F4EE] text-red-500 py-2 rounded-xl transition-all enabled:hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <XCircle size={10} />Annuler
+        </button>
+      </div>
+      {feedback && <div className="text-[10px] text-[#74716B]">{feedback}</div>}
+      {!canAct && (
+        <div className="text-[10px] text-[#74716B]">Actions de mission disponibles uniquement en mode live.</div>
       )}
     </div>
   );

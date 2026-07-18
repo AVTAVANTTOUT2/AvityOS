@@ -2,7 +2,7 @@ import { Plus } from "lucide-react";
 import { useData } from "../../lib/data";
 import { ProjectCard } from "../components/ProjectCard";
 
-export function ProjectsScreen({ onOpenProject, onNewProject }: { onOpenProject: () => void; onNewProject: () => void }) {
+export function ProjectsScreen({ onOpenProject, onNewProject }: { onOpenProject: (id: number | string) => void; onNewProject: () => void }) {
   const { projects: PROJECTS } = useData();
   return (
     <div className="space-y-4">
@@ -13,7 +13,7 @@ export function ProjectsScreen({ onOpenProject, onNewProject }: { onOpenProject:
         </button>
       </div>
       <div className="grid grid-cols-2 gap-4">
-        {PROJECTS.map(p => <ProjectCard key={p.id} p={p} onClick={onOpenProject} />)}
+        {PROJECTS.map(p => <ProjectCard key={p.id} p={p} onClick={() => onOpenProject(p.id)} />)}
       </div>
     </div>
   );

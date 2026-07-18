@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Zap } from "lucide-react";
 import {
   Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -6,9 +5,8 @@ import {
 import { useData } from "../../lib/data";
 import { Bar2, cn, Glass, StatusDot } from "../components/shared";
 
-export function ProvidersScreen() {
+export function ProvidersScreen({ onConfigure }: { onConfigure: () => void }) {
   const { providers: PROVIDERS, consumption: CONSUMPTION } = useData();
-  const [period, setPeriod] = useState("Semaine");
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
@@ -49,19 +47,15 @@ export function ProvidersScreen() {
             </div>
             <div className="mt-4 pt-4 border-t border-black/[0.05] flex items-center justify-between text-[10px]">
               <span className="flex items-center gap-1.5 text-[#74716B]"><Zap size={10} className="text-[#5267D9]" />Santé : {p.health}%</span>
-              <button className="text-[#5267D9] hover:underline">Configurer</button>
+              <button onClick={onConfigure} className="text-[#5267D9] hover:underline">Configurer</button>
             </div>
           </Glass>
         ))}
       </div>
       <Glass className="p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[13px] font-semibold text-[#202124]">Consommation tokens — par provider</h3>
-          <div className="flex rounded-xl overflow-hidden border border-black/[0.07]">
-            {["Aujourd'hui", "Semaine", "Mois"].map(t => (
-              <button key={t} onClick={() => setPeriod(t)} className={cn("text-[10px] px-3 py-1.5 transition-all", period === t ? "bg-[#5267D9] text-white" : "bg-white/80 text-[#74716B] hover:bg-[#F7F4EE]")}>{t}</button>
-            ))}
-          </div>
+          <h3 className="text-[13px] font-semibold text-[#202124]">Consommation tokens — par jour</h3>
+          <span className="text-[10px] text-[#74716B]">{CONSUMPTION.length ? `${CONSUMPTION.length} jour${CONSUMPTION.length > 1 ? "s" : ""} d'activité` : "aucune donnée"}</span>
         </div>
         <div className="h-44">
           <ResponsiveContainer width="100%" height="100%">

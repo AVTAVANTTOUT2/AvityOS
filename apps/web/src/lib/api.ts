@@ -147,6 +147,7 @@ export const api = {
     request("POST", `/v1/approvals/${id}/resolve`, { decision, note }),
   transitionMission: (id: string, to: string, reason = "") =>
     request("POST", `/v1/missions/${id}/transition`, { to, reason }),
+  cancelTerminal: (id: string) => request<ApiTerminal>("POST", `/v1/terminals/${id}/cancel`, {}),
 };
 
 export function eventStream(onEvent: (ev: ApiEvent) => void, afterSeq = 0): () => void {

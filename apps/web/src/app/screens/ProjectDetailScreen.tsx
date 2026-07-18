@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
-  Bot, Brain, ChevronLeft, Clock, ExternalLink, Folder,
-  GitBranch, Pause, TrendingUp, Zap,
+  Bot, Brain, ChevronLeft, Clock, Folder, GitBranch, TrendingUp, Zap,
 } from "lucide-react";
 import { useData } from "../../lib/data";
 import { Bar2, cn, Glass, StatusDot } from "../components/shared";
@@ -16,13 +15,22 @@ const UPCOMING_COLUMNS: [string, string][] = [
   ["À planifier", "À planifier"],
 ];
 
-export function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
+const HEALTH_BADGES: Record<string, { label: string; className: string }> = {
+  good: { label: "Actif", className: "bg-green-50 text-green-700" },
+  warning: { label: "Attention", className: "bg-orange-50 text-orange-600" },
+  blocked: { label: "Bloqué", className: "bg-red-50 text-red-600" },
+};
+
+export function ProjectDetailScreen({ projectId, onBack }: { projectId: number | string; onBack: () => void }) {
   const { projects: PROJECTS, agents: AGENTS, prs: PRS, kanban } = useData();
   const [tab, setTab] = useState("overview");
-  const p = PROJECTS[0];
+  const p = PROJECTS.find(x => x.id === projectId);
   if (!p) {
-    return <div className="p-6 text-sm text-[#74716B]">Aucun projet. <button className="text-[#5267D9] underline" onClick={onBack}>Retour</button></div>;
+    return <div className="p-6 text-sm text-[#74716B]">Projet introuvable. <button className="text-[#5267D9] underline" onClick={onBack}>Retour</button></div>;
   }
+  const projectAgents = AGENTS.filter(a => a.project === p.name);
+  const projectPrs = PRS.filter(pr => pr.project === p.name);
+  const projectCards = (col: string) => (kanban[col] ?? []).filter(c => c.project === p.name);
   const tabs = [
     { id: "overview", label: "Vue d'ensemble" },
     { id: "plan", label: "Plan" },
@@ -31,15 +39,16 @@ export function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
     { id: "code", label: "Code & PR" },
   ];
   const upcoming = UPCOMING_COLUMNS.flatMap(([col, s]) =>
-    (kanban[col] ?? []).map(card => ({ label: card.title, s })),
+    projectCards(col).map(card => ({ label: card.title, s })),
   );
+  const badge = HEALTH_BADGES[p.health] ?? HEALTH_BADGES.good;
   const summary = `${p.phase} — progression ${p.progress} %. Prochaine étape : ${p.nextCheckpoint}. ${p.activeAgents} agent${p.activeAgents === 1 ? "" : "s"} actif${p.activeAgents === 1 ? "" : "s"}, ${p.cost} consommés.`;
 
   const nextSteps = (
     <Glass className="p-4">
       <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-3">Prochaines étapes</div>
       <div className="space-y-2">
-        {upcoming.length === 0 && <div className="text-[11px] text-[#74716B]">Aucune étape planifiée.</div>}
+        {upcoming.length === 0 && <div className="text-[11px] text-[#74716B]">Aucune étape planifiée pour ce projet.</div>}
         {upcoming.slice(0, 6).map((step, i) => (
           <div key={i} className="flex items-center gap-2.5 text-[11px]">
             <div className={cn("w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center",
@@ -58,7 +67,7 @@ export function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
   return (
     <div className="space-y-4">
       <button onClick={onBack} className="flex items-center gap-1 text-[11px] text-[#74716B] hover:text-[#202124] transition-colors">
-        <ChevronLeft size={13} />Vue générale
+        <ChevronLeft size={13} />Retour aux projets
       </button>
       <Glass className="p-5">
         <div className="flex items-start gap-4">
@@ -68,17 +77,13 @@ export function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
           <div className="flex-1">
             <div className="flex items-center gap-2.5 mb-1">
               <h1 className="text-[14px] font-semibold text-[#202124]">{p.name}</h1>
-              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-green-50 text-green-700 uppercase tracking-wide">Actif</span>
+              <span className={cn("text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide", badge.className)}>{badge.label}</span>
             </div>
             <p className="text-[11px] text-[#74716B]">{p.goal}</p>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <div className="text-[10px] text-[#74716B]">Progression</div>
-              <div className="text-xl font-semibold text-[#202124]">{p.progress}%</div>
-            </div>
-            <button className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 bg-[#F7F4EE] border border-black/[0.07] rounded-xl text-[#74716B] hover:bg-[#F0EDE7] transition-all"><Pause size={10} />Pause</button>
-            <button className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 bg-[#F7F4EE] border border-black/[0.07] rounded-xl text-[#74716B] hover:bg-[#F0EDE7] transition-all"><ExternalLink size={10} />Ouvrir</button>
+          <div className="text-right">
+            <div className="text-[10px] text-[#74716B]">Progression</div>
+            <div className="text-xl font-semibold text-[#202124]">{p.progress}%</div>
           </div>
         </div>
         <div className="mt-4"><Bar2 value={p.progress} /></div>
@@ -111,10 +116,10 @@ export function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
             <Glass className="p-5">
               <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-3">Agents actifs</div>
               <div className="space-y-2">
-                {AGENTS.filter(a => a.project === p.name).length === 0 && (
+                {projectAgents.length === 0 && (
                   <div className="text-[11px] text-[#74716B]">Aucun agent actif sur ce projet.</div>
                 )}
-                {AGENTS.filter(a => a.project === p.name).map(a => (
+                {projectAgents.map(a => (
                   <div key={a.id} className="flex items-center gap-3 p-2.5 rounded-xl bg-[#F7F4EE]">
                     <StatusDot status={a.status} />
                     <div className="flex-1 min-w-0">
@@ -132,7 +137,10 @@ export function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
             <Glass className="p-4">
               <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-3">PR ouvertes</div>
               <div className="space-y-2">
-                {PRS.filter(pr => pr.status !== "merged").map(pr => (
+                {projectPrs.filter(pr => pr.status !== "merged").length === 0 && (
+                  <div className="text-[11px] text-[#74716B]">Aucune PR ouverte pour ce projet.</div>
+                )}
+                {projectPrs.filter(pr => pr.status !== "merged").map(pr => (
                   <div key={pr.id} className="p-2.5 rounded-xl bg-[#F7F4EE]">
                     <div className="font-mono text-[9px] text-[#74716B] mb-0.5">{pr.id}</div>
                     <div className="text-[10px] font-medium text-[#202124] leading-snug">
@@ -146,9 +154,9 @@ export function ProjectDetailScreen({ onBack }: { onBack: () => void }) {
         </div>
       )}
       {tab === "plan" && <div className="max-w-md">{nextSteps}</div>}
-      {tab === "missions" && <MissionsScreen />}
-      {tab === "team" && <TeamScreen />}
-      {tab === "code" && <CodePRScreen />}
+      {tab === "missions" && <MissionsScreen project={p.name} />}
+      {tab === "team" && <TeamScreen project={p.name} />}
+      {tab === "code" && <CodePRScreen project={p.name} />}
     </div>
   );
 }

@@ -22,7 +22,7 @@ export interface AppData {
   consumption: typeof demo.CONSUMPTION;
   activity: typeof demo.ACTIVITY_LOG;
   prs: typeof demo.PRS;
-  termOut: string[];
+  terminals: typeof demo.TERMINALS;
   diff: typeof demo.DIFF;
   refresh: () => void;
   actions: {
@@ -33,6 +33,8 @@ export interface AppData {
       criteria: string[];
     }) => Promise<{ ok: boolean; detail: string }>;
     answerIntervention: (id: string, answer: string, decision: "approved" | "rejected") => Promise<void>;
+    transitionMission: (id: string, to: string) => Promise<{ ok: boolean; detail: string }>;
+    cancelTerminal: (id: string) => Promise<{ ok: boolean; detail: string }>;
   };
 }
 
@@ -116,7 +118,7 @@ const demoData: Omit<AppData, "refresh" | "actions" | "mode"> = {
   consumption: demo.CONSUMPTION,
   activity: demo.ACTIVITY_LOG,
   prs: demo.PRS,
-  termOut: demo.TERM_OUT,
+  terminals: demo.TERMINALS,
   diff: demo.DIFF,
 };
 
@@ -129,7 +131,7 @@ const emptyData: Omit<AppData, "refresh" | "actions" | "mode"> = {
   consumption: [] as unknown as typeof demo.CONSUMPTION,
   activity: [] as unknown as typeof demo.ACTIVITY_LOG,
   prs: [] as unknown as typeof demo.PRS,
-  termOut: [],
+  terminals: [] as unknown as typeof demo.TERMINALS,
   diff: [],
 };
 
@@ -201,10 +203,13 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
       id: m.id,
       title: m.title,
       team: m.role,
-      agent: projectNames.get(m.projectId) ?? "—",
+      agent: "—",
+      project: projectNames.get(m.projectId) ?? m.projectId,
       priority: m.priority >= 70 ? "critique" : m.priority >= 50 ? "haute" : "normale",
       duration: relTime(m.createdAt),
       branch: m.branchName ?? "—",
+      apiId: m.id,
+      state: m.state,
       ...(m.state === "completed" ? { tests: "passing" } : {}),
     });
   }
@@ -271,12 +276,14 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     title: pr.title,
     agent: "—",
     reviewer: "—",
+    project: projectNames.get(pr.projectId) ?? pr.projectId,
     branch: `${pr.branch} → main`,
     files: 0,
     risk: "faible",
     tests: "passing",
     status: pr.state,
     mission: "—",
+    url: pr.url,
   })) as unknown as typeof demo.PRS;
 
   // daily cost buckets from usage events
@@ -294,12 +301,23 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     tokens: b.tokens,
   })) as unknown as typeof demo.CONSUMPTION;
 
-  let termOut: string[] = [];
-  const lastTerminal = terminalsRes.items.at(-1);
-  if (lastTerminal) {
-    const detail = await api.terminalDetail(lastTerminal.id);
-    termOut = [`> ${lastTerminal.command.join(" ")}`, ...detail.logs.map((l) => l.text.replace(/\n$/, ""))];
-  }
+  // one session per terminal, each with its own log stream (most recent first)
+  const recentTerminals = [...terminalsRes.items].slice(-8).reverse();
+  const terminals = (
+    await Promise.all(
+      recentTerminals.map(async (t) => {
+        const detail = await api.terminalDetail(t.id);
+        return {
+          id: t.id,
+          project: projectNames.get(t.projectId) ?? t.projectId,
+          command: t.command.join(" "),
+          state: detail.state,
+          exitCode: detail.exitCode,
+          logs: [`> ${t.command.join(" ")}`, ...detail.logs.map((l) => l.text.replace(/\n$/, ""))],
+        };
+      }),
+    )
+  ) as unknown as typeof demo.TERMINALS;
 
   return {
     projects,
@@ -310,7 +328,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     consumption: consumption.length ? consumption : ([] as unknown as typeof demo.CONSUMPTION),
     activity,
     prs,
-    termOut,
+    terminals,
     diff: [],
   };
 }
@@ -407,6 +425,24 @@ export function DataProvider({ children }: { children: ReactNode }) {
           await api.resolveApproval(apiId, decision, answer);
         }
         refresh();
+      },
+      transitionMission: async (id, to) => {
+        try {
+          await api.transitionMission(id, to);
+          refresh();
+          return { ok: true, detail: "Mission mise à jour." };
+        } catch (err) {
+          return { ok: false, detail: (err as Error).message };
+        }
+      },
+      cancelTerminal: async (id) => {
+        try {
+          await api.cancelTerminal(id);
+          refresh();
+          return { ok: true, detail: "Annulation demandée." };
+        } catch (err) {
+          return { ok: false, detail: (err as Error).message };
+        }
       },
     },
   };

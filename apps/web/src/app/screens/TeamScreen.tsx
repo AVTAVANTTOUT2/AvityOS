@@ -30,8 +30,9 @@ function AgentNode({ agent, size = "md" }: { agent: Agent; size?: "sm" | "md" | 
   );
 }
 
-export function TeamScreen() {
-  const { agents: AGENTS } = useData();
+export function TeamScreen({ project }: { project?: string }) {
+  const { agents } = useData();
+  const AGENTS = project ? agents.filter(a => a.project === project) : agents;
   const [view, setView] = useState<"org" | "list">("org");
   const [lead, ...rest] = AGENTS;
   const midRow = rest.slice(0, 2);
@@ -51,7 +52,7 @@ export function TeamScreen() {
       </div>
 
       {AGENTS.length === 0 ? (
-        <div className="p-6 text-sm text-[#74716B]">Aucun agent actif pour le moment.</div>
+        <div className="p-6 text-sm text-[#74716B]">{project ? `Aucun agent actif sur ${project}.` : "Aucun agent actif pour le moment."}</div>
       ) : view === "org" ? (
         <Glass className="p-8">
           <div className="flex flex-col items-center gap-5">

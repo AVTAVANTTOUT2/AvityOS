@@ -14,10 +14,11 @@ interface Command {
   run: () => void;
 }
 
-export function CommandPalette({ open, onClose, onNavigate, onNewProject }: {
+export function CommandPalette({ open, onClose, onNavigate, onOpenProject, onNewProject }: {
   open: boolean;
   onClose: () => void;
   onNavigate: (screen: string) => void;
+  onOpenProject: (id: number | string) => void;
   onNewProject: () => void;
 }) {
   const { projects, interventions, prs } = useData();
@@ -34,7 +35,7 @@ export function CommandPalette({ open, onClose, onNavigate, onNewProject }: {
       icon: Folder,
       label: `Ouvrir ${p.name}`,
       sub: p.phase,
-      run: () => go("projects"),
+      run: () => { onClose(); onOpenProject(p.id); },
     })),
     {
       icon: Inbox,

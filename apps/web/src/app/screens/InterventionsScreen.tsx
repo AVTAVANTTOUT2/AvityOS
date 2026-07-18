@@ -7,7 +7,14 @@ export function InterventionsScreen() {
   const { interventions: INTERVENTIONS, actions, mode } = useData();
   const [sel, setSel] = useState<number | null>(null);
   const [freeText, setFreeText] = useState("");
+  const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  const [lastId, setLastId] = useState<number | null>(null);
   const intervention = INTERVENTIONS.find(i => i.id === sel) ?? INTERVENTIONS[0];
+  if (intervention && lastId !== intervention.id) {
+    setLastId(intervention.id);
+    setSelectedOption(null);
+    setFreeText("");
+  }
   if (!intervention) {
     return (
       <div className="p-6 text-sm text-[#74716B]">Aucune intervention en attente. Les agents poursuivent leur travail de manière autonome.</div>
@@ -83,23 +90,33 @@ export function InterventionsScreen() {
 
         <div className="mb-5">
           <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-2">Options proposées</div>
-          <div className="space-y-2">
-            {intervention.options.map((opt, i) => (
-              <div key={i} className={cn(
-                "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all",
-                opt === intervention.recommendation ? "bg-[#5267D9]/[0.04] border-[#5267D9]/25" : "bg-[#F7F4EE] border-transparent hover:border-black/10",
-              )}>
-                <div className={cn("w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center",
-                  opt === intervention.recommendation ? "border-[#5267D9]" : "border-black/20"
-                )}>
-                  {opt === intervention.recommendation && <div className="w-2 h-2 rounded-full bg-[#5267D9]" />}
-                </div>
-                <span className="text-[12px] text-[#202124] flex-1">{opt}</span>
-                {opt === intervention.recommendation && (
-                  <span className="text-[9px] font-bold text-[#5267D9] bg-[#5267D9]/[0.08] px-2 py-0.5 rounded-full uppercase tracking-wide">Recommandé</span>
-                )}
-              </div>
-            ))}
+          <div className="space-y-2" role="radiogroup" aria-label="Options proposées">
+            {intervention.options.map((opt, i) => {
+              const chosen = opt === (selectedOption ?? intervention.recommendation);
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  role="radio"
+                  aria-checked={chosen}
+                  onClick={() => setSelectedOption(opt)}
+                  className={cn(
+                    "w-full text-left flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all",
+                    chosen ? "bg-[#5267D9]/[0.04] border-[#5267D9]/25" : "bg-[#F7F4EE] border-transparent hover:border-black/10",
+                  )}
+                >
+                  <div className={cn("w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center",
+                    chosen ? "border-[#5267D9]" : "border-black/20"
+                  )}>
+                    {chosen && <div className="w-2 h-2 rounded-full bg-[#5267D9]" />}
+                  </div>
+                  <span className="text-[12px] text-[#202124] flex-1">{opt}</span>
+                  {opt === intervention.recommendation && (
+                    <span className="text-[9px] font-bold text-[#5267D9] bg-[#5267D9]/[0.08] px-2 py-0.5 rounded-full uppercase tracking-wide">Recommandé</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -116,29 +133,33 @@ export function InterventionsScreen() {
 
         <div className="flex gap-2.5">
           <button
+            disabled={mode !== "live"}
+            title={mode !== "live" ? "Disponible uniquement connecté au control plane" : undefined}
             onClick={() => {
-              if (mode !== "live") return;
               const apiId = (intervention as { apiId?: string }).apiId;
-              if (apiId) void actions.answerIntervention(apiId, freeText || intervention.recommendation || "Approuvé", "approved");
+              const answer = freeText || selectedOption || intervention.recommendation || "Approuvé";
+              if (apiId) void actions.answerIntervention(apiId, answer, "approved");
               setFreeText("");
             }}
-            className="flex items-center gap-2 bg-[#5267D9] text-white text-[12px] px-4 py-2.5 rounded-xl font-medium hover:bg-[#4255C4] transition-all">
-            <CheckCircle size={13} />{freeText ? "Répondre" : "Répondre avec la recommandation"}
+            className="flex items-center gap-2 bg-[#5267D9] text-white text-[12px] px-4 py-2.5 rounded-xl font-medium transition-all enabled:hover:bg-[#4255C4] disabled:opacity-40 disabled:cursor-not-allowed">
+            <CheckCircle size={13} />{freeText ? "Répondre" : selectedOption ? "Répondre avec cette option" : "Répondre avec la recommandation"}
           </button>
-          <button className="text-[12px] px-4 py-2.5 rounded-xl font-medium bg-white/80 border border-black/[0.07] text-[#202124] hover:bg-[#F7F4EE] transition-all">Reporter</button>
           <button
+            disabled={mode !== "live"}
+            title={mode !== "live" ? "Disponible uniquement connecté au control plane" : undefined}
             onClick={() => {
-              if (mode !== "live") return;
               const apiId = (intervention as { apiId?: string }).apiId;
               if (apiId) void actions.answerIntervention(apiId, freeText || "Refusé", "rejected");
               setFreeText("");
             }}
-            className="text-[12px] px-4 py-2.5 rounded-xl font-medium text-red-500 hover:bg-red-50 transition-all">Refuser</button>
+            className="text-[12px] px-4 py-2.5 rounded-xl font-medium text-red-500 transition-all enabled:hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed">Refuser</button>
         </div>
 
         <div className="mt-4 text-[11px] text-[#74716B] bg-[#F7F4EE] px-3 py-2 rounded-xl flex items-center gap-2">
           <Zap size={11} className="text-[#5267D9]" />
-          {"AvityOS reprendra automatiquement le projet avec cette décision."}
+          {mode === "live"
+            ? "AvityOS reprendra automatiquement le projet avec cette décision."
+            : "Réponses désactivées : le control plane n'est pas connecté."}
         </div>
       </Glass>
     </div>

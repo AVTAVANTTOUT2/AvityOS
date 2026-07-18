@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { Bot, CheckCircle, Code, Eye, GitBranch, Shield } from "lucide-react";
+import { Bot, CheckCircle, Code, ExternalLink, Eye, GitBranch, Shield } from "lucide-react";
 import { useData } from "../../lib/data";
 import { cn, Glass } from "../components/shared";
 
-export function CodePRScreen() {
-  const { prs: PRS, diff: DIFF } = useData();
+export function CodePRScreen({ project }: { project?: string }) {
+  const { prs, diff: DIFF } = useData();
+  const PRS = project ? prs.filter(pr => pr.project === project) : prs;
   const [selIdx, setSelIdx] = useState(0);
   const selPR = PRS[selIdx] ?? PRS[0];
   if (!selPR) {
-    return <div className="p-6 text-sm text-[#74716B]">Aucune pull request pour le moment.</div>;
+    return <div className="p-6 text-sm text-[#74716B]">{project ? `Aucune pull request pour ${project}.` : "Aucune pull request pour le moment."}</div>;
   }
   return (
     <div className="flex gap-4 h-full">
@@ -79,17 +80,21 @@ export function CodePRScreen() {
             </div>
           ))}
         </div>
-        {selPR.status !== "merged" && (
-          <div className="p-4 border-t border-black/[0.06] flex gap-2.5">
-            <button className="flex items-center gap-2 bg-green-500 text-white text-[11px] px-4 py-2 rounded-xl font-medium hover:bg-green-600 transition-all">
-              <CheckCircle size={12} />Approuver et fusionner
-            </button>
-            <button className="text-[11px] px-4 py-2 rounded-xl border border-black/[0.07] bg-white/80 text-[#202124] hover:bg-[#F7F4EE] transition-all">
-              Demander des corrections
-            </button>
-            <button className="ml-auto text-[11px] px-4 py-2 rounded-xl text-red-500 hover:bg-red-50 transition-all">Refuser</button>
-          </div>
-        )}
+        <div className="p-4 border-t border-black/[0.06] flex items-center gap-3">
+          <span className="text-[10px] text-[#74716B]">
+            Les approbations passent par l'écran Interventions ; la fusion se fait manuellement sur GitHub — AvityOS ne fusionne jamais lui-même.
+          </span>
+          {selPR.url && (
+            <a
+              href={selPR.url}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-auto flex items-center gap-1.5 text-[11px] px-4 py-2 rounded-xl border border-black/[0.07] bg-white/80 text-[#202124] hover:bg-[#F7F4EE] transition-all flex-shrink-0"
+            >
+              <ExternalLink size={11} />Ouvrir sur GitHub
+            </a>
+          )}
+        </div>
       </Glass>
     </div>
   );
