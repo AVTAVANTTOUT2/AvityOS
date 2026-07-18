@@ -59,12 +59,12 @@ jobs:
           printf 'input\n' > "$workspace/input"
           bwrap \
             --die-with-parent --unshare-all \
-            --ro-bind / / --tmpfs /home --tmpfs /root \
+            --ro-bind / / --dev /dev --tmpfs /home --tmpfs /root \
             --bind "$workspace" "$workspace" \
             --bind "$sandbox_home" "$sandbox_home" \
             --chdir "$workspace" \
             --setenv HOME "$sandbox_home" --setenv TMPDIR "$sandbox_home" \
-            /bin/sh -c 'test "$(cat input)" = input && printf sandbox-ok > output'
+            /bin/sh -c 'test "$(cat input)" = input && : > /dev/null && printf sandbox-ok > output'
           test "$(cat "$workspace/output")" = sandbox-ok
 
       - name: Install dependencies
