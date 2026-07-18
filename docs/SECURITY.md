@@ -13,9 +13,12 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   Browser login exchanges it for an HttpOnly, SameSite=Strict cookie; SSE never
   accepts tokens in URLs. CORS uses an explicit origin allowlist and the server
   binds loopback by default.
-- **Validation** — shared zod schemas validate bodies/enums. Terminal `cwd` is
-  ignored from clients and resolved server-side to a real project repository or
-  mission worktree; symlink escapes are rejected.
+- **Validation** — shared zod schemas validate bodies/enums. Project onboarding
+  resolves repository paths with `realpath`, requires a readable/writable Git
+  working tree, verifies the local default branch and matches GitHub identity
+  against a configured remote before persisting server-observed values.
+  Terminal `cwd` is ignored from clients and resolved server-side to a real
+  project repository or mission worktree; symlink escapes are rejected.
 - **Command classes** — ad-hoc terminals are observation-only. Interpreters,
   package managers and shells are treated as arbitrary-code capability and are
   available only to mission-scoped execution after policy checks.
