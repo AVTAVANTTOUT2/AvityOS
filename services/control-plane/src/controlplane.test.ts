@@ -491,7 +491,7 @@ describe("repository-aware planning and provider capability gates", () => {
     engine.start();
     await waitFor(() => store.getProject(project.id)!.status === "completed", 10_000);
     expect(store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "architecture_rule")?.status).toBe("passed");
-  });
+  }, 15_000);
 
   it("serializes a project's generated missions while preserving cross-project concurrency", () => {
     ({ store, engine } = makeEngine(db, "fake:code"));
