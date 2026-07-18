@@ -266,6 +266,62 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return { items: store.listBrainEntries(id) };
   });
 
+  /**
+   * Really persisted state of the AI planning pipeline: durable brain runs
+   * (provider, model, provenance, errors), validated analysis/architecture,
+   * active plan version and replanning history. Nothing here is optimistic.
+   */
+  app.get("/v1/projects/:id/brain/state", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const project = store.getProject(id);
+    if (!project) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    const objective = store.latestObjective(id);
+    const runs = objective ? store.listBrainRuns(id, objective.id) : [];
+    const activePlan = store.activePlan(id);
+    const planForObjective =
+      activePlan && objective && activePlan.objectiveId === objective.id ? activePlan : null;
+
+    const latestOutput = (step: string): unknown => {
+      for (let i = runs.length - 1; i >= 0; i -= 1) {
+        const run = runs[i]!;
+        if (run.step === step && run.state === "succeeded") return run.output;
+      }
+      return null;
+    };
+
+    let status: "idle" | "clarifying" | "running" | "planned" | "blocked" | "failed" = "idle";
+    if (objective) {
+      if (project.status === "clarifying") status = "clarifying";
+      else if (planForObjective) status = "planned";
+      else if (runs.some((run) => run.state === "running") || project.status === "planning") status = "running";
+      else if (project.status === "blocked") status = "blocked";
+      else if (runs.some((run) => run.state === "failed")) status = "failed";
+    }
+
+    const replans = store.listPlans(id).filter((plan) => plan.replanTrigger !== null);
+    const lastReplanPlan = replans.at(-1) ?? null;
+    return {
+      projectId: id,
+      objectiveId: objective?.id ?? null,
+      status,
+      currentStep: runs.at(-1)?.step ?? null,
+      runs,
+      analysis: latestOutput("analysis"),
+      architecture: latestOutput("architecture"),
+      plan: planForObjective,
+      dependencies: store.listDependencies(id),
+      replanCount: replans.length,
+      lastReplan: lastReplanPlan
+        ? {
+            trigger: lastReplanPlan.replanTrigger!,
+            cause: lastReplanPlan.replanCause ?? "",
+            sources: lastReplanPlan.replanSources,
+            planVersion: lastReplanPlan.version,
+          }
+        : null,
+    };
+  });
+
   app.get("/v1/projects/:id/usage", async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);

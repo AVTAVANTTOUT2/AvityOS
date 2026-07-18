@@ -110,6 +110,28 @@ describe("avity CLI", () => {
     const status = await run("status");
     expect(status.code).toBe(0);
     expect(status.out).toContain("projects:");
+
+    // the persisted brain state is exposed, fixture provenance included
+    const brain = await run("brain", "show", project.id, "--json");
+    expect(brain.code).toBe(0);
+    const state = JSON.parse(brain.out) as {
+      status: string;
+      runs: { step: string; state: string; provenance: string }[];
+      plan: { version: number; provenance: string } | null;
+      analysis: { summary: string } | null;
+    };
+    expect(state.runs.map((r) => r.step)).toEqual(["analysis", "architecture", "plan"]);
+    expect(state.runs.every((r) => r.provenance === "fake_fixture")).toBe(true);
+    expect(state.plan?.provenance).toBe("fake_fixture");
+    expect(state.analysis?.summary).toBeTruthy();
+
+    const brainHuman = await run("brain", "show", project.id);
+    expect(brainHuman.code).toBe(0);
+    expect(brainHuman.out).toContain("[fake_fixture]");
+
+    const plan = await run("plan", "show", project.id);
+    expect(plan.code).toBe(0);
+    expect(plan.out).toContain("provenance: fake_fixture");
   });
 
   it("creates and idempotently updates every onboarding option", async () => {

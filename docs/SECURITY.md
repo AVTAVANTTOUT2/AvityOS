@@ -33,6 +33,19 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
 - **Paths/evidence** — actual changed files are realpath/glob checked against
   allowed and forbidden paths. Coding missions require a diff and real command
   exit evidence; missing checks cannot pass.
+- **Brain snapshot boundary** — the AI planning snapshot is built only from
+  the server-validated persisted repository path (never model- or
+  client-supplied paths), reads only Git-tracked files whose realpath stays
+  inside the repository, excludes secret-shaped paths (`.env*`, `secrets/`,
+  key material) and binary content, applies secret redaction and hard
+  size/count limits before anything reaches a prompt, an event or
+  persistence, and records the snapshot hash for provenance. Manifest and
+  check discovery uses the same tracked-file realpath confinement, including
+  symlink rejection. AI-proposed mission paths and check commands are validated
+  against the same command/path policies and must match every check and argv
+  detected in the snapshot before any mission is created. Provider-produced
+  analysis, memory, plans, mission contracts and replan evidence are redacted
+  again before durable persistence.
 - **Workers** — enrollment requires the admin bearer when auth is enabled.
   Worker tokens are shown once and hashed at rest. Capability/capacity matching,
   short leases, per-lease opaque tokens, expiry, heartbeat and revocation fence
@@ -43,7 +56,7 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   the macOS app and macOS CLI store their API token in Keychain. Non-macOS CLI
   fallback storage is owner-only mode 0600 and may be replaced by a host vault.
 - **Supply chain** — CI blocks on tests, typechecks, browser/Swift tests,
-  dependency audit, 446-package license policy, Gitleaks and SPDX SBOM creation.
+  dependency audit, 508-package license policy, Gitleaks and SPDX SBOM creation.
 
 Security tests cover malicious origins, missing auth, SSE query-token denial,
 client cwd injection, symlink escape, interpreter bypass, environment leakage,

@@ -210,6 +210,13 @@ Implemented and covered by automated tests:
 
 - complete project onboarding and idempotent updates across Web, CLI and the
   public API, with server-canonicalized Git paths, branches and GitHub remotes;
+- a durable central AI brain: bounded secret-free repository snapshots,
+  structured analysis, architecture proposals and validated plan/DAG versions
+  produced through provider adapters, with bounded repair of invalid output,
+  explicit fixture provenance and evidence-based bounded replanning. Ambiguous
+  or infeasible analyses stop before delegation; repository checks must match
+  the server snapshot exactly; replans persist their idempotency key and
+  withdraw stale interventions in the same transaction;
 - durable objective, clarification, planning, mission and intervention flows;
 - restart recovery, transactional events and a hash-chained audit trail;
 - concurrent project isolation and ordered per-project execution;
@@ -224,9 +231,12 @@ Implemented and covered by automated tests:
 
 Known remaining proof or product work:
 
-- the current deterministic planner is not yet the central AI brain described
-  in the product contract; analysis, architecture, DAG delegation and dynamic
-  replanning are the next roadmap chantier;
+- the central AI brain is fully exercised offline through the deterministic
+  fixture provider (labelled `fake_fixture`, never real planning evidence);
+  a planning run with a live reasoning provider requires operator-owned API
+  credentials and is deliberately part of the live-validation chantier;
+- grouped clarifications remain heuristic and atomic pause/resume of an
+  active run is not implemented yet (next chantier);
 - live-provider smoke tests require operator-owned API credentials;
 - autonomous push and draft-PR creation still need a dedicated external
   fixture repository and GitHub credentials for end-to-end proof;

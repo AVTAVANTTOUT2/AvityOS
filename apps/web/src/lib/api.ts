@@ -140,6 +140,49 @@ export interface ApiPr {
   url: string | null;
 }
 
+export interface ApiBrainRun {
+  id: string;
+  step: string;
+  state: string;
+  attempt: number;
+  providerId: string | null;
+  model: string | null;
+  provenance: string;
+  errorCategory: string | null;
+  errorDetail: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApiBrainState {
+  projectId: string;
+  objectiveId: string | null;
+  status: string;
+  currentStep: string | null;
+  runs: ApiBrainRun[];
+  analysis: {
+    summary: string;
+    objectiveClarity: string;
+    feasibility: string;
+    risks: { title: string; severity: string; detail: string }[];
+  } | null;
+  architecture: { overview: string } | null;
+  plan: {
+    id: string;
+    version: number;
+    summary: string;
+    provenance: string | null;
+    providerId: string | null;
+    model: string | null;
+    snapshotHash: string | null;
+    replanTrigger: string | null;
+    replanCause: string | null;
+  } | null;
+  dependencies: { missionId: string; dependsOnMissionId: string }[];
+  replanCount: number;
+  lastReplan: { trigger: string; cause: string; sources: string[]; planVersion: number } | null;
+}
+
 export interface ApiTerminal {
   id: string;
   projectId: string;
@@ -165,6 +208,7 @@ export const api = {
     request<{ items: ApiClarification[] }>("GET", `/v1/projects/${projectId}/clarifications?status=open`),
   events: (afterSeq = 0) => request<{ items: ApiEvent[] }>("GET", `/v1/events?afterSeq=${afterSeq}`),
   providers: () => request<{ items: ApiProvider[] }>("GET", "/v1/providers"),
+  brainState: (projectId: string) => request<ApiBrainState>("GET", `/v1/projects/${projectId}/brain/state`),
   prs: () => request<{ items: ApiPr[] }>("GET", "/v1/prs"),
   terminals: () => request<{ items: ApiTerminal[] }>("GET", "/v1/terminals"),
   terminalDetail: (id: string) =>

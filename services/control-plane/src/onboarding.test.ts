@@ -32,6 +32,16 @@ async function createProject(payload: Record<string, unknown>) {
   return app.inject({ method: "POST", url: "/v1/projects", payload });
 }
 
+/** AI planning is asynchronous and durable; tests wait on persisted state. */
+async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (cond()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("waitFor timed out");
+}
+
 beforeEach(async () => {
   scratch = await mkdtemp(join(tmpdir(), "avity-onboarding-"));
   db = openDatabase(":memory:");
@@ -140,7 +150,9 @@ describe("project onboarding API", () => {
     expect(store.eventsAfter(0, id).filter((event) => event.type === "project.updated")).toHaveLength(1);
   });
 
-  it("applies the persisted budget to mission execution", async () => {
+  it("applies the persisted budget to AI planning and mission execution", async () => {
+    // planning itself is budget-gated: an exhausted budget blocks the brain
+    // pipeline with an intervention instead of spending anything
     const created = await createProject({
       name: "Budgeted",
       objective: "Deliver a budget-constrained onboarding result with evidence",
@@ -149,8 +161,26 @@ describe("project onboarding API", () => {
       budgetWarnAtFraction: 0.8,
     });
     const id = (created.json() as { id: string }).id;
-    const mission = store.listMissions(id)[0]!;
-    expect(mission.contract.budgetUsd).toBe(0);
+    await waitFor(() => store.listApprovals("open", id).length > 0);
+    expect(store.getProject(id)?.status).toBe("blocked");
+    expect(store.listApprovals("open", id)[0]?.description).toContain("planning budget exhausted");
+    expect(store.listMissions(id)).toHaveLength(0);
+
+    // the same persisted budget gates direct mission execution
+    const mission = store.createMission({
+      projectId: id,
+      planId: null,
+      milestoneId: null,
+      title: "budget-gated mission",
+      role: "backend",
+      contract: {
+        objective: "x", rationale: "", context: [], allowedPaths: [], forbiddenPaths: [],
+        acceptanceCriteria: [], requiredChecks: [], checkCommands: {}, budgetUsd: 0,
+        timeoutSeconds: 60, expectedArtifacts: [], escalationConditions: [],
+      },
+      priority: 50,
+      dependsOn: [],
+    });
     store.transitionMission(mission.id, "ready", "test");
     store.transitionMission(mission.id, "assigned", "test");
     await engine.executeMission(mission.id);
@@ -211,8 +241,10 @@ describe("project onboarding API", () => {
       acceptanceCriteria: ["initial one", "initial two"],
     });
     const id = (created.json() as { id: string }).id;
+    await waitFor(() => store.listMissions(id).length === 2);
     const previous = store.listMissions(id);
     expect(previous).toHaveLength(2);
+    const initialPlan = store.activePlan(id)!;
 
     const response = await app.inject({
       method: "PATCH",
@@ -226,10 +258,14 @@ describe("project onboarding API", () => {
     for (const mission of previous) {
       expect(store.getMission(mission.id)?.state).toBe("cancelled");
     }
+    await waitFor(() => (store.activePlan(id)?.version ?? 0) > initialPlan.version);
     const activePlan = store.activePlan(id)!;
     const activeMissions = store.listMissions(id).filter((mission) => mission.planId === activePlan.id);
     expect(activeMissions).toHaveLength(1);
     expect(activeMissions[0]?.contract.acceptanceCriteria).toEqual(["revised only"]);
+    // the revision is recorded as an evidence-based replan with its cause
+    expect(activePlan.replanTrigger).toBe("objective_revised");
+    expect(activePlan.basedOnVersion).toBe(initialPlan.version);
     await engine.tick();
     for (const mission of previous) {
       expect(store.getMission(mission.id)?.state).toBe("cancelled");
@@ -243,6 +279,7 @@ describe("project onboarding API", () => {
       acceptanceCriteria: ["one mission is created"],
     });
     const id = (created.json() as { id: string }).id;
+    await waitFor(() => store.listMissions(id).length > 0);
     const mission = store.listMissions(id)[0]!;
     store.transitionMission(mission.id, "ready", "test");
     store.transitionMission(mission.id, "assigned", "test");
@@ -267,6 +304,7 @@ describe("project onboarding API", () => {
       acceptanceCriteria: ["failed work cannot be silently superseded"],
     });
     const id = (created.json() as { id: string }).id;
+    await waitFor(() => store.listMissions(id).length > 0);
     const mission = store.listMissions(id)[0]!;
     store.transitionMission(mission.id, "ready", "test");
     store.transitionMission(mission.id, "assigned", "test");
@@ -290,6 +328,7 @@ describe("project onboarding API", () => {
       acceptanceCriteria: ["the mission remains queued"],
     });
     const id = (created.json() as { id: string }).id;
+    await waitFor(() => store.listMissions(id).length > 0);
     const mission = store.listMissions(id)[0]!;
 
     const response = await app.inject({

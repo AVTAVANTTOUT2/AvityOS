@@ -28,15 +28,33 @@ import { ADAPTER_CONTRACT_VERSION } from "./types.js";
  *   fake:review-approve      REVIEWER: emits "VERDICT: APPROVE"
  *   fake:review-reject-once  rejects with findings on the first review per
  *                            prompt, approves on re-review
+ *   fake:plan                BRAIN: valid structured output per pipeline
+ *                            step (analysis/architecture/plan); one chained
+ *                            mission per acceptance criterion
+ *   fake:plan-dag            BRAIN: independent parallel missions per
+ *                            criterion plus a final QA mission depending on
+ *                            all of them (exercises a real DAG)
+ *   fake:plan-invalid-once   BRAIN: first attempt per step emits broken
+ *                            JSON, the repair attempt emits valid output
+ *   fake:plan-ambiguous      BRAIN: analysis requires material clarification
+ *   fake:plan-infeasible     BRAIN: analysis marks the objective infeasible
+ *   fake:plan-slow           BRAIN: hangs like fake:slow (recovery paths)
  *
- * No randomness, no wall-clock dependence except fake:slow's timer.
+ * No randomness, no wall-clock dependence except the slow models' timer.
  */
 export class FakeProviderAdapter implements ProviderAdapter {
   readonly name: string = "fake";
   readonly contractVersion = ADAPTER_CONTRACT_VERSION;
+  /**
+   * Honest self-identification: everything this adapter produces is a
+   * deterministic engineering fixture, never real AI planning or
+   * implementation evidence. The control plane persists this provenance.
+   */
+  readonly fixture = true;
   private rateLimitedRuns = new Set<string>();
   private defectiveRuns = new Set<string>();
   private rejectedReviews = new Set<string>();
+  private invalidBrainSteps = new Set<string>();
 
   constructor(name = "fake") {
     this.name = name;
@@ -66,6 +84,12 @@ export class FakeProviderAdapter implements ProviderAdapter {
       "fake:code-defect-once",
       "fake:review-approve",
       "fake:review-reject-once",
+      "fake:plan",
+      "fake:plan-dag",
+      "fake:plan-invalid-once",
+      "fake:plan-ambiguous",
+      "fake:plan-infeasible",
+      "fake:plan-slow",
     ];
   }
 
@@ -80,13 +104,41 @@ export class FakeProviderAdapter implements ProviderAdapter {
     async function* events(): AsyncGenerator<RunEvent, void, void> {
       const model = input.model;
 
-      if (model === "fake:slow") {
+      if (model === "fake:slow" || model === "fake:plan-slow") {
         const deadline = Date.now() + (input.timeoutMs ?? 60_000);
         while (!cancelled && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 10));
         }
         if (cancelled) return;
         yield { type: "error", category: "unknown", message: "fake slow run timed out" };
+        return;
+      }
+
+      if (model.startsWith("fake:plan")) {
+        const step = parseMarker(input.userPrompt, "AVITY_BRAIN_STEP") ?? "analysis";
+        if (model === "fake:plan-invalid-once" && !self.invalidBrainSteps.has(step)) {
+          self.invalidBrainSteps.add(step);
+          yield { type: "usage", inputTokens: 90, outputTokens: 20, costUsd: 0 };
+          yield { type: "completed", resultText: "Here is the plan: { this is deliberately broken JSON" };
+          return;
+        }
+        const analysisDisposition = model === "fake:plan-ambiguous"
+          ? "ambiguous"
+          : model === "fake:plan-infeasible"
+            ? "infeasible"
+            : "actionable";
+        const structured = fakeBrainStepOutput(
+          step,
+          input.userPrompt,
+          model === "fake:plan-dag",
+          analysisDisposition,
+        );
+        yield { type: "output", text: `fake brain fixture producing deterministic ${step} output\n` };
+        yield { type: "usage", inputTokens: 200, outputTokens: 120, costUsd: 0 };
+        yield {
+          type: "completed",
+          resultText: `Deterministic fixture ${step} result.\n\`\`\`json\n${JSON.stringify(structured, null, 2)}\n\`\`\`\n`,
+        };
         return;
       }
 
@@ -171,4 +223,138 @@ export class FakeProviderAdapter implements ProviderAdapter {
 
 function summarize(prompt: string): string {
   return prompt.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+function parseMarker(prompt: string, name: string): string | null {
+  const match = prompt.match(new RegExp(`^${name}: (.*)$`, "m"));
+  return match ? match[1]!.trim() : null;
+}
+
+function parseJsonMarker<T>(prompt: string, name: string, fallback: T): T {
+  const raw = parseMarker(prompt, name);
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function inferFixtureRole(criterion: string): string {
+  const lower = criterion.toLowerCase();
+  if (/(ui|screen|page|frontend|css|design|écran|interface)/.test(lower)) return "frontend";
+  if (/(deploy|infra|docker|ci|pipeline)/.test(lower)) return "infrastructure";
+  if (/(secur|auth|encrypt|vuln)/.test(lower)) return "cybersecurity";
+  if (/(test|qa|coverage)/.test(lower)) return "qa";
+  if (/(doc|readme|guide)/.test(lower)) return "documentation";
+  return "backend";
+}
+
+/**
+ * Deterministic structured output for a brain pipeline step, derived only
+ * from machine-readable markers in the prompt. This is a fixture, not real
+ * reasoning: the control plane records its provenance as `fake_fixture`.
+ */
+function fakeBrainStepOutput(
+  step: string,
+  prompt: string,
+  parallelDag: boolean,
+  analysisDisposition: "actionable" | "ambiguous" | "infeasible",
+): unknown {
+  const objective = parseJsonMarker<string>(prompt, "AVITY_OBJECTIVE_JSON", "objective");
+  const criteria = parseJsonMarker<string[]>(prompt, "AVITY_ACCEPTANCE_CRITERIA_JSON", []);
+  const repoAvailable = parseMarker(prompt, "AVITY_REPO_AVAILABLE") === "true";
+  const availableChecks = parseJsonMarker<{ requiredChecks: string[]; checkCommands: Record<string, string[]> }>(
+    prompt,
+    "AVITY_AVAILABLE_CHECKS_JSON",
+    { requiredChecks: [], checkCommands: {} },
+  );
+
+  if (step === "analysis") {
+    return {
+      summary: `Deterministic fixture analysis of: ${summarize(objective)}`,
+      objectiveClarity: analysisDisposition === "ambiguous" ? "ambiguous" : "clear",
+      feasibility: analysisDisposition === "infeasible" ? "infeasible" : "feasible",
+      constraints: [],
+      assumptions: ["fixture assumption: offline deterministic environment"],
+      risks: [
+        {
+          title: "Fixture output",
+          severity: "low",
+          detail: "Produced by the deterministic fake provider, not real reasoning.",
+          mitigation: "Configure a live reasoning provider.",
+        },
+      ],
+      evidence: [{ kind: "objective", ref: "objective:current", detail: "" }],
+    };
+  }
+
+  if (step === "architecture") {
+    return {
+      overview: `Deterministic fixture architecture for: ${summarize(objective)}`,
+      components: [
+        {
+          name: "delivery",
+          responsibility: "Implement the objective inside the existing repository structure.",
+          paths: [],
+        },
+      ],
+      decisions: [
+        { title: "Fixture architecture", rationale: "Deterministic offline fixture; no real design reasoning." },
+      ],
+      constraints: [],
+      assumptions: [],
+      risks: [],
+      evidence: [{ kind: "objective", ref: "objective:current", detail: "" }],
+    };
+  }
+
+  const effectiveCriteria = criteria.length > 0 ? criteria : [objective.slice(0, 200)];
+  const missions = effectiveCriteria.map((criterion, index) => ({
+    key: `mission-${index + 1}`,
+    title: `Implement: ${criterion.slice(0, 120)}`,
+    objective: criterion,
+    rationale: `Deterministic fixture mission covering acceptance criterion ${index}.`,
+    role: inferFixtureRole(criterion),
+    milestoneKey: "deliver",
+    dependsOn: parallelDag || index === 0 ? [] : [`mission-${index}`],
+    acceptanceCriteria: [criterion],
+    coversCriteria: criteria.length > 0 ? [index] : [],
+    allowedPaths: repoAvailable ? ["**"] : [],
+    forbiddenPaths: ["**/.env", "**/secrets/**"],
+    requiredChecks: repoAvailable ? availableChecks.requiredChecks : [],
+    checkCommands: repoAvailable ? availableChecks.checkCommands : {},
+    expectedArtifacts: [],
+    budgetUsd: null,
+    timeoutSeconds: 900,
+    escalationConditions: ["correction loop exhausted"],
+    priority: Math.max(0, 60 - index),
+  }));
+  if (parallelDag) {
+    missions.push({
+      key: "final-qa",
+      title: "Final QA over all delivered criteria",
+      objective: "Verify the integrated result of every parallel mission.",
+      rationale: "Depends on all parallel missions; exercises a real DAG join.",
+      role: "qa",
+      milestoneKey: "deliver",
+      dependsOn: effectiveCriteria.map((_, index) => `mission-${index + 1}`),
+      acceptanceCriteria: ["all parallel missions verified"],
+      coversCriteria: [],
+      allowedPaths: repoAvailable ? ["**"] : [],
+      forbiddenPaths: ["**/.env", "**/secrets/**"],
+      requiredChecks: repoAvailable ? availableChecks.requiredChecks : [],
+      checkCommands: repoAvailable ? availableChecks.checkCommands : {},
+      expectedArtifacts: [],
+      budgetUsd: null,
+      timeoutSeconds: 900,
+      escalationConditions: [],
+      priority: 40,
+    });
+  }
+  return {
+    summary: `Deterministic fixture plan: ${missions.length} mission(s) for ${summarize(objective)}`,
+    milestones: [{ key: "deliver", title: "Deliver objective", description: objective.slice(0, 500), order: 0 }],
+    missions,
+  };
 }

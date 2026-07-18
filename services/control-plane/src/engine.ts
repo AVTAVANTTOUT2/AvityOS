@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { CheckpointKind, Mission, Project } from "@avityos/contracts";
+import type { Mission, Project } from "@avityos/contracts";
 import {
   decideCorrection,
   decideFallback,
@@ -23,6 +23,7 @@ import {
 } from "@avityos/git";
 import { checkBudget, isCommandAllowed, isPathAllowed, sandboxCommand, type CommandPolicy } from "@avityos/policy";
 import type { ProviderAdapter } from "@avityos/providers";
+import { BrainPipeline } from "./brain.js";
 import type { Store } from "./store.js";
 
 const execFileAsync = promisify(execFile);
@@ -41,6 +42,12 @@ export interface EngineConfig {
   checkCommandPolicy: CommandPolicy;
   /** How long to wait for a worker-executed check before failing it. */
   checkTimeoutMs: number;
+  /** Bounded repair attempts for invalid AI planning output. */
+  maxPlanRepairAttempts: number;
+  /** Evidence-based replans allowed per objective before escalating. */
+  maxReplansPerObjective: number;
+  /** Timeout for one AI brain pipeline step. */
+  brainStepTimeoutMs: number;
 }
 
 export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
@@ -56,6 +63,9 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
     deniedExecutables: ["rm", "sudo", "curl", "wget", "ssh", "scp"],
   },
   checkTimeoutMs: 10 * 60 * 1000,
+  maxPlanRepairAttempts: 2,
+  maxReplansPerObjective: 3,
+  brainStepTimeoutMs: 5 * 60 * 1000,
 };
 
 const AMBIGUITY_MARKERS = [
@@ -74,6 +84,8 @@ export class Engine {
   private activeRuns = new Map<string, { cancel: () => Promise<void> }>();
   private ticking = false;
   private stopped = false;
+  /** The AI planning pipeline; the engine remains the durable authority. */
+  readonly brain: BrainPipeline;
 
   constructor(
     readonly store: Store,
@@ -87,7 +99,26 @@ export class Engine {
     readonly reviewModels: Map<string, string> = new Map([["fake", "fake:review-approve"]]),
     /** Optional team-role routing; remaining providers stay available as fallbacks. */
     readonly roleProviderChains: ReadonlyMap<Mission["role"], readonly string[]> = new Map(),
-  ) {}
+    /** Reasoning model per provider for the brain pipeline. */
+    readonly brainModels: Map<string, string> = new Map([["fake", "fake:plan"]]),
+  ) {
+    // Reasoning does not require workspace edits: providers without editing
+    // capability remain valid analysts/planners. The orchestrator role chain
+    // is preferred, then the global chain.
+    const brainChain = [...new Set([...(roleProviderChains.get("orchestrator") ?? []), ...providerChain])];
+    this.brain = new BrainPipeline(store, providers, {
+      providerChain: brainChain,
+      models: brainModels,
+      maxProviderRetries: config.maxProviderRetries,
+      maxWaitMs: config.maxWaitMs,
+      maxRepairAttempts: config.maxPlanRepairAttempts,
+      maxReplansPerObjective: config.maxReplansPerObjective,
+      stepTimeoutMs: config.brainStepTimeoutMs,
+      checkCommandPolicy: config.checkCommandPolicy,
+      allowModelSwitch: config.allowModelSwitch,
+      allowProviderSwitch: config.allowProviderSwitch,
+    });
+  }
 
   /** Kept for API compatibility: the preferred provider name. */
   get defaultProvider(): string {
@@ -105,6 +136,7 @@ export class Engine {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    await this.brain.stop();
     for (const [runId, handle] of this.activeRuns) {
       await handle.cancel();
       this.activeRuns.delete(runId);
@@ -147,6 +179,7 @@ export class Engine {
     for (const mission of this.store.listMissions(undefined, "review_required")) {
       void this.reviewMission(mission.id);
     }
+    this.brain.reconcile();
   }
 
   // ── objective intake ─────────────────────────────────────────────────────
@@ -187,9 +220,36 @@ export class Engine {
       return { clarificationId: clarification.id };
     }
 
-    this.store.setObjectiveAnalysis(objectiveId, "Objective is actionable; planning started.");
-    this.generatePlan(projectId, objectiveId);
+    this.store.setObjectiveAnalysis(objectiveId, "Objective is actionable; AI planning started.");
+    this.startPlanning(projectId, objectiveId);
     return { clarificationId: null };
+  }
+
+  /**
+   * Kick the durable asynchronous AI pipeline for the latest objective
+   * revision. A previous plan for an older revision makes this an
+   * `objective_revised` replan with recorded cause and sources.
+   */
+  private startPlanning(projectId: string, objectiveId: string): void {
+    const objective = this.store.getObjective(objectiveId);
+    const previousPlan = this.store.activePlan(projectId);
+    const replan =
+      previousPlan && previousPlan.objectiveId !== objectiveId
+        ? {
+            trigger: "objective_revised" as const,
+            cause: `objective revision ${objective?.revision ?? "?"} supersedes the plan v${previousPlan.version} objective`,
+            sources: [`objective:${objectiveId}`, `plan:${previousPlan.id}`],
+          }
+        : undefined;
+    this.store.setProjectStatus(projectId, "planning");
+    void this.brain.ensurePlan(projectId, objectiveId, replan).catch((err) => {
+      if (this.stopped) return;
+      try {
+        this.store.appendAudit(projectId, "engine", "brain.pipeline_error", String(err).slice(0, 500));
+      } catch {
+        // shutdown race: the database may already be closed
+      }
+    });
   }
 
   resumeAfterClarification(clarificationId: string): void {
@@ -219,68 +279,7 @@ export class Engine {
           .run(JSON.stringify(criteria), objective.id);
       }
     }
-    this.generatePlan(clarification.projectId, clarification.objectiveId);
-  }
-
-  /**
-   * Deterministic planner v1: one implementation mission per acceptance
-   * criterion, serialized in the user's declared order. Projects may progress
-   * concurrently, but a single project never fans out every criterion before
-   * prior evidence exists. Checks are required only when a real command exists.
-   */
-  generatePlan(projectId: string, objectiveId: string): void {
-    const objective = this.store.getObjective(objectiveId);
-    if (!objective) throw new Error(`objective ${objectiveId} not found`);
-    const project = this.store.getProject(projectId);
-    if (!project) throw new Error(`project ${projectId} not found`);
-    const criteria = objective.acceptanceCriteria.length
-      ? objective.acceptanceCriteria
-      : [objective.text.slice(0, 200)];
-
-    const plan = this.store.createPlan(
-      projectId,
-      `Plan v-auto for objective r${objective.revision}: ${criteria.length} implementation mission(s) with independent review.`,
-      [{ id: "ms_1", title: "Deliver objective", description: objective.text.slice(0, 500), order: 0 }],
-    );
-
-    const detectedChecks = detectProjectChecks(project);
-    const budget = this.store.getBudget(project.id);
-    let previousMissionId: string | null = null;
-    for (const [i, criterion] of criteria.entries()) {
-      const mission = this.store.createMission({
-        projectId,
-        planId: plan.id,
-        milestoneId: "ms_1",
-        title: `Implement: ${criterion.slice(0, 120)}`,
-        role: inferRole(criterion),
-        contract: {
-          objective: criterion,
-          rationale: `Derived from objective revision ${objective.revision}`,
-          context: [objective.text],
-          allowedPaths: project.repoPath ? ["**"] : [],
-          forbiddenPaths: ["**/.env", "**/secrets/**"],
-          acceptanceCriteria: [criterion],
-          requiredChecks: detectedChecks.requiredChecks,
-          checkCommands: detectedChecks.checkCommands,
-          budgetUsd: budget?.limitUsd ?? null,
-          timeoutSeconds: 900,
-          expectedArtifacts: [],
-          workspaceChangesRequired: project.repoPath !== null,
-        },
-        priority: 60 - i,
-        dependsOn: previousMissionId ? [previousMissionId] : [],
-      });
-      previousMissionId = mission.id;
-    }
-
-    this.store.addBrainEntry(
-      projectId,
-      "fact",
-      `Plan v${plan.version} generated`,
-      `${criteria.length} implementation mission(s); every mission gets an independent review run before approval`,
-      [`objective:${objectiveId}`, `plan:${plan.id}`],
-    );
-    this.store.setProjectStatus(projectId, "active");
+    this.startPlanning(clarification.projectId, clarification.objectiveId);
   }
 
   // ── scheduling tick ──────────────────────────────────────────────────────
@@ -801,7 +800,40 @@ export class Engine {
         "Correction limit reached",
         `${decision.reason}. Approve to grant more attempts, reject to cancel.`,
       );
+      this.maybeReplanAfterFailure(mission, reason);
     }
+  }
+
+  /**
+   * Evidence-based replanning trigger: a plan mission that failed after its
+   * bounded correction loop. Bounded and idempotent in the pipeline; the
+   * failed mission remains in history. If a replacement plan is committed,
+   * its stale approval is withdrawn atomically and cannot restart old work.
+   */
+  private maybeReplanAfterFailure(mission: Mission, reason: string): void {
+    if (!mission.planId) return;
+    const project = this.store.getProject(mission.projectId);
+    if (!project || project.autonomyProfile === "supervised") return;
+    const objective = this.store.latestObjective(project.id);
+    if (!objective) return;
+    const evidence = this.store
+      .listCheckpoints(mission.id)
+      .filter((checkpoint) => checkpoint.status === "failed")
+      .map((checkpoint) => `checkpoint:${checkpoint.id}`);
+    void this.brain
+      .ensurePlan(project.id, objective.id, {
+        trigger: "mission_failed",
+        cause: `mission ${mission.id} (${mission.title.slice(0, 80)}) failed after bounded correction: ${reason}`.slice(0, 500),
+        sources: [`mission:${mission.id}`, ...evidence],
+      })
+      .catch((err) => {
+        if (this.stopped) return;
+        try {
+          this.store.appendAudit(project.id, "engine", "brain.pipeline_error", String(err).slice(0, 500));
+        } catch {
+          // shutdown race: the database may already be closed
+        }
+      });
   }
 
   // ── independent review ───────────────────────────────────────────────────
@@ -968,9 +1000,36 @@ export class Engine {
 
   applyApprovalDecision(approvalId: string): void {
     const approval = this.store.getApproval(approvalId);
-    if (!approval || !approval.missionId || approval.decision === null) return;
+    if (!approval || approval.decision === null) return;
+    if (!approval.missionId) {
+      // Planning-level interventions (blocked brain pipeline, replan limit).
+      const project = this.store.getProject(approval.projectId);
+      const objective = this.store.latestObjective(approval.projectId);
+      if (!project || !objective) return;
+      if (approval.decision === "approved") {
+        const activePlan = this.store.activePlan(approval.projectId);
+        if (activePlan && activePlan.objectiveId === objective.id) {
+          this.store.setProjectStatus(approval.projectId, "active");
+        } else {
+          this.startPlanning(approval.projectId, objective.id);
+        }
+      }
+      return;
+    }
     const mission = this.store.getMission(approval.missionId);
-    if (!mission) return;
+    if (!mission || mission.projectId !== approval.projectId) return;
+    if (mission.planId) {
+      const activePlan = this.store.activePlan(mission.projectId);
+      if (!activePlan || activePlan.id !== mission.planId) {
+        this.store.appendAudit(
+          mission.projectId,
+          "engine",
+          "approval.stale_ignored",
+          `${approval.id}: mission ${mission.id} belongs to inactive plan ${mission.planId}`,
+        );
+        return;
+      }
+    }
     if (approval.decision === "approved") {
       if (mission.state === "blocked") {
         this.store.transitionMission(mission.id, "ready", "unblocked by user approval");
@@ -1033,16 +1092,6 @@ async function worktreeChangedFiles(
   return [...new Set([...committed, ...uncommitted])];
 }
 
-function inferRole(criterion: string): Mission["role"] {
-  const lower = criterion.toLowerCase();
-  if (/(ui|screen|page|frontend|css|design|écran|interface)/.test(lower)) return "frontend";
-  if (/(deploy|infra|docker|ci|pipeline)/.test(lower)) return "infrastructure";
-  if (/(secur|auth|encrypt|vuln)/.test(lower)) return "cybersecurity";
-  if (/(test|qa|coverage)/.test(lower)) return "qa";
-  if (/(doc|readme|guide)/.test(lower)) return "documentation";
-  return "backend";
-}
-
 function buildSystemPrompt(
   project: Project,
   mission: Mission,
@@ -1070,39 +1119,6 @@ function formatBrainContext(entries: ReturnType<Store["listBrainEntries"]>): str
     .slice(-20)
     .map((entry) => `[${entry.kind}] ${entry.title}: ${entry.body}`.trim());
   return selected.join("\n").slice(-8_000);
-}
-
-function detectProjectChecks(project: Project): {
-  requiredChecks: CheckpointKind[];
-  checkCommands: Record<string, string[]>;
-} {
-  if (!project.repoPath) return { requiredChecks: [], checkCommands: {} };
-
-  const requiredChecks: CheckpointKind[] = ["architecture_rule"];
-  const checkCommands: Record<string, string[]> = {
-    architecture_rule: ["git", "diff", "--check", "HEAD"],
-  };
-  const packageJsonPath = join(project.repoPath, "package.json");
-  if (existsSync(packageJsonPath)) {
-    try {
-      const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
-      const scripts = pkg.scripts ?? {};
-      const runner = existsSync(join(project.repoPath, "pnpm-lock.yaml")) ? "pnpm" : "npm";
-      for (const kind of ["lint", "typecheck", "test", "build"] as const) {
-        if (!scripts[kind]) continue;
-        requiredChecks.push(kind);
-        checkCommands[kind] = [runner, "run", kind];
-      }
-    } catch {
-      // Malformed project metadata is surfaced by the architecture check and
-      // the coding agent; never invent a passing package command.
-    }
-  } else if (existsSync(join(project.repoPath, "Package.swift"))) {
-    requiredChecks.push("build", "test");
-    checkCommands.build = ["swift", "build"];
-    checkCommands.test = ["swift", "test"];
-  }
-  return { requiredChecks, checkCommands };
 }
 
 function buildPullRequestBody(

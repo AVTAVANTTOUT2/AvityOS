@@ -3,6 +3,7 @@ import {
   Bot, Brain, ChevronLeft, Clock, Folder, GitBranch, Pencil, TrendingUp, Zap,
 } from "lucide-react";
 import { useData } from "../../lib/data";
+import { BrainPanel } from "../components/BrainPanel";
 import { NewProjectModal } from "../components/NewProjectModal";
 import { Bar2, cn, Glass, StatusDot } from "../components/shared";
 import { CodePRScreen } from "./CodePRScreen";
@@ -172,7 +173,12 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
           </div>
         </div>
       )}
-      {tab === "plan" && <div className="max-w-md">{nextSteps}</div>}
+      {tab === "plan" && (
+        <div className="grid grid-cols-[1fr_264px] gap-4 items-start">
+          <BrainPanel projectId={String(p.id)} />
+          {nextSteps}
+        </div>
+      )}
       {tab === "missions" && <MissionsScreen projectId={p.id} />}
       {tab === "team" && <TeamScreen projectId={p.id} projectName={p.name} />}
       {tab === "code" && <CodePRScreen projectId={p.id} projectName={p.name} />}

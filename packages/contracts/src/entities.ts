@@ -3,6 +3,8 @@ import {
   AuthMethod,
   AutonomyProfile,
   BrainEntryKind,
+  BrainProvenance,
+  ReplanTrigger,
   CheckpointKind,
   CheckpointStatus,
   InterventionStatus,
@@ -106,6 +108,22 @@ export const Plan = z.object({
   summary: z.string(),
   milestones: z.array(Milestone).default([]),
   active: z.boolean(),
+  /** Objective revision this plan version was produced for. */
+  objectiveId: Id.nullable().default(null),
+  /** AI planning provenance; `fake_fixture` output is never real evidence. */
+  provenance: BrainProvenance.nullable().default(null),
+  providerId: z.string().nullable().default(null),
+  model: z.string().nullable().default(null),
+  /** SHA-256 of the repository snapshot the plan was reasoned from. */
+  snapshotHash: z.string().nullable().default(null),
+  /** Set when this version replaced a previous one from real evidence. */
+  replanTrigger: ReplanTrigger.nullable().default(null),
+  replanCause: z.string().nullable().default(null),
+  replanSources: z.array(z.string()).default([]),
+  basedOnVersion: z.number().int().min(1).nullable().default(null),
+  analysisRunId: Id.nullable().default(null),
+  architectureRunId: Id.nullable().default(null),
+  planRunId: Id.nullable().default(null),
 });
 export type Plan = z.infer<typeof Plan>;
 
@@ -127,6 +145,8 @@ export const MissionContract = z.object({
   expectedArtifacts: z.array(z.string()).default([]),
   /** Coding missions cannot validate successfully without a real diff. */
   workspaceChangesRequired: z.boolean().optional(),
+  /** Conditions under which the mission must escalate to a human. */
+  escalationConditions: z.array(z.string()).default([]),
 });
 export type MissionContract = z.infer<typeof MissionContract>;
 
@@ -145,6 +165,8 @@ export const Mission = z.object({
   maxCorrectionAttempts: z.number().int().min(0).default(3),
   priority: z.number().int().min(0).max(100).default(50),
   stateReason: z.string().nullable(),
+  /** Stable logical key from the AI plan; ids remain server-minted. */
+  logicalKey: z.string().nullable().default(null),
 });
 export type Mission = z.infer<typeof Mission>;
 

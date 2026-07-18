@@ -51,6 +51,8 @@ async function main(): Promise<void> {
   if (!defaultModels.has("fake")) defaultModels.set("fake", "fake:code");
   const reviewModels = parseModelMap(process.env.AVITY_REVIEW_MODELS);
   if (!reviewModels.has("fake")) reviewModels.set("fake", "fake:review-approve");
+  const brainModels = parseModelMap(process.env.AVITY_BRAIN_MODELS);
+  if (!brainModels.has("fake")) brainModels.set("fake", "fake:plan");
 
   const engine = new Engine(
     store,
@@ -66,6 +68,7 @@ async function main(): Promise<void> {
     defaultModels,
     reviewModels,
     parseRoleProviderMap(process.env.AVITY_ROLE_PROVIDERS),
+    brainModels,
   );
   engine.start();
 

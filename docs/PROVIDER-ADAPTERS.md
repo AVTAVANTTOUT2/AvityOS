@@ -29,6 +29,25 @@ Model names and base URLs are configuration. OpenAI uses `/v1/responses` with
 contract-tested with injected HTTP responses; live API smoke tests require the
 operator's credentials and are not part of credential-free CI.
 
+## Reasoning (brain) runs
+
+The central brain's analysis/architecture/plan steps run through the same
+`ProviderAdapter` interface. Editing capability is **not** required:
+text-only HTTP adapters remain valid analysts and planners. Adapters do not
+advertise `structuredOutput`, and AvityOS does not pretend otherwise — the
+pipeline accepts a textual answer containing one JSON object (fenced or
+inline), extracts it and validates it strictly against the versioned zod
+contracts, with a bounded repair prompt when it is invalid. After
+exhaustion, the project is blocked with an intervention; a heuristic plan is
+never silently substituted.
+
+`AVITY_BRAIN_MODELS` selects the reasoning model per provider (for example
+`anthropic=claude-sonnet-4-5,fake=fake:plan`). The reasoning chain prefers
+`AVITY_ROLE_PROVIDERS`' `orchestrator` entry, then the global chain, with
+the standard fallback policy. The fake adapter's `fake:plan*` models are
+deterministic fixtures; every brain run and plan they produce is persisted
+with `fake_fixture` provenance and is never real planning evidence.
+
 ## Routing and fallback
 
 `AVITY_PROVIDER_CHAIN` defines the global order. `AVITY_ROLE_PROVIDERS` can

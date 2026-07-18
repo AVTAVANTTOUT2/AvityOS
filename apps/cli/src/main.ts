@@ -221,7 +221,44 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
         dependencies: { missionId: string; dependsOnMissionId: string }[];
       }>(`/v1/projects/${projectId}/plan`);
       out(ctx, { plan, dependencies }, (d: { plan: Record<string, unknown> }) =>
-        `plan v${d.plan.version}: ${d.plan.summary}`,
+        [
+          `plan v${d.plan.version}: ${d.plan.summary}`,
+          `provenance: ${d.plan.provenance ?? "(pre-brain plan)"}${d.plan.providerId ? ` — ${d.plan.providerId}/${d.plan.model}` : ""}`,
+          ...(d.plan.replanTrigger ? [`replanned (${d.plan.replanTrigger}): ${d.plan.replanCause}`] : []),
+        ].join("\n"),
+      );
+    },
+  },
+
+  brain: {
+    show: async (ctx) => {
+      const projectId = requireArg(ctx, 1, "project-id");
+      const state = await ctx.client.get<{
+        status: string;
+        currentStep: string | null;
+        runs: Record<string, unknown>[];
+        analysis: { summary?: string; feasibility?: string; risks?: { title: string; severity: string }[] } | null;
+        architecture: { overview?: string } | null;
+        plan: Record<string, unknown> | null;
+        dependencies: { missionId: string; dependsOnMissionId: string }[];
+        replanCount: number;
+        lastReplan: { trigger: string; cause: string; planVersion: number } | null;
+      }>(`/v1/projects/${projectId}/brain/state`);
+      out(ctx, state, (s: typeof state) =>
+        [
+          `status: ${s.status}${s.currentStep ? ` (step: ${s.currentStep})` : ""}`,
+          `plan: ${s.plan ? `v${s.plan.version} [${s.plan.provenance ?? "?"}] via ${s.plan.providerId}/${s.plan.model}` : "(none persisted)"}`,
+          `analysis: ${s.analysis?.summary ?? "(none persisted)"}`,
+          `feasibility: ${s.analysis?.feasibility ?? "—"}; risks: ${(s.analysis?.risks ?? []).map((r) => `${r.title} (${r.severity})`).join(", ") || "—"}`,
+          `architecture: ${s.architecture?.overview?.slice(0, 200) ?? "(none persisted)"}`,
+          `dependencies: ${s.dependencies.length}`,
+          `replans: ${s.replanCount}${s.lastReplan ? ` — last: v${s.lastReplan.planVersion} (${s.lastReplan.trigger}) ${s.lastReplan.cause}` : ""}`,
+          "runs:",
+          table(
+            s.runs.map((r) => ({ step: r.step, state: r.state, attempt: r.attempt, provider: r.providerId, model: r.model, provenance: r.provenance })),
+            ["step", "state", "attempt", "provider", "model", "provenance"],
+          ),
+        ].join("\n"),
       );
     },
   },
@@ -363,6 +400,7 @@ commands:
   project list | show <id>
   objective submit <project-id> <text> [criteria...]
   plan show <project-id>
+  brain show <project-id>                persisted AI planning state
   mission list <project-id>
   run list [--project <id>] | logs <run-id> | pause|resume|cancel <mission-id>
   intervention list | answer <id> [q=answer...|--decision approved|rejected]
