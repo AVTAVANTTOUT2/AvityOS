@@ -5,7 +5,7 @@ Evidence date: 2026-07-17. Status: ✅ implemented and locally reproduced ·
 
 | Requirement | Status | Reproducible evidence / limitation |
 | --- | --- | --- |
-| Real web state, auth and browser behavior | 🟡 | Typed REST/SSE DataProvider, HttpOnly login, explicit offline/demo separation; 3 Vitest + 1 Playwright E2E pass. Remaining: split the large Figma-derived `App.tsx` and wire secondary presentational controls. |
+| Real web state, auth and browser behavior | ✅ | Typed REST/SSE DataProvider, HttpOnly login, explicit offline/demo separation. The Figma-derived `App.tsx` is split into `app/screens/*` and `app/components/*` modules; secondary controls are wired to DataProvider (command palette with real projects and keyboard navigation, project-detail tabs, data-derived terminal sessions and rate-limit banner, session/activity filters, autonomy radios, settings toggles). 11 Vitest + 1 Playwright E2E pass. |
 | Native macOS client | 🟡 | Swift build/test pass; Keychain, auth, SSE reconnect, terminal logs, deep links, notifications, Dock badge, settings/menu bar. Remaining: UI tests and signed/notarized `.app` packaging. |
 | `avity` CLI | ✅ | 7 integration tests against an in-process authenticated control plane. |
 | Durable/recoverable control plane | ✅ | SQLite migrations/event log; restart reconciliation scenario; idempotent clean-tree commits and unique PR row per mission. Vendor calls may be retried after a crash and are not exactly-once without vendor support. |
