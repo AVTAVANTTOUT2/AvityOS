@@ -745,6 +745,14 @@ export class Store {
       if (!latest || latest.id !== input.objectiveId) {
         throw new Error(`objective ${input.objectiveId} was superseded; refusing to persist a stale plan`);
       }
+      if (cleanReplan) {
+        const activeVersion = this.activePlan(input.projectId)?.version ?? 0;
+        if (activeVersion !== cleanReplan.basedOnVersion) {
+          throw new Error(
+            `stale replan base v${cleanReplan.basedOnVersion}; active plan is v${activeVersion}`,
+          );
+        }
+      }
 
       const version = (this.db
         .prepare("SELECT COALESCE(MAX(version), 0) + 1 AS v FROM plans WHERE project_id = ?")

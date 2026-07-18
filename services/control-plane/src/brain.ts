@@ -192,10 +192,14 @@ export class BrainPipeline {
         return { status: "deferred", reason: "an active mission is in flight; a replan never replaces it" };
       }
 
-      // Idempotent per (objective, trigger, cause): re-requesting the same
-      // evidence never creates a second plan version.
-      const causeHash = createHash("sha256").update(replan.cause).digest("hex").slice(0, 16);
-      replanIdempotencyKey = `replan:${projectId}:${objectiveId}:${replan.trigger}:${causeHash}`;
+      // Idempotent per objective, trigger and complete evidence fingerprint:
+      // re-requesting the same evidence never creates a second plan version,
+      // while genuinely new sources are allowed to produce a new plan.
+      const evidenceHash = createHash("sha256")
+        .update(JSON.stringify({ cause: replan.cause, sources: [...replan.sources].sort() }))
+        .digest("hex")
+        .slice(0, 16);
+      replanIdempotencyKey = `replan:${projectId}:${objectiveId}:${replan.trigger}:${evidenceHash}`;
       const existing = this.store.findIdempotent(replanIdempotencyKey);
       if (existing?.resourceType === "plan") {
         const plan = this.store.getPlan(existing.resourceId);
@@ -403,6 +407,7 @@ export class BrainPipeline {
         model,
         systemPrompt: prompts.systemPrompt,
         userPrompt: prompts.userPrompt,
+        ...(input.project.repoPath ? { cwd: input.project.repoPath } : {}),
         timeoutMs: this.config.stepTimeoutMs,
       });
       this.activeHandles.set(run.id, handle);
@@ -410,7 +415,12 @@ export class BrainPipeline {
       let resultText: string | null = null;
       let streamed = "";
       let error: { category: string; message: string; retryAfterMs: number | null } | null = null;
+      let timedOut = false;
       const usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        void handle.cancel().catch(() => undefined);
+      }, this.config.stepTimeoutMs);
       try {
         for await (const ev of handle.events) {
           if (ev.type === "output") streamed += ev.text;
@@ -434,11 +444,20 @@ export class BrainPipeline {
           }
         }
       } finally {
+        clearTimeout(timeout);
         this.activeHandles.delete(run.id);
       }
 
       // A stop mid-step leaves this run `running`; recovery fails it once.
       if (this.stopped) throw new BrainStopped();
+
+      if (timedOut) {
+        error = {
+          category: "transient_network",
+          message: `brain step timed out after ${this.config.stepTimeoutMs}ms`,
+          retryAfterMs: null,
+        };
+      }
 
       const text = resultText ?? (streamed || null);
       if (error || text === null) {

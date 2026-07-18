@@ -71,10 +71,37 @@ async function makeFixtureRepo(scratch: string): Promise<string> {
 class RecordingFake extends FakeProviderAdapter {
   readonly systemPrompts: string[] = [];
   readonly userPrompts: string[] = [];
+  readonly workingDirectories: (string | undefined)[] = [];
   override startRun(input: Parameters<FakeProviderAdapter["startRun"]>[0]) {
     this.systemPrompts.push(input.systemPrompt);
     this.userPrompts.push(input.userPrompt);
+    this.workingDirectories.push(input.cwd);
     return super.startRun(input);
+  }
+}
+
+/** Provider that ignores timeoutMs and only stops when the pipeline cancels it. */
+class NeverCompletingFake extends FakeProviderAdapter {
+  cancelled = false;
+  override startRun() {
+    let release: (() => void) | null = null;
+    let cancelled = false;
+    async function* events() {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (!cancelled) {
+        yield { type: "completed" as const, resultText: "unexpected late result" };
+      }
+    }
+    return {
+      events: events(),
+      cancel: async () => {
+        this.cancelled = true;
+        cancelled = true;
+        release?.();
+      },
+    };
   }
 }
 
@@ -128,6 +155,7 @@ describe("AI brain pipeline", () => {
       .map((prompt) => prompt.match(/^AVITY_BRAIN_STEP: (.*)$/m)?.[1])
       .filter(Boolean);
     expect(steps).toEqual(["analysis", "architecture", "plan"]);
+    expect(recording.workingDirectories).toEqual([repo, repo, repo]);
     // the prompt carries the real repository snapshot, never its secrets
     expect(recording.userPrompts[0]).toContain("README.md");
     expect(recording.userPrompts.join()).not.toContain("do-not-leak-me");
@@ -402,8 +430,11 @@ describe("AI brain pipeline", () => {
     expect(planV2.replanCause).toContain("durable decision changed");
     expect(planV2.replanSources).toEqual(["decision:test"]);
     expect(planV2.basedOnVersion).toBe(planV1.version);
-    const causeHash = createHash("sha256").update("durable decision changed").digest("hex").slice(0, 16);
-    expect(store.findIdempotent(`replan:${project.id}:${objective.id}:new_evidence:${causeHash}`)).toEqual({
+    const evidenceHash = createHash("sha256")
+      .update(JSON.stringify({ cause: "durable decision changed", sources: ["decision:test"] }))
+      .digest("hex")
+      .slice(0, 16);
+    expect(store.findIdempotent(`replan:${project.id}:${objective.id}:new_evidence:${evidenceHash}`)).toEqual({
       resourceType: "plan",
       resourceId: planV2.id,
     });
@@ -419,6 +450,73 @@ describe("AI brain pipeline", () => {
     expect(repeated.status).toBe("exists");
     expect(repeated.status === "exists" && repeated.plan.id).toBe(planV2.id);
     expect(store.listPlans(project.id)).toHaveLength(2);
+
+    const newEvidence = await engine.brain.ensurePlan(project.id, objective.id, {
+      trigger: "new_evidence",
+      cause: "durable decision changed",
+      sources: ["decision:additional-proof"],
+    });
+    expect(newEvidence.status).toBe("planned");
+    expect(store.listPlans(project.id)).toHaveLength(3);
+  });
+
+  it("enforces brain timeouts even when an adapter ignores timeoutMs", async () => {
+    const provider = new NeverCompletingFake();
+    ({ store, engine } = makeEngine(db, {
+      providers: new Map<string, ProviderAdapter>([["fake", provider]]),
+      config: { brainStepTimeoutMs: 25, maxProviderRetries: 0 },
+    }));
+    const project = store.createProject({
+      name: "Timeout", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(project.id, "Bound every brain provider call", ["timeout is durable"]);
+
+    engine.analyzeObjective(project.id, objective.id);
+    await waitFor(() => store.getProject(project.id)?.status === "blocked", 1000);
+
+    expect(provider.cancelled).toBe(true);
+    expect(store.listBrainRuns(project.id, objective.id)[0]).toMatchObject({
+      state: "failed",
+      errorCategory: "transient_network",
+    });
+  });
+
+  it("rejects a stale replan base without replacing the active plan", async () => {
+    const project = store.createProject({
+      name: "Stale replan", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(project.id, "Keep concurrent replans ordered", ["active plan is preserved"]);
+    engine.analyzeObjective(project.id, objective.id);
+    await waitFor(() => store.activePlan(project.id) !== null);
+    const active = store.activePlan(project.id)!;
+
+    expect(() =>
+      store.createBrainPlan({
+        projectId: project.id,
+        objectiveId: objective.id,
+        summary: "stale replacement",
+        milestones: [],
+        provenance: "live",
+        providerId: "test",
+        model: "test",
+        snapshotHash: null,
+        analysisRunId: null,
+        architectureRunId: null,
+        planRunId: null,
+        idempotencyKey: null,
+        replan: {
+          trigger: "new_evidence",
+          cause: "concurrent stale result",
+          sources: ["evidence:stale"],
+          basedOnVersion: active.version - 1,
+        },
+        missions: [],
+      }),
+    ).toThrow(/stale replan base/i);
+    expect(store.activePlan(project.id)?.id).toBe(active.id);
+    expect(store.listPlans(project.id)).toHaveLength(1);
   });
 
   it("produces plan v2 from a real mission failure, bounded by the replan limit", async () => {
