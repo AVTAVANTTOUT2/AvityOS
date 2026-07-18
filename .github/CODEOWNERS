@@ -1,0 +1,14 @@
+# Propriétaire par défaut du dépôt
+* @AVTAVANTTOUT2
+
+# Zones sensibles et importantes
+/.github/workflows/ @AVTAVANTTOUT2
+/services/control-plane/ @AVTAVANTTOUT2
+/services/worker/ @AVTAVANTTOUT2
+/packages/contracts/ @AVTAVANTTOUT2
+/packages/policy/ @AVTAVANTTOUT2
+/packages/providers/ @AVTAVANTTOUT2
+/apps/web/ @AVTAVANTTOUT2
+/apps/cli/ @AVTAVANTTOUT2
+/apps/macos/ @AVTAVANTTOUT2
+/docs/SECURITY.md @AVTAVANTTOUT2
