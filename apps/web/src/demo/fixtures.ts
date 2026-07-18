@@ -19,6 +19,12 @@ export interface Project {
   cost: string;
   status: string;
   apiId?: string;
+  repoPath: string | null;
+  repoRemoteUrl: string | null;
+  autonomyProfile: string;
+  budgetUsd: number | null;
+  budgetWarnAtFraction: number;
+  acceptanceCriteria: string[];
 }
 
 export const PROJECTS: Project[] = [
@@ -28,6 +34,9 @@ export const PROJECTS: Project[] = [
     phase: "Développement backend", progress: 67, health: "good",
     activeAgents: 4, branch: "main", lastActivity: "il y a 3 min",
     nextCheckpoint: "v0.3 API complète", cost: "€124", status: "active",
+    repoPath: "/demo/saas-facturation", repoRemoteUrl: "https://github.com/demo/saas-facturation.git",
+    autonomyProfile: "autonomous_with_checkpoints", budgetUsd: 400, budgetWarnAtFraction: 0.8,
+    acceptanceCriteria: ["Facturation et abonnements validés"],
   },
   {
     id: 2, name: "Plateforme Réservation",
@@ -35,6 +44,9 @@ export const PROJECTS: Project[] = [
     phase: "Tests & QA", progress: 89, health: "warning",
     activeAgents: 2, branch: "main", lastActivity: "il y a 12 min",
     nextCheckpoint: "Mise en production", cost: "€287", status: "active",
+    repoPath: "/demo/reservation", repoRemoteUrl: "https://github.com/demo/reservation.git",
+    autonomyProfile: "supervised", budgetUsd: 500, budgetWarnAtFraction: 0.75,
+    acceptanceCriteria: ["Réservations testées de bout en bout"],
   },
   {
     id: 3, name: "API Finance",
@@ -42,6 +54,9 @@ export const PROJECTS: Project[] = [
     phase: "Revue sécurité", progress: 41, health: "blocked",
     activeAgents: 0, branch: "feature/security", lastActivity: "il y a 2h",
     nextCheckpoint: "Audit pentest", cost: "€89", status: "blocked",
+    repoPath: "/demo/api-finance", repoRemoteUrl: "https://github.com/demo/api-finance.git",
+    autonomyProfile: "supervised", budgetUsd: 250, budgetWarnAtFraction: 0.8,
+    acceptanceCriteria: ["Audit de sécurité sans finding critique"],
   },
   {
     id: 4, name: "App Mobile Sport",
@@ -49,6 +64,9 @@ export const PROJECTS: Project[] = [
     phase: "Conception UI", progress: 23, health: "good",
     activeAgents: 3, branch: "main", lastActivity: "il y a 8 min",
     nextCheckpoint: "Maquettes validées", cost: "€56", status: "active",
+    repoPath: null, repoRemoteUrl: null, autonomyProfile: "maximum_autonomy",
+    budgetUsd: null, budgetWarnAtFraction: 0.8,
+    acceptanceCriteria: ["Application iOS validée sur appareil"],
   },
 ];
 

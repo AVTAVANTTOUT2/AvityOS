@@ -5,6 +5,7 @@ import {
   Mission,
   MissionState,
   ProviderErrorCategory,
+  UpdateProjectRequest,
 } from "./index.js";
 
 describe("contracts", () => {
@@ -37,6 +38,26 @@ describe("contracts", () => {
     const req = CreateProjectRequest.parse({ name: "Demo" });
     expect(req.autonomyProfile).toBe("autonomous_with_checkpoints");
     expect(req.repoPath).toBeNull();
+    expect(req.defaultBranch).toBe("main");
+    expect(req.budgetWarnAtFraction).toBe(0.8);
+  });
+
+  it("validates complete project onboarding fields", () => {
+    const req = CreateProjectRequest.parse({
+      name: "Demo",
+      repoPath: "/srv/demo",
+      repoRemoteUrl: "git@github.com:example/demo.git",
+      defaultBranch: "develop",
+      objective: "Deliver the complete onboarding flow",
+      acceptanceCriteria: ["web persists every field", "CLI supports updates"],
+      budgetUsd: 125,
+      budgetWarnAtFraction: 0.75,
+    });
+    expect(req.acceptanceCriteria).toHaveLength(2);
+    expect(req.repoRemoteUrl).toBe("git@github.com:example/demo.git");
+    expect(UpdateProjectRequest.parse({ budgetUsd: 125 })).toEqual({ budgetUsd: 125 });
+    expect(UpdateProjectRequest.safeParse({}).success).toBe(false);
+    expect(CreateProjectRequest.safeParse({ name: "X", repoRemoteUrl: "https://github.com/x/y" }).success).toBe(false);
   });
 
   it("validates event envelopes with resume sequence", () => {

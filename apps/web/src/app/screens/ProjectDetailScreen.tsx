@@ -1,8 +1,9 @@
 import { useState } from "react";
 import {
-  Bot, Brain, ChevronLeft, Clock, Folder, GitBranch, TrendingUp, Zap,
+  Bot, Brain, ChevronLeft, Clock, Folder, GitBranch, Pencil, TrendingUp, Zap,
 } from "lucide-react";
 import { useData } from "../../lib/data";
+import { NewProjectModal } from "../components/NewProjectModal";
 import { Bar2, cn, Glass, StatusDot } from "../components/shared";
 import { CodePRScreen } from "./CodePRScreen";
 import { MissionsScreen } from "./MissionsScreen";
@@ -24,6 +25,7 @@ const HEALTH_BADGES: Record<string, { label: string; className: string }> = {
 export function ProjectDetailScreen({ projectId, onBack }: { projectId: number | string; onBack: () => void }) {
   const { projects: PROJECTS, agents: AGENTS, prs: PRS, kanban } = useData();
   const [tab, setTab] = useState("overview");
+  const [editing, setEditing] = useState(false);
   const p = PROJECTS.find(x => x.id === projectId);
   if (!p) {
     return <div className="p-6 text-sm text-[#74716B]">Projet introuvable. <button className="text-[#5267D9] underline" onClick={onBack}>Retour</button></div>;
@@ -84,6 +86,7 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
           <div className="text-right">
             <div className="text-[10px] text-[#74716B]">Progression</div>
             <div className="text-xl font-semibold text-[#202124]">{p.progress}%</div>
+            <button onClick={() => setEditing(true)} className="mt-1 inline-flex items-center gap-1 text-[10px] text-[#5267D9]"><Pencil size={10} />Modifier</button>
           </div>
         </div>
         <div className="mt-4"><Bar2 value={p.progress} /></div>
@@ -112,6 +115,22 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
                 <Brain size={11} className="text-[#5267D9]" />Résumé
               </div>
               <p className="text-[12px] text-[#202124] leading-relaxed">{summary}</p>
+            </Glass>
+            <Glass className="p-5">
+              <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-3">Configuration persistée</div>
+              <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-[10px]">
+                <dt className="text-[#74716B]">Objectif</dt><dd className="text-[#202124]">{p.goal}</dd>
+                <dt className="text-[#74716B]">Critères d'acceptation</dt>
+                <dd className="text-[#202124]">
+                  {p.acceptanceCriteria.length ? <ul className="list-disc ml-4">{p.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul> : "Aucun"}
+                </dd>
+                <dt className="text-[#74716B]">Dépôt local</dt><dd className="font-mono text-[#202124] break-all">{p.repoPath ?? "Aucun dépôt"}</dd>
+                <dt className="text-[#74716B]">Remote GitHub</dt><dd className="font-mono text-[#202124] break-all">{p.repoRemoteUrl ?? "Aucun remote"}</dd>
+                <dt className="text-[#74716B]">Branche principale</dt><dd className="font-mono text-[#202124]">{p.branch}</dd>
+                <dt className="text-[#74716B]">Autonomie</dt><dd className="text-[#202124]">{p.autonomyProfile}</dd>
+                <dt className="text-[#74716B]">Budget</dt><dd className="text-[#202124]">{p.budgetUsd === null ? "Sans limite" : `$${p.budgetUsd.toFixed(2)}`}</dd>
+                <dt className="text-[#74716B]">Seuil d'alerte</dt><dd className="text-[#202124]">{p.budgetUsd === null ? "Non applicable" : `${Math.round(p.budgetWarnAtFraction * 100)} %`}</dd>
+              </dl>
             </Glass>
             <Glass className="p-5">
               <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-3">Agents actifs</div>
@@ -157,6 +176,7 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
       {tab === "missions" && <MissionsScreen projectId={p.id} />}
       {tab === "team" && <TeamScreen projectId={p.id} projectName={p.name} />}
       {tab === "code" && <CodePRScreen projectId={p.id} projectName={p.name} />}
+      {editing && <NewProjectModal project={p} onClose={() => setEditing(false)} />}
     </div>
   );
 }

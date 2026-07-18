@@ -208,6 +208,8 @@ integration is finished.
 
 Implemented and covered by automated tests:
 
+- complete project onboarding and idempotent updates across Web, CLI and the
+  public API, with server-canonicalized Git paths, branches and GitHub remotes;
 - durable objective, clarification, planning, mission and intervention flows;
 - restart recovery, transactional events and a hash-chained audit trail;
 - concurrent project isolation and ordered per-project execution;
@@ -222,6 +224,9 @@ Implemented and covered by automated tests:
 
 Known remaining proof or product work:
 
+- the current deterministic planner is not yet the central AI brain described
+  in the product contract; analysis, architecture, DAG delegation and dynamic
+  replanning are the next roadmap chantier;
 - live-provider smoke tests require operator-owned API credentials;
 - autonomous push and draft-PR creation still need a dedicated external
   fixture repository and GitHub credentials for end-to-end proof;
@@ -287,10 +292,24 @@ Drive the same control plane from the CLI:
 
 ```sh
 node apps/cli/dist/main.js doctor
-node apps/cli/dist/main.js project create "My project"
-node apps/cli/dist/main.js objective submit <project-id> \
-  "Build the requested product" "All acceptance criteria pass"
+node apps/cli/dist/main.js project create "My project" \
+  --repo /absolute/path/to/repository \
+  --remote git@github.com:owner/repository.git \
+  --branch main \
+  --objective "Build the requested product" \
+  --criterion "All acceptance criteria pass" \
+  --criterion "Documentation is current" \
+  --autonomy autonomous_with_checkpoints \
+  --budget 100 --warn-at 80
+
+# A greenfield project can be created without --repo/--remote.
+node apps/cli/dist/main.js project update <project-id> --budget 150 --warn-at 70
 ```
+
+Repository paths are never trusted from clients. The control plane resolves
+the path on its own host, requires an accessible Git working tree, verifies the
+local default branch and confirms that the requested GitHub repository matches
+a configured Git remote before persisting canonical values.
 
 No paid credentials are required to test the orchestration engine. The
 deterministic fake provider exercises the isolated worktree, checks, correction,
@@ -321,6 +340,7 @@ pnpm audit --audit-level high
 - [Runbooks](docs/RUNBOOKS.md) — failure handling
 - [ADRs](docs/adr/) — versioned architecture decisions
 - [Traceability](docs/TRACEABILITY.md) — definition-of-done evidence map
+- [Roadmap](docs/ROADMAP.md) — mandatory product dependency order
 
 ## Delivery discipline
 

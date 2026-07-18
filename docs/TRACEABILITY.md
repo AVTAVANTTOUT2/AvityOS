@@ -1,13 +1,14 @@
 # Definition-of-done traceability
 
-Evidence date: 2026-07-17. Status: ✅ implemented and locally reproduced ·
+Evidence date: 2026-07-18. Status: ✅ implemented and locally reproduced ·
 🟡 implemented/partial with the exact remaining proof or limitation stated.
 
 | Requirement | Status | Reproducible evidence / limitation |
 | --- | --- | --- |
-| Real web state, auth and browser behavior | 🟡 | Typed REST/SSE DataProvider, HttpOnly login, explicit offline/demo separation. `App.tsx` is split into `app/screens/*` and `app/components/*`; the stable control-plane project ID flows from cards and the ⌘K palette into a per-project detail, whose missions, agents, plan and PRs are filtered by ID (including homonymous-project coverage); terminal sessions are modeled per terminal with their own logs; legal mission cancellation, terminal cancellation and intervention choices call real endpoints. Pause/resume stays explicitly disabled because the control plane cannot yet suspend the active provider run atomically. 21 Vitest + 1 Playwright E2E pass. Remaining: live-mode mutations exercised only via unit tests and API-level tests, not yet via a browser E2E against a live control plane; settings sections beyond GitHub/Providers are placeholders. |
+| Complete project onboarding | ✅ | Public create/configuration/PATCH API; normalized objectives and budgets; server-side realpath, Git worktree, local branch and configured GitHub remote validation; Web create/edit/read-only configuration; equivalent CLI create/update/show options. Dedicated contract, control-plane, Web and CLI tests cover valid/no-repo creation, invalid paths, branch/remote validation, idempotent clarification retries, safe queued-plan supersession, in-flight revision conflicts, explicit empty-objective rejection, budget enforcement, homonymous isolation and real UI payload transmission. Local full gates passed; PR #30 passed [CI Linux #20](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29651872643) and [CI macOS #56](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29651872670). |
+| Real web state, auth and browser behavior | 🟡 | Typed REST/SSE DataProvider, HttpOnly login, explicit offline/demo separation. `App.tsx` is split into `app/screens/*` and `app/components/*`; the stable control-plane project ID flows from cards and the ⌘K palette into a per-project detail, whose missions, agents, plan and PRs are filtered by ID (including homonymous-project coverage); terminal sessions are modeled per terminal with their own logs; legal mission cancellation, terminal cancellation and intervention choices call real endpoints. Complete onboarding create/edit/read-only state is wired to the public API; Playwright captures the actual multi-field browser payload. Pause/resume stays explicitly disabled because the control plane cannot yet suspend the active provider run atomically. 24 Vitest + 2 Playwright E2E pass. Remaining: the browser onboarding E2E uses an intercepted API boundary while repository validation is proven in the real control-plane suite; settings sections beyond GitHub/Providers are placeholders. |
 | Native macOS client | 🟡 | Swift build/test pass; Keychain, auth, SSE reconnect, terminal logs, deep links, notifications, Dock badge, settings/menu bar. Remaining: UI tests and signed/notarized `.app` packaging. |
-| `avity` CLI | ✅ | 7 integration tests against an in-process authenticated control plane. |
+| `avity` CLI | ✅ | 8 integration tests against an in-process authenticated control plane, including complete repository onboarding and idempotent update. |
 | Durable/recoverable control plane | ✅ | SQLite migrations/event log; restart reconciliation scenario; idempotent clean-tree commits and unique PR row per mission. Vendor calls may be retried after a crash and are not exactly-once without vendor support. |
 | Multiple isolated projects | ✅ | Scenario 3 proves concurrent project/event/usage isolation; generated missions are ordered within each project. |
 | Per-project durable brain | ✅ | Decisions/results/risks with provenance persist and are injected into author and reviewer prompts; dedicated prompt test. |
@@ -18,10 +19,10 @@ Evidence date: 2026-07-17. Status: ✅ implemented and locally reproduced ·
 | Checkpoints and independent review | ✅ | Required commands pass only on exit evidence; separate reviewer run with diff/brain/evidence; rejection loops and approval tested. |
 | Usage, quotas and budgets | ✅ | Transactional usage/budget accounting and budget escalation. Provider-reported cost remains zero unless pricing is configured. |
 | Execution security boundary | ✅ | 7 control-plane security tests, 12 worker tests, environment test, Git-hook test and sandbox read/write tests cover the audited boundary. |
-| Supply-chain gates | ✅ | Local: zero known vulnerabilities, license policy passes 446 installed packages, Gitleaks passes; CI includes blocking audit/license/Gitleaks and SPDX SBOM. |
+| Supply-chain gates | ✅ | Local: zero known vulnerabilities, license policy passes 508 installed packages, Gitleaks passes; CI includes blocking audit/license/Gitleaks and SPDX SBOM. |
 | Fake/demo honesty | ✅ | Fake is a deterministic engineering fixture; production backend failure shows `Hors ligne`; fixtures require `VITE_AVITY_DEMO=1`. |
-| Full local TS verification | ✅ | `pnpm verify`: all builds/typechecks and 99 tests pass. |
-| Browser + Swift verification | ✅ | Playwright: 1 passed. `swift build && swift test`: 1 XCTest passed. |
+| Full local TS verification | ✅ | `pnpm verify`: all builds/typechecks and 136 tests pass. |
+| Browser + Swift verification | ✅ | Current checkout: Playwright 2 passed; `swift test` built the package and passed 1 XCTest. |
 | Green GitHub Actions from corrected checkout | ✅ | [CI run #3](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29613605767) passed build, 99 tests, typecheck, Playwright, Swift, audit, 446-package licence policy, Gitleaks, SPDX SBOM and artifact upload. |
 | No self-merge | ✅ | Engine only marks approved drafts ready; it contains no merge operation. This platform branch remains unmerged. |
 

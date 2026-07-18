@@ -27,12 +27,49 @@ async function request<T>(method: string, path: string, body?: unknown, headers:
 
 export interface ApiProject {
   id: string;
+  workspaceId: string;
   name: string;
   status: string;
   autonomyProfile: string;
   description: string;
+  repoPath: string | null;
+  repoRemoteUrl: string | null;
+  defaultBranch: string;
   createdAt: string;
   updatedAt: string;
+  clarificationId?: string | null;
+}
+
+export interface ApiObjective {
+  id: string;
+  revision: number;
+  text: string;
+  acceptanceCriteria: string[];
+}
+
+export interface ApiBudget {
+  limitUsd: number;
+  spentUsd: number;
+  warnAtFraction: number;
+}
+
+export interface ApiProjectConfiguration {
+  project: ApiProject;
+  objective: ApiObjective | null;
+  budget: ApiBudget | null;
+}
+
+export interface ProjectOnboardingInput {
+  name: string;
+  description?: string;
+  repoPath: string | null;
+  repoRemoteUrl: string | null;
+  defaultBranch: string;
+  objective: string;
+  acceptanceCriteria: string[];
+  autonomyProfile: string;
+  budgetUsd: number | null;
+  budgetWarnAtFraction?: number;
 }
 
 export interface ApiMission {
@@ -114,6 +151,8 @@ export interface ApiTerminal {
 export const api = {
   health: () => request<{ status: string; version: string }>("GET", "/v1/health"),
   projects: () => request<{ items: ApiProject[] }>("GET", "/v1/projects"),
+  projectConfiguration: (projectId: string) =>
+    request<ApiProjectConfiguration>("GET", `/v1/projects/${projectId}/configuration`),
   usage: (projectId: string) =>
     request<{ inputTokens: number; outputTokens: number; costUsd: number; budget: { limitUsd: number; spentUsd: number } | null }>(
       "GET",
@@ -133,8 +172,10 @@ export const api = {
   login: (token: string) => request<{ ok: boolean }>("POST", "/v1/session", undefined, { authorization: `Bearer ${token}` }),
   logout: () => request<{ ok: boolean }>("DELETE", "/v1/session"),
 
-  createProject: (input: { name: string; description?: string; autonomyProfile?: string }) =>
+  createProject: (input: ProjectOnboardingInput) =>
     request<ApiProject>("POST", "/v1/projects", input),
+  updateProject: (projectId: string, input: ProjectOnboardingInput) =>
+    request<ApiProjectConfiguration>("PATCH", `/v1/projects/${projectId}`, input),
   submitObjective: (projectId: string, text: string, acceptanceCriteria: string[] = []) =>
     request<{ objective: { id: string }; clarificationId: string | null }>(
       "POST",
