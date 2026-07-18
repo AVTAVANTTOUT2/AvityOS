@@ -142,6 +142,32 @@ export type PolicyEffect = z.infer<typeof PolicyEffect>;
 export const WorkerStatus = z.enum(["online", "draining", "offline", "revoked"]);
 export type WorkerStatus = z.infer<typeof WorkerStatus>;
 
+/** Pipeline steps of the central AI brain (chantier 2). */
+export const BrainStep = z.enum(["analysis", "architecture", "plan"]);
+export type BrainStep = z.infer<typeof BrainStep>;
+
+export const BrainRunState = z.enum(["running", "succeeded", "failed"]);
+export type BrainRunState = z.infer<typeof BrainRunState>;
+
+/**
+ * Provenance of AI-produced planning artifacts. `fake_fixture` marks output
+ * from the deterministic offline fixture provider and must never be
+ * presented as real AI planning evidence.
+ */
+export const BrainProvenance = z.enum(["live", "fake_fixture"]);
+export type BrainProvenance = z.infer<typeof BrainProvenance>;
+
+/** Evidence-based causes that may produce a new plan version. */
+export const ReplanTrigger = z.enum([
+  "objective_revised",
+  "mission_failed",
+  "check_unsatisfiable",
+  "architecture_invalidated",
+  "dependency_invalid",
+  "new_evidence",
+]);
+export type ReplanTrigger = z.infer<typeof ReplanTrigger>;
+
 export const EventType = z.enum([
   "project.created",
   "project.updated",
@@ -152,6 +178,8 @@ export const EventType = z.enum([
   "clarification.answered",
   "plan.created",
   "plan.updated",
+  "plan.replanned",
+  "brain.step_changed",
   "mission.created",
   "mission.state_changed",
   "mission.correction_loop",
