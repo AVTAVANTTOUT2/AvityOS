@@ -16,8 +16,11 @@ function mission(overrides: Partial<BrainPlanProposal["missions"][number]> = {})
     coversCriteria: [0],
     allowedPaths: ["src/**"],
     forbiddenPaths: ["**/.env"],
-    requiredChecks: [],
-    checkCommands: {},
+    requiredChecks: ["architecture_rule", "test"],
+    checkCommands: {
+      architecture_rule: ["git", "diff", "--check", "HEAD"],
+      test: ["pnpm", "run", "test"],
+    },
     expectedArtifacts: [],
     budgetUsd: null,
     timeoutSeconds: 900,
@@ -38,6 +41,13 @@ function proposal(missions: BrainPlanProposal["missions"]): BrainPlanProposal {
 const ctx: PlanValidationContext = {
   acceptanceCriteria: ["criterion zero"],
   repoAvailable: true,
+  availableChecks: {
+    requiredChecks: ["architecture_rule", "test"],
+    checkCommands: {
+      architecture_rule: ["git", "diff", "--check", "HEAD"],
+      test: ["pnpm", "run", "test"],
+    },
+  },
   checkCommandPolicy: DEFAULT_ENGINE_CONFIG.checkCommandPolicy,
   projectBudgetUsd: 100,
 };
@@ -88,7 +98,16 @@ describe("deterministic plan validation", () => {
   });
 
   it("rejects required checks without real commands and policy-denied commands", () => {
-    expect(issuesOf(proposal([mission({ requiredChecks: ["test"] })])).join()).toContain("without a real command");
+    expect(
+      issuesOf(
+        proposal([
+          mission({
+            requiredChecks: ["architecture_rule", "test"],
+            checkCommands: { architecture_rule: ["git", "diff", "--check", "HEAD"] },
+          }),
+        ]),
+      ).join(),
+    ).toContain("without a real command");
     const denied = proposal([
       mission({ requiredChecks: ["test"], checkCommands: { test: ["rm", "-rf", "/"] } }),
     ]);
@@ -96,6 +115,28 @@ describe("deterministic plan validation", () => {
     expect(issuesOf(proposal([mission({ checkCommands: { nonsense: ["git", "status"] } })])).join()).toContain(
       "unknown check kind",
     );
+  });
+
+  it("rejects omitted, unused and invented repository checks", () => {
+    const omitted = mission({ requiredChecks: [], checkCommands: {} });
+    expect(issuesOf(proposal([omitted])).join()).toContain("omits mandatory repository check");
+
+    const invented = mission({
+      checkCommands: {
+        architecture_rule: ["git", "diff", "--check", "HEAD"],
+        test: ["pnpm", "run", "does-not-exist"],
+      },
+    });
+    expect(issuesOf(proposal([invented])).join()).toContain("does not match the repository snapshot");
+
+    const unused = mission({
+      requiredChecks: ["architecture_rule"],
+      checkCommands: {
+        architecture_rule: ["git", "diff", "--check", "HEAD"],
+        test: ["pnpm", "run", "test"],
+      },
+    });
+    expect(issuesOf(proposal([unused])).join()).toContain("unused check command");
   });
 
   it("rejects unsafe path patterns and workspace claims without a repository", () => {

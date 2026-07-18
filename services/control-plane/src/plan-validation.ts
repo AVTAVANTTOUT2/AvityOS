@@ -1,4 +1,4 @@
-import { CheckpointKind, type BrainPlanProposal } from "@avityos/contracts";
+import { CheckpointKind, type BrainPlanProposal, type RepoSnapshot } from "@avityos/contracts";
 import { DependencyCycleError, assertAcyclic } from "@avityos/orchestration";
 import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
 
@@ -7,6 +7,8 @@ export interface PlanValidationContext {
   acceptanceCriteria: readonly string[];
   /** Whether the project has a server-validated repository. */
   repoAvailable: boolean;
+  /** Server-detected checks from the bounded repository snapshot. */
+  availableChecks: RepoSnapshot["availableChecks"] | null;
   /** Policy for the real check commands missions declare. */
   checkCommandPolicy: CommandPolicy;
   /** Project budget; a single mission may not exceed it. */
@@ -98,13 +100,23 @@ export function validatePlanProposal(
       }
     }
     for (const [kind, argv] of Object.entries(mission.checkCommands)) {
-      if (!CheckpointKind.safeParse(kind).success) {
+      const parsedKind = CheckpointKind.safeParse(kind);
+      if (!parsedKind.success) {
         issues.push(`mission ${mission.key} declares a command for unknown check kind: ${kind}`);
         continue;
       }
       const verdict = isCommandAllowed(ctx.checkCommandPolicy, argv);
       if (verdict.effect !== "allow") {
         issues.push(`mission ${mission.key} check ${kind} command is not allowed by policy: ${verdict.reason}`);
+      }
+      if (!mission.requiredChecks.includes(parsedKind.data)) {
+        issues.push(`mission ${mission.key} declares an unused check command: ${kind}`);
+      }
+      const detected = ctx.availableChecks?.checkCommands[kind];
+      if (!detected) {
+        issues.push(`mission ${mission.key} check ${kind} is not available in the repository snapshot`);
+      } else if (detected.length !== argv.length || detected.some((part, index) => part !== argv[index])) {
+        issues.push(`mission ${mission.key} check ${kind} command does not match the repository snapshot`);
       }
     }
     for (const kind of mission.requiredChecks) {
@@ -114,6 +126,16 @@ export function validatePlanProposal(
       }
       if (!ctx.repoAvailable) {
         issues.push(`mission ${mission.key} requires check ${kind} but the project has no repository to run it in`);
+      }
+      if (!ctx.availableChecks?.requiredChecks.includes(kind)) {
+        issues.push(`mission ${mission.key} requires check ${kind} that is not available in the repository snapshot`);
+      }
+    }
+    if (ctx.repoAvailable) {
+      for (const kind of ctx.availableChecks?.requiredChecks ?? []) {
+        if (!mission.requiredChecks.includes(kind)) {
+          issues.push(`mission ${mission.key} omits mandatory repository check ${kind}`);
+        }
       }
     }
     if (!ctx.repoAvailable && mission.allowedPaths.length > 0) {

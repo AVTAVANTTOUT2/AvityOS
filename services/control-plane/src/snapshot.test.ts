@@ -75,6 +75,11 @@ describe("bounded repository snapshot", () => {
     await writeFile(join(repo, "secrets", "key.pem"), "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n");
     await writeFile(join(scratch, "outside.md"), "outside the repository\n");
     await symlink(join(scratch, "outside.md"), join(repo, "ARCHITECTURE.md"));
+    await writeFile(
+      join(scratch, "outside-package.json"),
+      JSON.stringify({ scripts: { test: "node outside-the-repository.js" } }),
+    );
+    await symlink(join(scratch, "outside-package.json"), join(repo, "package.json"));
     await git(repo, "add", "-A", "-f");
     await git(repo, "commit", "--no-verify", "-m", "chore: fixture with secrets");
 
@@ -87,7 +92,10 @@ describe("bounded repository snapshot", () => {
     expect(serialized).not.toContain("PRIVATE KEY");
     // symlinked document escaping the repository is not followed
     expect(snapshot.documents.some((doc) => doc.path === "ARCHITECTURE.md")).toBe(false);
+    expect(snapshot.manifests.some((manifest) => manifest.path === "package.json")).toBe(false);
+    expect(snapshot.availableChecks.requiredChecks).not.toContain("test");
     expect(serialized).not.toContain("outside the repository");
+    expect(serialized).not.toContain("outside-the-repository");
     // credential patterns inside legitimate documents are redacted
     expect(serialized).not.toContain(fakeApiKey);
     expect(snapshot.documents.find((doc) => doc.path === "README.md")?.content).toContain("[REDACTED]");
@@ -97,7 +105,8 @@ describe("bounded repository snapshot", () => {
     expect(await buildRepoSnapshot(projectFor(null))).toBeNull();
     await writeFile(join(repo, "Package.swift"), "// swift-tools-version:5.9\n");
     await commitAll(repo, "chore: swift");
-    const checks = detectRepositoryChecks(repo);
+    const tracked = new Set((await git(repo, "ls-files")).trim().split("\n"));
+    const checks = detectRepositoryChecks(repo, tracked);
     expect(checks.checkCommands.build).toEqual(["swift", "build"]);
     expect(checks.checkCommands.test).toEqual(["swift", "test"]);
   });

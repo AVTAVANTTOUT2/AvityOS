@@ -278,6 +278,7 @@ export class BrainPipeline {
           const verdict = validatePlanProposal(proposal, {
             acceptanceCriteria: objective.acceptanceCriteria,
             repoAvailable: project.repoPath !== null,
+            availableChecks: snapshot?.availableChecks ?? null,
             checkCommandPolicy: this.config.checkCommandPolicy,
             projectBudgetUsd: budget?.limitUsd ?? null,
           });

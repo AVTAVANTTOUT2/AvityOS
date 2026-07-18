@@ -37,7 +37,7 @@ export const EvidenceRef = z.object({
   ]),
   ref: z.string().min(1).max(500),
   detail: z.string().max(2000).default(""),
-});
+}).strict();
 export type EvidenceRef = z.infer<typeof EvidenceRef>;
 
 const SnapshotDocument = z.object({
@@ -84,7 +84,7 @@ export const BrainRisk = z.object({
   severity: z.enum(["low", "medium", "high"]),
   detail: z.string().max(2000).default(""),
   mitigation: z.string().max(2000).default(""),
-});
+}).strict();
 export type BrainRisk = z.infer<typeof BrainRisk>;
 
 /** Step 1 — structured analysis of the objective against the repository. */
@@ -97,7 +97,7 @@ export const BrainObjectiveAnalysis = z.object({
   risks: z.array(BrainRisk).max(50).default([]),
   /** References into the repository snapshot that support the analysis. */
   evidence: z.array(EvidenceRef).max(100).default([]),
-});
+}).strict();
 export type BrainObjectiveAnalysis = z.infer<typeof BrainObjectiveAnalysis>;
 
 /** Step 2 — proposed architecture with decisions, constraints and risks. */
@@ -109,7 +109,7 @@ export const BrainArchitectureProposal = z.object({
         name: z.string().min(1).max(200),
         responsibility: z.string().min(1).max(2000),
         paths: z.array(z.string().min(1).max(500)).max(50).default([]),
-      }),
+      }).strict(),
     )
     .min(1)
     .max(50),
@@ -118,7 +118,7 @@ export const BrainArchitectureProposal = z.object({
       z.object({
         title: z.string().min(1).max(300),
         rationale: z.string().min(1).max(2000),
-      }),
+      }).strict(),
     )
     .max(50)
     .default([]),
@@ -126,7 +126,7 @@ export const BrainArchitectureProposal = z.object({
   assumptions: z.array(z.string().min(1).max(1000)).max(50).default([]),
   risks: z.array(BrainRisk).max(50).default([]),
   evidence: z.array(EvidenceRef).max(100).default([]),
-});
+}).strict();
 export type BrainArchitectureProposal = z.infer<typeof BrainArchitectureProposal>;
 
 /** Stable logical key produced by the model, resolved server-side to an id. */
@@ -154,7 +154,7 @@ export const PlannedMission = z.object({
   timeoutSeconds: z.number().int().min(30).max(86_400).default(900),
   escalationConditions: z.array(z.string().min(1).max(1000)).max(20).default([]),
   priority: z.number().int().min(0).max(100).default(50),
-});
+}).strict();
 export type PlannedMission = z.infer<typeof PlannedMission>;
 
 export const PlannedMilestone = z.object({
@@ -162,7 +162,7 @@ export const PlannedMilestone = z.object({
   title: z.string().min(1).max(300),
   description: z.string().max(2000).default(""),
   order: z.number().int().min(0),
-});
+}).strict();
 export type PlannedMilestone = z.infer<typeof PlannedMilestone>;
 
 /** Step 3 — the versioned plan/DAG proposal, validated deterministically. */
@@ -170,7 +170,7 @@ export const BrainPlanProposal = z.object({
   summary: z.string().min(1).max(5000),
   milestones: z.array(PlannedMilestone).min(1).max(50),
   missions: z.array(PlannedMission).min(1).max(200),
-});
+}).strict();
 export type BrainPlanProposal = z.infer<typeof BrainPlanProposal>;
 
 /**

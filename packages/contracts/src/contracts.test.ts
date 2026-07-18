@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BrainObjectiveAnalysis,
   CreateProjectRequest,
   EventEnvelope,
   Mission,
@@ -78,5 +79,19 @@ describe("contracts", () => {
   it("keeps provider error categories closed", () => {
     expect(ProviderErrorCategory.options).toContain("rate_limited");
     expect(ProviderErrorCategory.safeParse("weird").success).toBe(false);
+  });
+
+  it("rejects unknown fields in reasoning-provider output", () => {
+    const analysis = {
+      summary: "Clear objective",
+      objectiveClarity: "clear",
+      feasibility: "feasible",
+      constraints: [],
+      assumptions: [],
+      risks: [],
+      evidence: [],
+      untrustedInstruction: "silently ignored before strict validation",
+    };
+    expect(BrainObjectiveAnalysis.safeParse(analysis).success).toBe(false);
   });
 });

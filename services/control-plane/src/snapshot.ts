@@ -127,20 +127,29 @@ function readBoundedFile(
  * never invent a passing command. Used both for planning context and for the
  * validation of AI-proposed mission check commands.
  */
-export function detectRepositoryChecks(repoPath: string): {
+export function detectRepositoryChecks(
+  repoPath: string,
+  trackedPaths: ReadonlySet<string>,
+): {
   requiredChecks: CheckpointKind[];
   checkCommands: Record<string, string[]>;
 } {
+  const repoRoot = realpathSync(repoPath);
   const requiredChecks: CheckpointKind[] = ["architecture_rule"];
   const checkCommands: Record<string, string[]> = {
     architecture_rule: ["git", "diff", "--check", "HEAD"],
   };
-  const packageJsonPath = join(repoPath, "package.json");
-  if (existsSync(packageJsonPath)) {
+  const packageManifest = trackedPaths.has("package.json")
+    ? readBoundedFile(repoRoot, "package.json", SNAPSHOT_LIMITS.maxManifestBytes)
+    : null;
+  if (packageManifest && !packageManifest.truncated) {
     try {
-      const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
+      const pkg = JSON.parse(packageManifest.content) as { scripts?: Record<string, string> };
       const scripts = pkg.scripts ?? {};
-      const runner = existsSync(join(repoPath, "pnpm-lock.yaml")) ? "pnpm" : "npm";
+      const pnpmLock = trackedPaths.has("pnpm-lock.yaml")
+        ? readBoundedFile(repoRoot, "pnpm-lock.yaml", 1)
+        : null;
+      const runner = pnpmLock ? "pnpm" : "npm";
       for (const kind of ["lint", "typecheck", "test", "build"] as const) {
         if (!scripts[kind]) continue;
         requiredChecks.push(kind);
@@ -150,7 +159,10 @@ export function detectRepositoryChecks(repoPath: string): {
       // Malformed project metadata is surfaced by the architecture check and
       // the coding agent; never invent a passing package command.
     }
-  } else if (existsSync(join(repoPath, "Package.swift"))) {
+  } else if (
+    trackedPaths.has("Package.swift") &&
+    readBoundedFile(repoRoot, "Package.swift", SNAPSHOT_LIMITS.maxManifestBytes)
+  ) {
     requiredChecks.push("build", "test");
     checkCommands.build = ["swift", "build"];
     checkCommands.test = ["swift", "test"];
@@ -207,7 +219,7 @@ export async function buildRepoSnapshot(project: Project): Promise<RepoSnapshot 
     .slice(0, 10)
     .map(([language]) => language);
 
-  const availableChecks = detectRepositoryChecks(repoRoot);
+  const availableChecks = detectRepositoryChecks(repoRoot, trackedSet);
 
   const evidence: EvidenceRef[] = [
     { kind: "git" as const, ref: `commit:${commit}`, detail: `branch ${branch}` },
