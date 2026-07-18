@@ -20,7 +20,7 @@ jobs:
       # Gitleaks compares the complete PR commit range. A shallow checkout
       # omits the base commit and makes the action fail before scanning.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
