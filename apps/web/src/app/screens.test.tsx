@@ -3,7 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import * as demo from "../demo/fixtures";
+import { api, type ApiBrainState } from "../lib/api";
 import { DataContext, type AppData } from "../lib/data";
+import { BrainPanel } from "./components/BrainPanel";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { InterventionsScreen } from "./screens/InterventionsScreen";
@@ -308,6 +310,63 @@ describe("controls without fake behavior", () => {
     renderWithData(<SettingsScreen initialSection="Providers" />);
     expect(screen.getByText("Anthropic / Claude")).toBeInTheDocument();
     expect(screen.getByText(/se configurent côté control plane/)).toBeInTheDocument();
+  });
+});
+
+describe("brain panel shows only persisted state", () => {
+  const persistedState: ApiBrainState = {
+    projectId: "prj_1",
+    objectiveId: "obj_1",
+    status: "planned",
+    currentStep: "plan",
+    runs: [
+      {
+        id: "brr_1", step: "analysis", state: "succeeded", attempt: 1,
+        providerId: "fake", model: "fake:plan", provenance: "fake_fixture",
+        errorCategory: null, errorDetail: null, createdAt: "2026-07-18T00:00:00Z", updatedAt: "2026-07-18T00:00:00Z",
+      },
+    ],
+    analysis: {
+      summary: "Analyse persistée du dépôt",
+      objectiveClarity: "clear",
+      feasibility: "feasible",
+      risks: [{ title: "Risque identifié", severity: "low", detail: "" }],
+    },
+    architecture: { overview: "Architecture proposée persistée" },
+    plan: {
+      id: "pln_2", version: 2, summary: "Plan actif du cerveau", provenance: "fake_fixture",
+      providerId: "fake", model: "fake:plan", snapshotHash: "abcdef1234567890",
+      replanTrigger: "mission_failed", replanCause: "mission msn_1 failed after bounded correction",
+    },
+    dependencies: [{ missionId: "msn_2", dependsOnMissionId: "msn_1" }],
+    replanCount: 1,
+    lastReplan: { trigger: "mission_failed", cause: "mission msn_1 failed", sources: ["mission:msn_1"], planVersion: 2 },
+  };
+
+  it("shows an honest demo notice instead of fake brain data", () => {
+    renderWithData(<BrainPanel projectId="1" />);
+    expect(screen.getByText(/Mode Démo/)).toBeInTheDocument();
+  });
+
+  it("renders the persisted plan, provenance, risks and replan cause in live mode", async () => {
+    const spy = vi.spyOn(api, "brainState").mockResolvedValue(persistedState);
+    renderWithData(<BrainPanel projectId="prj_1" />, makeData({ mode: "live" }));
+    expect(await screen.findByText("Plan actif du cerveau")).toBeInTheDocument();
+    expect(spy).toHaveBeenCalledWith("prj_1");
+    expect(screen.getByText(/Plan v2/)).toBeInTheDocument();
+    expect(screen.getByText("Fixture")).toBeInTheDocument();
+    expect(screen.getByText("Analyse persistée du dépôt")).toBeInTheDocument();
+    expect(screen.getByText(/Risque identifié/)).toBeInTheDocument();
+    expect(screen.getByText(/Replanifié \(mission_failed\)/)).toBeInTheDocument();
+    expect(screen.getByText(/fake\/fake:plan \[fake_fixture\]/)).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it("surfaces the API error instead of inventing brain state", async () => {
+    const spy = vi.spyOn(api, "brainState").mockRejectedValue(new Error("HTTP 503"));
+    renderWithData(<BrainPanel projectId="prj_1" />, makeData({ mode: "live" }));
+    expect(await screen.findByText(/Erreur : HTTP 503/)).toBeInTheDocument();
+    spy.mockRestore();
   });
 });
 
