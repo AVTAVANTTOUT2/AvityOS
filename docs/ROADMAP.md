@@ -4,11 +4,11 @@ L'ordre ci-dessous est obligatoire : chaque chantier stabilise les contrats et
 les garanties dont dépend le suivant. Un statut ne devient ✅ qu'avec une preuve
 reproductible dans `docs/TRACEABILITY.md`.
 
-1. **🟡 Onboarding complet des projets.** Création et modification Web/CLI,
+1. **✅ Onboarding complet des projets.** Création et modification Web/CLI,
    dépôt local canonicalisé et validé par le serveur, remote GitHub, branche
    principale, objectif, critères multiples, autonomie et budget persistés.
-   Implémentation présente dans la PR d'onboarding ; validation CI de la PR
-   requise avant de clore ce chantier.
+   Les validations locales et les CI Linux/macOS de la PR d'onboarding sont
+   reproductibles dans `docs/TRACEABILITY.md`.
 2. **⚪ Véritable cerveau IA.** Analyse, architecture, plan versionné, DAG,
    délégation spécialisée et replanification à partir de preuves réelles.
 3. **⚪ Clarifications groupées et pause/reprise atomique.** Questions
