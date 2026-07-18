@@ -213,7 +213,10 @@ Implemented and covered by automated tests:
 - a durable central AI brain: bounded secret-free repository snapshots,
   structured analysis, architecture proposals and validated plan/DAG versions
   produced through provider adapters, with bounded repair of invalid output,
-  explicit fixture provenance and evidence-based bounded replanning;
+  explicit fixture provenance and evidence-based bounded replanning. Ambiguous
+  or infeasible analyses stop before delegation; repository checks must match
+  the server snapshot exactly; replans persist their idempotency key and
+  withdraw stale interventions in the same transaction;
 - durable objective, clarification, planning, mission and intervention flows;
 - restart recovery, transactional events and a hash-chained audit trail;
 - concurrent project isolation and ordered per-project execution;

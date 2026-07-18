@@ -16,10 +16,11 @@ reproductible dans `docs/TRACEABILITY.md`.
    idempotente à partir de preuves réelles (révision d'objectif, mission
    échouée après correction), le tout via `ProviderAdapter` avec réparation
    bornée des sorties invalides et provenance `fake_fixture` explicite.
-   Reste pour ✅ : PR du chantier fusionnée avec CI Linux/macOS verts
-   référencés dans `docs/TRACEABILITY.md`, et une exécution de planification
-   avec un provider de raisonnement réel (clés opérateur), volontairement
-   reportée au chantier 4.
+   Les analyses ambiguës ou infaisables bloquent avant délégation, les checks
+   correspondent exactement au snapshot serveur et une replanification
+   persiste atomiquement sa clé tout en retirant les interventions obsolètes.
+   Reste pour ✅ : une exécution de planification avec un provider de
+   raisonnement réel (clés opérateur), volontairement reportée au chantier 4.
 3. **⚪ Clarifications groupées et pause/reprise atomique.** Questions
    matérielles regroupées, persistance des réponses et reprise transactionnelle
    du run actif.
