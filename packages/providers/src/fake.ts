@@ -36,6 +36,8 @@ import { ADAPTER_CONTRACT_VERSION } from "./types.js";
  *                            all of them (exercises a real DAG)
  *   fake:plan-invalid-once   BRAIN: first attempt per step emits broken
  *                            JSON, the repair attempt emits valid output
+ *   fake:plan-ambiguous      BRAIN: analysis requires material clarification
+ *   fake:plan-infeasible     BRAIN: analysis marks the objective infeasible
  *   fake:plan-slow           BRAIN: hangs like fake:slow (recovery paths)
  *
  * No randomness, no wall-clock dependence except the slow models' timer.
@@ -85,6 +87,8 @@ export class FakeProviderAdapter implements ProviderAdapter {
       "fake:plan",
       "fake:plan-dag",
       "fake:plan-invalid-once",
+      "fake:plan-ambiguous",
+      "fake:plan-infeasible",
       "fake:plan-slow",
     ];
   }
@@ -118,7 +122,17 @@ export class FakeProviderAdapter implements ProviderAdapter {
           yield { type: "completed", resultText: "Here is the plan: { this is deliberately broken JSON" };
           return;
         }
-        const structured = fakeBrainStepOutput(step, input.userPrompt, model === "fake:plan-dag");
+        const analysisDisposition = model === "fake:plan-ambiguous"
+          ? "ambiguous"
+          : model === "fake:plan-infeasible"
+            ? "infeasible"
+            : "actionable";
+        const structured = fakeBrainStepOutput(
+          step,
+          input.userPrompt,
+          model === "fake:plan-dag",
+          analysisDisposition,
+        );
         yield { type: "output", text: `fake brain fixture producing deterministic ${step} output\n` };
         yield { type: "usage", inputTokens: 200, outputTokens: 120, costUsd: 0 };
         yield {
@@ -241,7 +255,12 @@ function inferFixtureRole(criterion: string): string {
  * from machine-readable markers in the prompt. This is a fixture, not real
  * reasoning: the control plane records its provenance as `fake_fixture`.
  */
-function fakeBrainStepOutput(step: string, prompt: string, parallelDag: boolean): unknown {
+function fakeBrainStepOutput(
+  step: string,
+  prompt: string,
+  parallelDag: boolean,
+  analysisDisposition: "actionable" | "ambiguous" | "infeasible",
+): unknown {
   const objective = parseJsonMarker<string>(prompt, "AVITY_OBJECTIVE_JSON", "objective");
   const criteria = parseJsonMarker<string[]>(prompt, "AVITY_ACCEPTANCE_CRITERIA_JSON", []);
   const repoAvailable = parseMarker(prompt, "AVITY_REPO_AVAILABLE") === "true";
@@ -254,8 +273,8 @@ function fakeBrainStepOutput(step: string, prompt: string, parallelDag: boolean)
   if (step === "analysis") {
     return {
       summary: `Deterministic fixture analysis of: ${summarize(objective)}`,
-      objectiveClarity: "clear",
-      feasibility: "feasible",
+      objectiveClarity: analysisDisposition === "ambiguous" ? "ambiguous" : "clear",
+      feasibility: analysisDisposition === "infeasible" ? "infeasible" : "feasible",
       constraints: [],
       assumptions: ["fixture assumption: offline deterministic environment"],
       risks: [

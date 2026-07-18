@@ -179,6 +179,32 @@ describe("AI brain pipeline", () => {
     expect(store.verifyAuditChain()).toBe(true);
   });
 
+  it.each([
+    ["ambiguous", "fake:plan-ambiguous", "material ambiguity"],
+    ["infeasible", "fake:plan-infeasible", "infeasible"],
+  ] as const)("blocks after an %s AI analysis instead of scheduling work", async (_kind, model, reason) => {
+    ({ store, engine } = makeEngine(db, { brain: model }));
+    const project = store.createProject({
+      name: "Analysis gate", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Deliver a deliberately detailed objective whose material feasibility is decided by the reasoning provider",
+      ["the analysis outcome controls whether execution may begin"],
+    );
+
+    const result = await engine.brain.ensurePlan(project.id, objective.id);
+
+    expect(result.status).toBe("blocked");
+    expect(store.getProject(project.id)!.status).toBe("blocked");
+    expect(store.activePlan(project.id)).toBeNull();
+    expect(store.listMissions(project.id)).toEqual([]);
+    expect(store.listBrainRuns(project.id, objective.id).map((run) => run.step)).toEqual(["analysis"]);
+    expect(store.getObjective(objective.id)!.analysisSummary).toContain("Deterministic fixture analysis");
+    expect(store.listApprovals("open", project.id)[0]?.description).toContain(reason);
+  });
+
   it("rejects invalid JSON, repairs it within the bound and records the failed attempt", async () => {
     ({ store, engine } = makeEngine(db, { brain: "fake:plan-invalid-once" }));
     const project = store.createProject({

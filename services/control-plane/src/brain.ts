@@ -236,6 +236,17 @@ export class BrainPipeline {
         buildPrompts: (repair) =>
           buildStepPrompts({ step: "analysis", project, objective, snapshot, analysis: null, architecture: null, replan, repair }),
       });
+      this.store.setObjectiveAnalysis(objective.id, analysisResult.value.summary);
+      if (analysisResult.value.objectiveClarity === "ambiguous") {
+        throw new BrainBlocked(
+          "AI analysis found material ambiguity; revise the objective with the missing decisions before retrying",
+        );
+      }
+      if (analysisResult.value.feasibility === "infeasible") {
+        throw new BrainBlocked(
+          "AI analysis found the objective infeasible under the persisted constraints; revise the objective or constraints before retrying",
+        );
+      }
 
       this.assertPlanningBudget(projectId);
       const architectureResult = await this.runStep<Architecture>({

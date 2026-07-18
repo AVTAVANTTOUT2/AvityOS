@@ -353,7 +353,7 @@ export class Store {
   setObjectiveAnalysis(id: string, summary: string): void {
     this.db
       .prepare("UPDATE objectives SET analysis_summary = ?, updated_at = ? WHERE id = ?")
-      .run(summary, now(), id);
+      .run(redactSecrets(summary).slice(0, 5000), now(), id);
   }
 
   createClarification(
