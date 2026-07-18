@@ -16,6 +16,10 @@ const CHECK_AVITY_MD = [
   "const s=require('fs').readFileSync('AVITY.md','utf8'); if(/DEFECT/.test(s)){console.error('defect marker found');process.exit(1)}",
 ];
 
+// These tests create real Git worktrees, commits, and sandboxed subprocesses.
+// Bubblewrap startup is slower on shared Linux runners than on local macOS.
+const REAL_REPOSITORY_E2E_TIMEOUT_MS = 20_000;
+
 async function makeFixtureRepo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "avity-fixture-"));
   const repo = join(dir, "repo");
@@ -389,7 +393,7 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     expect(existsSync(done.worktreePath!)).toBe(false);
     expect((await listWorktrees(repo)).some((w) => w.branch === done.branchName)).toBe(false);
     expect(store.verifyAuditChain()).toBe(true);
-  });
+  }, REAL_REPOSITORY_E2E_TIMEOUT_MS);
 
   it("review rejection sends the mission through a corrective loop, then approves", async () => {
     ({ store, engine } = makeEngine(db, "fake:code", "fake:review-reject-once"));
@@ -425,7 +429,7 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     const commits = (await git(repo, "rev-list", "--count", `main..${done.branchName}`)).trim();
     expect(commits).toBe("1");
     expect(store.listPullRequests(project.id).filter((pr) => pr.missionId === mission.id).length).toBe(1);
-  });
+  }, REAL_REPOSITORY_E2E_TIMEOUT_MS);
 
 });
 
@@ -491,7 +495,7 @@ describe("repository-aware planning and provider capability gates", () => {
     engine.start();
     await waitFor(() => store.getProject(project.id)!.status === "completed", 10_000);
     expect(store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "architecture_rule")?.status).toBe("passed");
-  });
+  }, REAL_REPOSITORY_E2E_TIMEOUT_MS);
 
   it("serializes a project's generated missions while preserving cross-project concurrency", () => {
     ({ store, engine } = makeEngine(db, "fake:code"));
