@@ -34,6 +34,17 @@ export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 20)}`;
 }
 
+function redactStructured<T>(value: T): T {
+  if (typeof value === "string") return redactSecrets(value) as T;
+  if (Array.isArray(value)) return value.map((item) => redactStructured(item)) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactStructured(item)]),
+    ) as T;
+  }
+  return value;
+}
+
 /**
  * Persistence layer. Every mutation that changes durable state also appends
  * the corresponding event inside the same SQLite transaction, so audit
@@ -434,12 +445,22 @@ export class Store {
     sources: string[],
   ): void {
     const ts = now();
+    const cleanSources = redactStructured(sources);
     this.db
       .prepare(
         `INSERT INTO brain_entries (id, project_id, kind, title, body, sources, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(newId("brn"), projectId, kind, title, body, JSON.stringify(sources), ts, ts);
+      .run(
+        newId("brn"),
+        projectId,
+        kind,
+        redactSecrets(title).slice(0, 300),
+        redactSecrets(body).slice(0, 10_000),
+        JSON.stringify(cleanSources),
+        ts,
+        ts,
+      );
   }
 
   listBrainEntries(projectId: string): {
@@ -686,6 +707,20 @@ export class Store {
     }[];
   }): { plan: Plan; missions: Mission[]; created: boolean } {
     const CANCELLABLE: readonly MissionState[] = ["proposed", "ready", "paused", "blocked"];
+    const cleanSummary = redactSecrets(input.summary).slice(0, 5000);
+    const cleanMilestones = redactStructured(input.milestones);
+    const cleanReplan = input.replan
+      ? {
+          ...input.replan,
+          cause: redactSecrets(input.replan.cause).slice(0, 500),
+          sources: redactStructured(input.replan.sources),
+        }
+      : null;
+    const cleanMissions = input.missions.map((mission) => ({
+      ...mission,
+      title: redactSecrets(mission.title).slice(0, 300),
+      contract: redactStructured(mission.contract),
+    }));
     let planId = "";
     let created = true;
     const missionIds: string[] = [];
@@ -738,17 +773,17 @@ export class Store {
           planId,
           input.projectId,
           version,
-          input.summary,
-          JSON.stringify(input.milestones),
+          cleanSummary,
+          JSON.stringify(cleanMilestones),
           input.objectiveId,
           input.provenance,
           input.providerId,
           input.model,
           input.snapshotHash,
-          input.replan?.trigger ?? null,
-          input.replan?.cause ?? null,
-          JSON.stringify(input.replan?.sources ?? []),
-          input.replan?.basedOnVersion ?? null,
+          cleanReplan?.trigger ?? null,
+          cleanReplan?.cause ?? null,
+          JSON.stringify(cleanReplan?.sources ?? []),
+          cleanReplan?.basedOnVersion ?? null,
           input.analysisRunId,
           input.architectureRunId,
           input.planRunId,
@@ -763,25 +798,25 @@ export class Store {
         model: input.model,
         snapshotHash: input.snapshotHash,
       });
-      if (input.replan) {
+      if (cleanReplan) {
         this.appendEvent("plan.replanned", { projectId: input.projectId }, {
           planId,
           version,
-          basedOnVersion: input.replan.basedOnVersion,
-          trigger: input.replan.trigger,
-          cause: input.replan.cause,
-          sources: input.replan.sources,
+          basedOnVersion: cleanReplan.basedOnVersion,
+          trigger: cleanReplan.trigger,
+          cause: cleanReplan.cause,
+          sources: cleanReplan.sources,
         });
         this.appendAudit(
           input.projectId,
           "engine",
           "plan.replanned",
-          `v${input.replan.basedOnVersion} -> v${version} (${input.replan.trigger}): ${input.replan.cause}`.slice(0, 500),
+          `v${cleanReplan.basedOnVersion} -> v${version} (${cleanReplan.trigger}): ${cleanReplan.cause}`.slice(0, 500),
         );
       }
 
       const idByKey = new Map<string, string>();
-      for (const mission of input.missions) {
+      for (const mission of cleanMissions) {
         const created = this.createMission({
           projectId: input.projectId,
           planId,
@@ -796,7 +831,7 @@ export class Store {
         idByKey.set(mission.logicalKey, created.id);
         missionIds.push(created.id);
       }
-      for (const mission of input.missions) {
+      for (const mission of cleanMissions) {
         const missionId = idByKey.get(mission.logicalKey)!;
         for (const key of mission.dependsOnKeys) {
           const dependsOnId = idByKey.get(key);

@@ -205,6 +205,42 @@ describe("AI brain pipeline", () => {
     expect(store.listApprovals("open", project.id)[0]?.description).toContain(reason);
   });
 
+  it("redacts provider-shaped secrets from durable brain artifacts", () => {
+    const secret = ["sk-", "provideroutputcredential", "1234567890"].join("");
+    const project = store.createProject({
+      name: "Redaction", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(project.id, "Persist only redacted reasoning output", ["no secret remains"]);
+    store.setObjectiveAnalysis(objective.id, `analysis ${secret}`);
+    store.addBrainEntry(project.id, "risk", `risk ${secret}`, `body ${secret}`, [`source:${secret}`]);
+    const persisted = store.createBrainPlan({
+      projectId: project.id,
+      objectiveId: objective.id,
+      summary: `plan ${secret}`,
+      milestones: [{ id: "deliver", title: `title ${secret}`, description: `description ${secret}`, order: 0 }],
+      provenance: "live",
+      providerId: "fixture",
+      model: "fixture",
+      snapshotHash: null,
+      analysisRunId: null,
+      architectureRunId: null,
+      planRunId: null,
+      idempotencyKey: null,
+      replan: { trigger: "new_evidence", cause: `cause ${secret}`, sources: [`evidence:${secret}`], basedOnVersion: 0 },
+      missions: [],
+    });
+
+    const durable = JSON.stringify({
+      objective: store.getObjective(objective.id),
+      entries: store.listBrainEntries(project.id),
+      plan: persisted.plan,
+      events: store.eventsAfter(0, project.id),
+    });
+    expect(durable).not.toContain(secret);
+    expect(durable).toContain("[REDACTED]");
+  });
+
   it("rejects invalid JSON, repairs it within the bound and records the failed attempt", async () => {
     ({ store, engine } = makeEngine(db, { brain: "fake:plan-invalid-once" }));
     const project = store.createProject({
