@@ -161,13 +161,14 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
   const missionTitle = new Map(allMissions.map((m) => [m.id, m.title]));
   const activeRuns = runsRes.items.filter((r) => ["queued", "starting", "running", "paused"].includes(r.state));
 
-  const projects = projectsRes.items.map((p, i) => {
+  const projects: typeof demo.PROJECTS = projectsRes.items.map((p) => {
     const missions = missionsByProject.find((m) => m.id === p.id)?.missions ?? [];
     const done = missions.filter((m) => m.state === "completed").length;
     const usage = usageByProject.find((u) => u.id === p.id)?.usage;
     const running = activeRuns.filter((r) => r.projectId === p.id).length;
     return {
-      id: (i + 1) as never,
+      // Keep the control-plane identifier stable across refreshes and sort changes.
+      id: p.id,
       name: p.name,
       goal: p.description || "—",
       phase: PROJECT_PHASE[p.status] ?? p.status,
@@ -181,10 +182,10 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
       status: p.status === "blocked" ? "blocked" : "active",
       apiId: p.id,
     };
-  }) as unknown as typeof demo.PROJECTS;
+  });
 
   const agents = activeRuns.map((r, i) => ({
-    id: (i + 1) as never,
+    id: i + 1,
     name: `Agent ${r.id.slice(-6)}`,
     role: allMissions.find((m) => m.id === r.missionId)?.role ?? "backend",
     model: r.model ?? "—",
@@ -194,6 +195,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     cost: `$${r.costUsd.toFixed(2)}`,
     successRate: 100,
     project: projectNames.get(r.projectId) ?? r.projectId,
+    projectId: r.projectId,
   })) as unknown as typeof demo.AGENTS;
 
   const kanban = Object.fromEntries(KANBAN_COLUMNS.map((c) => [c, [] as unknown[]])) as typeof demo.KANBAN;
@@ -205,6 +207,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
       team: m.role,
       agent: "—",
       project: projectNames.get(m.projectId) ?? m.projectId,
+      projectId: m.projectId,
       priority: m.priority >= 70 ? "critique" : m.priority >= 50 ? "haute" : "normale",
       duration: relTime(m.createdAt),
       branch: m.branchName ?? "—",
@@ -216,7 +219,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
 
   const interventions = [
     ...approvalsRes.items.map((a, i) => ({
-      id: (i + 1) as never,
+      id: i + 1,
       apiId: a.id,
       kind: "approval",
       project: projectNames.get(a.projectId) ?? a.projectId,
@@ -231,7 +234,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
       type: "approbation",
     })),
     ...clarifications.map((c, i) => ({
-      id: (100 + i) as never,
+      id: 100 + i,
       apiId: c.id,
       kind: "clarification",
       questionId: c.questions[0]?.id,
@@ -277,6 +280,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     agent: "—",
     reviewer: "—",
     project: projectNames.get(pr.projectId) ?? pr.projectId,
+    projectId: pr.projectId,
     branch: `${pr.branch} → main`,
     files: 0,
     risk: "faible",

@@ -5,7 +5,23 @@
  */
 
 
-export const PROJECTS = [
+export interface Project {
+  id: number | string;
+  name: string;
+  goal: string;
+  phase: string;
+  progress: number;
+  health: string;
+  activeAgents: number;
+  branch: string;
+  lastActivity: string;
+  nextCheckpoint: string;
+  cost: string;
+  status: string;
+  apiId?: string;
+}
+
+export const PROJECTS: Project[] = [
   {
     id: 1, name: "SaaS Facturation",
     goal: "Plateforme de facturation automatique avec abonnements, devis et comptabilité intégrée",
@@ -37,41 +53,41 @@ export const PROJECTS = [
 ];
 
 export const AGENTS = [
-  { id: 1, name: "Cerveau Central", role: "Orchestrateur", model: "Claude Opus 4", status: "execution", mission: "Coordination sprint #7", context: "142k / 200k", cost: "€34.20", successRate: 97, project: "SaaS Facturation" },
-  { id: 2, name: "Architecte Sophia", role: "Architecte", model: "Claude Sonnet 4.6", status: "planning", mission: "Refactoring API Gateway", context: "89k / 200k", cost: "€12.40", successRate: 94, project: "SaaS Facturation" },
-  { id: 3, name: "Frontend Leo", role: "Lead Frontend", model: "GPT-4o", status: "execution", mission: "Dashboard composants", context: "64k / 128k", cost: "€8.90", successRate: 91, project: "App Mobile Sport" },
-  { id: 4, name: "Backend Mira", role: "Lead Backend", model: "Claude Sonnet 4.6", status: "validation", mission: "Endpoints paiements", context: "112k / 200k", cost: "€18.70", successRate: 96, project: "Plateforme Réservation" },
-  { id: 5, name: "SecOps Rex", role: "Cybersécurité", model: "DeepSeek R1", status: "blocked", mission: "Audit authentification", context: "78k / 128k", cost: "€6.20", successRate: 88, project: "API Finance" },
-  { id: 6, name: "QA Nova", role: "QA / Review", model: "Claude Sonnet 4.6", status: "execution", mission: "Tests end-to-end", context: "95k / 200k", cost: "€15.80", successRate: 98, project: "Plateforme Réservation" },
-  { id: 7, name: "Infra Atlas", role: "Infrastructure", model: "GPT-4o", status: "available", mission: "—", context: "0 / 128k", cost: "€0", successRate: 93, project: "—" },
+  { id: 1, name: "Cerveau Central", role: "Orchestrateur", model: "Claude Opus 4", status: "execution", mission: "Coordination sprint #7", context: "142k / 200k", cost: "€34.20", successRate: 97, project: "SaaS Facturation", projectId: 1 },
+  { id: 2, name: "Architecte Sophia", role: "Architecte", model: "Claude Sonnet 4.6", status: "planning", mission: "Refactoring API Gateway", context: "89k / 200k", cost: "€12.40", successRate: 94, project: "SaaS Facturation", projectId: 1 },
+  { id: 3, name: "Frontend Leo", role: "Lead Frontend", model: "GPT-4o", status: "execution", mission: "Dashboard composants", context: "64k / 128k", cost: "€8.90", successRate: 91, project: "App Mobile Sport", projectId: 4 },
+  { id: 4, name: "Backend Mira", role: "Lead Backend", model: "Claude Sonnet 4.6", status: "validation", mission: "Endpoints paiements", context: "112k / 200k", cost: "€18.70", successRate: 96, project: "Plateforme Réservation", projectId: 2 },
+  { id: 5, name: "SecOps Rex", role: "Cybersécurité", model: "DeepSeek R1", status: "blocked", mission: "Audit authentification", context: "78k / 128k", cost: "€6.20", successRate: 88, project: "API Finance", projectId: 3 },
+  { id: 6, name: "QA Nova", role: "QA / Review", model: "Claude Sonnet 4.6", status: "execution", mission: "Tests end-to-end", context: "95k / 200k", cost: "€15.80", successRate: 98, project: "Plateforme Réservation", projectId: 2 },
+  { id: 7, name: "Infra Atlas", role: "Infrastructure", model: "GPT-4o", status: "available", mission: "—", context: "0 / 128k", cost: "€0", successRate: 93, project: "—", projectId: 0 },
 ];
 
-export const KANBAN: Record<string, { id: string; title: string; team: string; agent: string; project: string; priority: string; duration: string; branch: string; tests?: string; apiId?: string; state?: string }[]> = {
+export const KANBAN: Record<string, { id: string; title: string; team: string; agent: string; project: string; projectId: number | string; priority: string; duration: string; branch: string; tests?: string; apiId?: string; state?: string }[]> = {
   "À planifier": [
-    { id: "T-091", title: "Intégration Stripe webhooks", team: "Backend", agent: "Backend Mira", project: "SaaS Facturation", priority: "haute", duration: "2h", branch: "feature/stripe-hooks" },
-    { id: "T-092", title: "Cache Redis sessions utilisateur", team: "Backend", agent: "—", project: "SaaS Facturation", priority: "normale", duration: "3h", branch: "—" },
+    { id: "T-091", title: "Intégration Stripe webhooks", team: "Backend", agent: "Backend Mira", project: "SaaS Facturation", projectId: 1, priority: "haute", duration: "2h", branch: "feature/stripe-hooks" },
+    { id: "T-092", title: "Cache Redis sessions utilisateur", team: "Backend", agent: "—", project: "SaaS Facturation", projectId: 1, priority: "normale", duration: "3h", branch: "—" },
   ],
   "Prête": [
-    { id: "T-087", title: "Page tableau de bord client", team: "Frontend", agent: "Frontend Leo", project: "App Mobile Sport", priority: "haute", duration: "4h", branch: "feat/dashboard-client" },
+    { id: "T-087", title: "Page tableau de bord client", team: "Frontend", agent: "Frontend Leo", project: "App Mobile Sport", projectId: 4, priority: "haute", duration: "4h", branch: "feat/dashboard-client" },
   ],
   "En cours": [
-    { id: "T-083", title: "API REST facturation v2", team: "Backend", agent: "Backend Mira", project: "SaaS Facturation", priority: "critique", duration: "6h", branch: "api/billing-v2", tests: "passing" },
-    { id: "T-085", title: "Composants design system", team: "Frontend", agent: "Frontend Leo", project: "App Mobile Sport", priority: "haute", duration: "3h", branch: "ui/components-v2", tests: "running" },
-    { id: "T-088", title: "Migration base de données v3", team: "Backend", agent: "Architecte Sophia", project: "SaaS Facturation", priority: "critique", duration: "8h", branch: "db/migration-v3", tests: "pending" },
+    { id: "T-083", title: "API REST facturation v2", team: "Backend", agent: "Backend Mira", project: "SaaS Facturation", projectId: 1, priority: "critique", duration: "6h", branch: "api/billing-v2", tests: "passing" },
+    { id: "T-085", title: "Composants design system", team: "Frontend", agent: "Frontend Leo", project: "App Mobile Sport", projectId: 4, priority: "haute", duration: "3h", branch: "ui/components-v2", tests: "running" },
+    { id: "T-088", title: "Migration base de données v3", team: "Backend", agent: "Architecte Sophia", project: "SaaS Facturation", projectId: 1, priority: "critique", duration: "8h", branch: "db/migration-v3", tests: "pending" },
   ],
   "En validation": [
-    { id: "T-079", title: "Authentification OAuth Google", team: "Backend", agent: "SecOps Rex", project: "Plateforme Réservation", priority: "haute", duration: "5h", branch: "auth/oauth-google", tests: "passing" },
+    { id: "T-079", title: "Authentification OAuth Google", team: "Backend", agent: "SecOps Rex", project: "Plateforme Réservation", projectId: 2, priority: "haute", duration: "5h", branch: "auth/oauth-google", tests: "passing" },
   ],
   "PR ouverte": [
-    { id: "T-074", title: "Refactoring module paiements", team: "Backend", agent: "Backend Mira", project: "Plateforme Réservation", priority: "normale", duration: "4h", branch: "refactor/payments", tests: "passing" },
-    { id: "T-076", title: "Tests unitaires controllers", team: "QA", agent: "QA Nova", project: "Plateforme Réservation", priority: "haute", duration: "3h", branch: "test/controllers", tests: "passing" },
+    { id: "T-074", title: "Refactoring module paiements", team: "Backend", agent: "Backend Mira", project: "Plateforme Réservation", projectId: 2, priority: "normale", duration: "4h", branch: "refactor/payments", tests: "passing" },
+    { id: "T-076", title: "Tests unitaires controllers", team: "QA", agent: "QA Nova", project: "Plateforme Réservation", projectId: 2, priority: "haute", duration: "3h", branch: "test/controllers", tests: "passing" },
   ],
   "Bloquée": [
-    { id: "T-071", title: "Connexion bancaire open banking", team: "Backend", agent: "SecOps Rex", project: "API Finance", priority: "critique", duration: "—", branch: "feat/open-banking", tests: "failed" },
+    { id: "T-071", title: "Connexion bancaire open banking", team: "Backend", agent: "SecOps Rex", project: "API Finance", projectId: 3, priority: "critique", duration: "—", branch: "feat/open-banking", tests: "failed" },
   ],
   "Terminée": [
-    { id: "T-068", title: "Architecture microservices", team: "Architecture", agent: "Architecte Sophia", project: "SaaS Facturation", priority: "haute", duration: "12h", branch: "arch/microservices", tests: "passing" },
-    { id: "T-069", title: "Setup CI/CD GitHub Actions", team: "Infra", agent: "Infra Atlas", project: "SaaS Facturation", priority: "haute", duration: "4h", branch: "ci/github-actions", tests: "passing" },
+    { id: "T-068", title: "Architecture microservices", team: "Architecture", agent: "Architecte Sophia", project: "SaaS Facturation", projectId: 1, priority: "haute", duration: "12h", branch: "arch/microservices", tests: "passing" },
+    { id: "T-069", title: "Setup CI/CD GitHub Actions", team: "Infra", agent: "Infra Atlas", project: "SaaS Facturation", projectId: 1, priority: "haute", duration: "4h", branch: "ci/github-actions", tests: "passing" },
   ],
 };
 
@@ -133,10 +149,10 @@ export const ACTIVITY_LOG = [
   { time: "12:55", project: "App Mobile Sport", agent: "Cerveau Central", event: "Checkpoint validé", action: "Phase 1 terminée — Maquettes approuvées", result: "success", cost: "€4.20" },
 ];
 
-export const PRS: { id: string; title: string; agent: string; reviewer: string; project: string; branch: string; files: number; risk: string; tests: string; status: string; mission: string; url: string | null }[] = [
-  { id: "PR #47", title: "feat(billing): Stripe webhooks et gestion des abonnements récurrents", agent: "Backend Mira", reviewer: "QA Nova", project: "SaaS Facturation", branch: "api/billing-v2 → main", files: 7, risk: "faible", tests: "passing", status: "review", mission: "T-083", url: null },
-  { id: "PR #46", title: "refactor(payments): Extraction module paiements en service autonome", agent: "Backend Mira", reviewer: "Architecte Sophia", project: "Plateforme Réservation", branch: "refactor/payments → main", files: 12, risk: "moyenne", tests: "passing", status: "approved", mission: "T-074", url: null },
-  { id: "PR #45", title: "test: Ajout tests unitaires pour les controllers REST (coverage +12%)", agent: "QA Nova", reviewer: "SecOps Rex", project: "Plateforme Réservation", branch: "test/controllers → main", files: 4, risk: "faible", tests: "passing", status: "merged", mission: "T-076", url: null },
+export const PRS: { id: string; title: string; agent: string; reviewer: string; project: string; projectId: number | string; branch: string; files: number; risk: string; tests: string; status: string; mission: string; url: string | null }[] = [
+  { id: "PR #47", title: "feat(billing): Stripe webhooks et gestion des abonnements récurrents", agent: "Backend Mira", reviewer: "QA Nova", project: "SaaS Facturation", projectId: 1, branch: "api/billing-v2 → main", files: 7, risk: "faible", tests: "passing", status: "review", mission: "T-083", url: null },
+  { id: "PR #46", title: "refactor(payments): Extraction module paiements en service autonome", agent: "Backend Mira", reviewer: "Architecte Sophia", project: "Plateforme Réservation", projectId: 2, branch: "refactor/payments → main", files: 12, risk: "moyenne", tests: "passing", status: "approved", mission: "T-074", url: null },
+  { id: "PR #45", title: "test: Ajout tests unitaires pour les controllers REST (coverage +12%)", agent: "QA Nova", reviewer: "SecOps Rex", project: "Plateforme Réservation", projectId: 2, branch: "test/controllers → main", files: 4, risk: "faible", tests: "passing", status: "merged", mission: "T-076", url: null },
 ];
 
 export const DIFF = [
@@ -191,7 +207,6 @@ export const TERMINALS: { id: string; project: string; command: string; state: s
 ];
 
 
-export type Project = (typeof PROJECTS)[number];
 export type Agent = (typeof AGENTS)[number];
 export type Intervention = (typeof INTERVENTIONS)[number];
 export type KanbanCard = (typeof KANBAN)[string][number];

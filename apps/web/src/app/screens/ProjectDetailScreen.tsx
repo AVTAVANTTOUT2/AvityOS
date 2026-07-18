@@ -28,9 +28,9 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
   if (!p) {
     return <div className="p-6 text-sm text-[#74716B]">Projet introuvable. <button className="text-[#5267D9] underline" onClick={onBack}>Retour</button></div>;
   }
-  const projectAgents = AGENTS.filter(a => a.project === p.name);
-  const projectPrs = PRS.filter(pr => pr.project === p.name);
-  const projectCards = (col: string) => (kanban[col] ?? []).filter(c => c.project === p.name);
+  const projectAgents = AGENTS.filter(a => a.projectId === p.id);
+  const projectPrs = PRS.filter(pr => pr.projectId === p.id);
+  const projectCards = (col: string) => (kanban[col] ?? []).filter(c => c.projectId === p.id);
   const tabs = [
     { id: "overview", label: "Vue d'ensemble" },
     { id: "plan", label: "Plan" },
@@ -154,9 +154,9 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
         </div>
       )}
       {tab === "plan" && <div className="max-w-md">{nextSteps}</div>}
-      {tab === "missions" && <MissionsScreen project={p.name} />}
-      {tab === "team" && <TeamScreen project={p.name} />}
-      {tab === "code" && <CodePRScreen project={p.name} />}
+      {tab === "missions" && <MissionsScreen projectId={p.id} />}
+      {tab === "team" && <TeamScreen projectId={p.id} projectName={p.name} />}
+      {tab === "code" && <CodePRScreen projectId={p.id} projectName={p.name} />}
     </div>
   );
 }

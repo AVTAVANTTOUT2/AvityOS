@@ -90,9 +90,42 @@ describe("project data isolation", () => {
   });
 
   it("filters the team tab by project", () => {
-    renderWithData(<TeamScreen project="API Finance" />);
+    renderWithData(<TeamScreen projectId={3} projectName="API Finance" />);
     expect(screen.getByText("SecOps Rex")).toBeInTheDocument();
     expect(screen.queryByText("Backend Mira")).not.toBeInTheDocument();
+  });
+
+  it("keeps homonymous projects isolated by stable id", () => {
+    const projects = [
+      { ...demo.PROJECTS[0]!, id: 101, name: "Même nom" },
+      { ...demo.PROJECTS[1]!, id: 202, name: "Même nom" },
+    ] as AppData["projects"];
+    const agents = [
+      { ...demo.AGENTS[0]!, id: 101, name: "Agent du premier", project: "Même nom", projectId: 101 },
+      { ...demo.AGENTS[1]!, id: 202, name: "Agent du second", project: "Même nom", projectId: 202 },
+    ] as AppData["agents"];
+    const kanban = {
+      ...Object.fromEntries(Object.keys(demo.KANBAN).map(column => [column, []])),
+      "En cours": [
+        { ...demo.KANBAN["En cours"]![0]!, id: "first", title: "Mission du premier", project: "Même nom", projectId: 101 },
+        { ...demo.KANBAN["En cours"]![1]!, id: "second", title: "Mission du second", project: "Même nom", projectId: 202 },
+      ],
+    } as AppData["kanban"];
+    const prs = [
+      { ...demo.PRS[0]!, id: "PR first", title: "PR du premier", project: "Même nom", projectId: 101 },
+      { ...demo.PRS[1]!, id: "PR second", title: "PR du second", project: "Même nom", projectId: 202 },
+    ] as AppData["prs"];
+
+    renderWithData(
+      <ProjectDetailScreen projectId={202} onBack={vi.fn()} />,
+      makeData({ projects, agents, kanban, prs }),
+    );
+    expect(screen.getByText("Agent du second")).toBeInTheDocument();
+    expect(screen.queryByText("Agent du premier")).not.toBeInTheDocument();
+    expect(screen.getByText("Mission du second")).toBeInTheDocument();
+    expect(screen.queryByText("Mission du premier")).not.toBeInTheDocument();
+    expect(screen.getByText("PR second")).toBeInTheDocument();
+    expect(screen.queryByText("PR first")).not.toBeInTheDocument();
   });
 });
 
@@ -156,7 +189,7 @@ describe("controls without fake behavior", () => {
     expect(screen.getByText("Actions de mission disponibles uniquement en mode live.")).toBeInTheDocument();
   });
 
-  it("sends a real transition for a live mission", async () => {
+  it("only exposes a safe live cancellation transition", async () => {
     const liveKanban = {
       ...demo.KANBAN,
       "En cours": [
@@ -166,10 +199,25 @@ describe("controls without fake behavior", () => {
     const data = makeData({ mode: "live", kanban: liveKanban });
     renderWithData(<MissionsScreen />, data);
     await userEvent.click(screen.getByText("API REST facturation v2"));
-    const pause = screen.getByRole("button", { name: /Pause/ });
-    expect(pause).toBeEnabled();
-    await userEvent.click(pause);
-    expect(data.actions.transitionMission).toHaveBeenCalledWith("msn_1", "paused");
+    const pause = screen.getByRole("button", { name: /Pause indisponible/ });
+    expect(pause).toBeDisabled();
+    expect(screen.getByText(/control plane ne suspend pas aussi le run actif/)).toBeInTheDocument();
+    const cancel = screen.getByRole("button", { name: /^Annuler$/ });
+    expect(cancel).toBeEnabled();
+    await userEvent.click(cancel);
+    expect(data.actions.transitionMission).toHaveBeenCalledWith("msn_1", "cancelled");
+  });
+
+  it("disables cancellation for states rejected by the mission state machine", async () => {
+    const liveKanban = {
+      ...demo.KANBAN,
+      "Bloquée": [
+        { ...demo.KANBAN["Bloquée"]![0]!, apiId: "msn_failed", state: "failed" },
+      ],
+    } as AppData["kanban"];
+    renderWithData(<MissionsScreen />, makeData({ mode: "live", kanban: liveKanban }));
+    await userEvent.click(screen.getByText("Connexion bancaire open banking"));
+    expect(screen.getByRole("button", { name: /^Annuler$/ })).toBeDisabled();
   });
 
   it("keeps settings read-only: no fake toggles or fake GitHub org", () => {

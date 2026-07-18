@@ -19,13 +19,13 @@ const TEST_LABELS: Record<string, string> = {
   passing: "✓ tests", running: "⟳ tests", pending: "· tests", failed: "✗ tests",
 };
 
-export function MissionsScreen({ project }: { project?: string }) {
+export function MissionsScreen({ projectId }: { projectId?: number | string }) {
   const { kanban: KANBAN, actions, mode } = useData();
   const [sel, setSel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const columns = Object.fromEntries(
-    Object.entries(KANBAN).map(([col, cards]) => [col, project ? cards.filter(c => c.project === project) : cards]),
+    Object.entries(KANBAN).map(([col, cards]) => [col, projectId !== undefined ? cards.filter(c => c.projectId === projectId) : cards]),
   );
   const allCards = Object.values(columns).flat();
   const selCard = allCards.find(c => c.id === sel);
@@ -125,8 +125,10 @@ export function MissionsScreen({ project }: { project?: string }) {
   );
 }
 
-const PAUSABLE_STATES = ["ready", "assigned", "running"];
-const TERMINAL_STATES = ["completed", "cancelled"];
+const CANCELLABLE_STATES = [
+  "proposed", "ready", "assigned", "running", "result_submitted", "validating",
+  "review_required", "approved", "paused", "blocked", "retrying",
+];
 
 function MissionActions({ apiId, state, live, busy, feedback, onTransition }: {
   apiId?: string;
@@ -138,19 +140,16 @@ function MissionActions({ apiId, state, live, busy, feedback, onTransition }: {
 }) {
   const canAct = live && !!apiId && !!state;
   const offTitle = live ? "État de mission inconnu" : "Disponible uniquement connecté au control plane";
-  const resumable = state === "paused";
-  const pausable = !!state && PAUSABLE_STATES.includes(state);
-  const cancellable = !!state && !TERMINAL_STATES.includes(state);
+  const cancellable = !!state && CANCELLABLE_STATES.includes(state);
   return (
     <div className="mt-5 pt-4 border-t border-black/[0.05] space-y-2">
       <div className="grid grid-cols-2 gap-2">
         <button
-          disabled={!canAct || busy || (!pausable && !resumable)}
-          title={canAct ? (pausable || resumable ? undefined : `Transition indisponible depuis l'état « ${state} »`) : offTitle}
-          onClick={() => apiId && onTransition(apiId, resumable ? "ready" : "paused")}
+          disabled
+          title="Pause/reprise indisponible : le control plane ne sait pas encore suspendre le run actif sans perdre sa cohérence."
           className="flex items-center gap-1.5 justify-center text-[11px] bg-[#F7F4EE] text-[#202124] py-2 rounded-xl transition-all enabled:hover:bg-[#F0EDE7] disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {resumable ? <><Play size={10} />Reprendre</> : <><Pause size={10} />Pause</>}
+          {state === "paused" ? <><Play size={10} />Reprise indisponible</> : <><Pause size={10} />Pause indisponible</>}
         </button>
         <button
           disabled={!canAct || busy || !cancellable}
@@ -162,6 +161,9 @@ function MissionActions({ apiId, state, live, busy, feedback, onTransition }: {
         </button>
       </div>
       {feedback && <div className="text-[10px] text-[#74716B]">{feedback}</div>}
+      {canAct && (
+        <div className="text-[10px] text-[#74716B]">Pause/reprise désactivées tant que le control plane ne suspend pas aussi le run actif.</div>
+      )}
       {!canAct && (
         <div className="text-[10px] text-[#74716B]">Actions de mission disponibles uniquement en mode live.</div>
       )}

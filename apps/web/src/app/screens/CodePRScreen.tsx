@@ -3,13 +3,13 @@ import { Bot, CheckCircle, Code, ExternalLink, Eye, GitBranch, Shield } from "lu
 import { useData } from "../../lib/data";
 import { cn, Glass } from "../components/shared";
 
-export function CodePRScreen({ project }: { project?: string }) {
+export function CodePRScreen({ projectId, projectName }: { projectId?: number | string; projectName?: string }) {
   const { prs, diff: DIFF } = useData();
-  const PRS = project ? prs.filter(pr => pr.project === project) : prs;
+  const PRS = projectId !== undefined ? prs.filter(pr => pr.projectId === projectId) : prs;
   const [selIdx, setSelIdx] = useState(0);
   const selPR = PRS[selIdx] ?? PRS[0];
   if (!selPR) {
-    return <div className="p-6 text-sm text-[#74716B]">{project ? `Aucune pull request pour ${project}.` : "Aucune pull request pour le moment."}</div>;
+    return <div className="p-6 text-sm text-[#74716B]">{projectId !== undefined ? `Aucune pull request pour ${projectName ?? "ce projet"}.` : "Aucune pull request pour le moment."}</div>;
   }
   return (
     <div className="flex gap-4 h-full">
