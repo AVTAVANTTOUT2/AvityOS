@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.avityos.control-plane</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__AVITY_ROOT__/deploy/launchd/run-control-plane.sh</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__AVITY_ROOT__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AVITY_ROOT</key>
+		<string>__AVITY_ROOT__</string>
+		<key>AVITY_ENV_FILE</key>
+		<string>__HOME__/.config/avityos/control-plane.env</string>
+		<key>AVITY_LOG_DIR</key>
+		<string>__AVITY_LOG_DIR__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>__AVITY_LOG_DIR__/control-plane.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>__AVITY_LOG_DIR__/control-plane.stderr.log</string>
+</dict>
+</plist>

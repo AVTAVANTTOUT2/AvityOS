@@ -1,0 +1,101 @@
+name: Fonctionnalité
+description: Proposer une amélioration ou une nouvelle capacité
+title: "[Feature]: "
+labels: []
+assignees: []
+body:
+  - type: textarea
+    id: probleme
+    attributes:
+      label: Problème rencontré
+      description: Expliquez d’abord le problème utilisateur avant de proposer une solution.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solution proposée
+      description: Décrivez la capacité ou l’amélioration souhaitée.
+    validations:
+      required: true
+  - type: textarea
+    id: cas-usage
+    attributes:
+      label: Cas d’usage
+      description: Indiquez un ou plusieurs scénarios concrets.
+      placeholder: |
+        En tant que …, je veux … afin de …
+    validations:
+      required: true
+  - type: dropdown
+    id: composant
+    attributes:
+      label: Composant concerné
+      description: Sélectionnez la zone principale concernée.
+      multiple: false
+      options:
+        - Web
+        - Control plane
+        - Worker
+        - Providers
+        - Policy
+        - Contracts
+        - CLI
+        - macOS
+        - CI/CD
+        - Documentation
+        - Inconnu
+    validations:
+      required: true
+  - type: textarea
+    id: criteres-acceptation
+    attributes:
+      label: Critères d’acceptation
+      description: Liste vérifiable permettant de valider la demande.
+      placeholder: |
+        - [ ]
+        - [ ]
+        - [ ]
+      value: |
+        - [ ]
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives envisagées
+      description: Solutions déjà considérées, le cas échéant.
+    validations:
+      required: false
+  - type: textarea
+    id: risques-impacts
+    attributes:
+      label: Risques et impacts
+      description: >
+        Précisez notamment les impacts sécurité, données, compatibilité,
+        performance et complexité opérationnelle.
+    validations:
+      required: true
+  - type: dropdown
+    id: priorite
+    attributes:
+      label: Priorité estimée
+      description: >
+        Priorité indicative. Elle sera revue par le mainteneur.
+      multiple: false
+      options:
+        - Basse
+        - Normale
+        - Haute
+        - Critique
+    validations:
+      required: true
+  - type: textarea
+    id: infos-complementaires
+    attributes:
+      label: Informations complémentaires
+      description: Précisions utiles (sans secrets ni données personnelles).
+    validations:
+      required: false

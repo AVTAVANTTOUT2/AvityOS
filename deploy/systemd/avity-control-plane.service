@@ -1,0 +1,41 @@
+[Unit]
+Description=AvityOS Control Plane
+Documentation=file://__AVITY_ROOT__/deploy/systemd/README.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__AVITY_USER__
+Group=__AVITY_GROUP__
+WorkingDirectory=__AVITY_ROOT__
+EnvironmentFile=__CONTROL_PLANE_ENV_FILE__
+ExecStart=__NODE_BINARY__ __CONTROL_PLANE_ENTRYPOINT__
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=avity-control-plane
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+UMask=0077
+
+# SQLite (+ WAL/SHM) and generated token path under the data directory.
+ReadWritePaths=__AVITY_DATA_DIR__
+# Control plane creates mission worktrees under project repositories.
+ReadWritePaths=__AVITY_WORKSPACE_ROOT__
+
+[Install]
+WantedBy=multi-user.target
