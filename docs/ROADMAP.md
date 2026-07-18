@@ -9,8 +9,17 @@ reproductible dans `docs/TRACEABILITY.md`.
    principale, objectif, critères multiples, autonomie et budget persistés.
    Les validations locales et les CI Linux/macOS de la PR d'onboarding sont
    reproductibles dans `docs/TRACEABILITY.md`.
-2. **⚪ Véritable cerveau IA.** Analyse, architecture, plan versionné, DAG,
-   délégation spécialisée et replanification à partir de preuves réelles.
+2. **🟡 Véritable cerveau IA.** Implémenté et couvert par des tests
+   déterministes : pipeline durable objectif → snapshot borné du dépôt →
+   analyse structurée → architecture proposée → plan versionné/DAG validé
+   déterministement → délégation par rôle, plus replanification bornée et
+   idempotente à partir de preuves réelles (révision d'objectif, mission
+   échouée après correction), le tout via `ProviderAdapter` avec réparation
+   bornée des sorties invalides et provenance `fake_fixture` explicite.
+   Reste pour ✅ : PR du chantier fusionnée avec CI Linux/macOS verts
+   référencés dans `docs/TRACEABILITY.md`, et une exécution de planification
+   avec un provider de raisonnement réel (clés opérateur), volontairement
+   reportée au chantier 4.
 3. **⚪ Clarifications groupées et pause/reprise atomique.** Questions
    matérielles regroupées, persistance des réponses et reprise transactionnelle
    du run actif.

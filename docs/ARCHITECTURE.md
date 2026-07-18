@@ -26,6 +26,8 @@
         ┌───────────────────────────────┐
         │ Fastify API  (server.ts)      │  contract validation, error codes,
         │ Engine       (engine.ts)      │  worktrees, routing, checks, review
+        │ Brain        (brain.ts)       │  AI planning pipeline + replanning
+        │ Snapshot     (snapshot.ts)    │  bounded secret-free repo snapshot
         │ Store        (store.ts)       │  transactions + event append
         │ SQLite       (db.ts)          │  node:sqlite, WAL, migrations
         └───────────────────────────────┘
@@ -38,6 +40,29 @@
 tables, dependency DAG resolution, correction-loop decisions, fallback
 policy, deterministic scheduler. `services/control-plane` composes it with
 persistence and providers.
+
+## Central AI brain
+
+`BrainPipeline` (`services/control-plane/src/brain.ts`) owns the durable,
+asynchronous planning pipeline: objective → bounded repository snapshot →
+structured analysis → architecture proposal → plan/DAG proposal →
+deterministic validation → transactional persistence → scheduling. Models
+reason and propose against versioned zod contracts (`packages/contracts/src/
+brain.ts`); the control plane mints every durable identifier, validates every
+proposal (known acyclic dependencies, full acceptance-criteria coverage,
+policy-conformant paths and check commands, budgets/timeouts, no logical
+duplicates) and persists the plan version, its missions and their DAG in one
+transaction that deactivates the previous version and cancels only legally
+cancellable missions. Each step is a durable `brain_runs` row carrying
+provider, model, redacted input/output, usage and provenance — the fake
+provider's output is explicitly `fake_fixture` and never real planning
+evidence. Invalid structured output goes through a bounded repair loop, then
+the project is blocked with an intervention; a heuristic plan is never
+silently substituted. Evidence-based replanning (objective revision, mission
+failure after the correction loop) is bounded, idempotent per cause, never
+touches in-flight missions and preserves plan history. On restart, orphan
+brain runs are failed exactly once and planning resumes without duplicating
+an already-persisted plan.
 
 ## State machines
 

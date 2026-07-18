@@ -33,6 +33,15 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
 - **Paths/evidence** — actual changed files are realpath/glob checked against
   allowed and forbidden paths. Coding missions require a diff and real command
   exit evidence; missing checks cannot pass.
+- **Brain snapshot boundary** — the AI planning snapshot is built only from
+  the server-validated persisted repository path (never model- or
+  client-supplied paths), reads only Git-tracked files whose realpath stays
+  inside the repository, excludes secret-shaped paths (`.env*`, `secrets/`,
+  key material) and binary content, applies secret redaction and hard
+  size/count limits before anything reaches a prompt, an event or
+  persistence, and records the snapshot hash for provenance. AI-proposed
+  mission paths and check commands are validated against the same command
+  and path policies before any mission is created.
 - **Workers** — enrollment requires the admin bearer when auth is enabled.
   Worker tokens are shown once and hashed at rest. Capability/capacity matching,
   short leases, per-lease opaque tokens, expiry, heartbeat and revocation fence
