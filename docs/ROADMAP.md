@@ -21,16 +21,15 @@ reproductible dans `docs/TRACEABILITY.md`.
    persiste atomiquement sa clé tout en retirant les interventions obsolètes.
    Reste pour ✅ : une exécution de planification avec un provider de
    raisonnement réel (clés opérateur), volontairement reportée au chantier 4.
-3. **🟡 Clarifications groupées et pause/reprise atomique.** Clarifications
+3. **✅ Clarifications groupées et pause/reprise atomique.** Clarifications
    structurées via `ProviderAdapter` (schéma Zod versionné, groupe unique par
    tour, réponses transactionnelles/idempotentes, obsolescence à la révision
    d’objectif, reprise exacte du pipeline cerveau) et pause projet atomique
    (demande durable, annulation des runs, révocation des leases, fencing des
    résultats tardifs, reprise idempotente après redémarrage). Web/CLI branchés
-   sur les vraies API. Preuves locales dans `docs/TRACEABILITY.md`. Reste pour
-   ✅ : CI Linux/macOS vertes sur la PR de ce chantier (Playwright local
-   `chantier3.spec.ts` couvre clarification groupée + pause/reprise côté
-   navigateur avec API interceptée, en plus des suites control-plane/CLI/Vitest).
+   sur les vraies API. Preuves locales et CI dans `docs/TRACEABILITY.md`
+   (PR #35 : [CI macOS](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29676880912)
+   / [CI Linux](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29676880919)).
 4. **⚪ Validation E2E avec Codex, Claude Code et Cursor réels.** Scénarios
    reproductibles sur des dépôts fixtures externes et preuves de livraison.
 5. **⚪ Pont distant sécurisé.** Connexion sortante, chiffrement de bout en
