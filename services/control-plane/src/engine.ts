@@ -183,6 +183,12 @@ export class Engine {
     for (const mission of this.store.listMissions(undefined, "review_required")) {
       void this.reviewMission(mission.id);
     }
+    // Recover clarification resumes whose brain kick was lost to a crash
+    // between the answer commit and startPlanning (invariant P-RESUME).
+    for (const pending of this.store.listPendingClarificationResumes()) {
+      if (this.store.isProjectPaused(pending.projectId)) continue;
+      this.resumeAfterClarification(pending.id);
+    }
     this.brain.reconcile();
   }
 
@@ -277,44 +283,53 @@ export class Engine {
     });
   }
 
+  /**
+   * Resume the brain pipeline after a clarification group was answered.
+   *
+   * Durable and idempotent (invariant P-RESUME): the answer transaction sets a
+   * durable `resume_pending` flag, so a crash between the answer commit and
+   * this call is recovered by {@link reconcile}. The outcome recording is
+   * guarded so it never doubles brain memory, and `startPlanning` is kicked
+   * BEFORE the flag is cleared — planning durably sets the project to
+   * `planning`, so a crash between the two is still recovered idempotently.
+   * A paused project is skipped and re-driven after resume.
+   */
   resumeAfterClarification(clarificationId: string): void {
     const clarification = this.store.getClarification(clarificationId);
-    if (!clarification) throw new Error(`clarification ${clarificationId} not found`);
-    if (clarification.status !== "answered") {
-      throw new Error(`clarification ${clarificationId} is ${clarification.status}; refusing resume`);
-    }
-    const project = this.store.getProject(clarification.projectId);
-    if (project?.status === "paused") {
-      throw new Error(`project ${clarification.projectId} is paused; resume the project before clarifying`);
-    }
-    for (const q of clarification.questions) {
-      if (q.answer) {
-        this.store.addBrainEntry(
-          clarification.projectId,
-          "decision",
-          `Clarified (${q.logicalKey}): ${q.question.slice(0, 80)}`,
-          q.answer,
-          [`clarification:${clarificationId}`, `question:${q.logicalKey}`, `user`],
-        );
+    if (!clarification || clarification.status !== "answered") return;
+    if (this.store.isProjectPaused(clarification.projectId)) return;
+
+    if (!this.store.clarificationOutcomeRecorded(clarificationId)) {
+      for (const q of clarification.questions) {
+        if (q.answer) {
+          this.store.addBrainEntry(
+            clarification.projectId,
+            "decision",
+            `Clarified (${q.logicalKey}): ${q.question.slice(0, 80)}`,
+            q.answer,
+            [`clarification:${clarificationId}`, `question:${q.logicalKey}`, `user`],
+          );
+        }
+      }
+      const acceptance = clarification.questions.find(
+        (q) => q.logicalKey === "acceptance-criteria" || q.category === "acceptance_criteria",
+      )?.answer;
+      if (acceptance) {
+        const objective = this.store.getObjective(clarification.objectiveId);
+        if (objective && objective.acceptanceCriteria.length === 0) {
+          const criteria = acceptance
+            .split(/\n|;/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          this.store.db
+            .prepare("UPDATE objectives SET acceptance_criteria = ?, updated_at = ? WHERE id = ?")
+            .run(JSON.stringify(criteria), new Date().toISOString(), objective.id);
+        }
       }
     }
-    const acceptance = clarification.questions.find(
-      (q) => q.logicalKey === "acceptance-criteria" || q.category === "acceptance_criteria",
-    )?.answer;
-    if (acceptance) {
-      const objective = this.store.getObjective(clarification.objectiveId);
-      if (objective && objective.acceptanceCriteria.length === 0) {
-        const criteria = acceptance
-          .split(/\n|;/)
-          .map((s) => s.trim())
-          .filter(Boolean);
-        this.store.db
-          .prepare("UPDATE objectives SET acceptance_criteria = ?, updated_at = ? WHERE id = ?")
-          .run(JSON.stringify(criteria), new Date().toISOString(), objective.id);
-      }
-    }
-    // Exactly one resume of the brain pipeline from the answered group.
+    // Kick planning first (durably sets status=planning), then clear the intent.
     this.startPlanning(clarification.projectId, clarification.objectiveId);
+    this.store.clearClarificationResume(clarificationId);
   }
 
   /**
@@ -384,6 +399,29 @@ export class Engine {
       if (mission.state === "approved") void this.integrateMission(mission.id);
     }
     return this.store.getProjectPauseState(projectId);
+  }
+
+  /**
+   * Fence a durable side effect against an in-flight pause. Returns true (and
+   * records an explicit `run.fenced` event) when the project became paused
+   * during an asynchronous workflow, meaning the caller must abandon the late
+   * result without creating a checkpoint, integrating a change, mutating the
+   * paused mission or consuming budget again (invariant P-FENCE). Callers must
+   * re-check after every provider await and before every durable effect.
+   */
+  private fencePausedWork(projectId: string, missionId: string | null, context: string): boolean {
+    if (!this.store.isProjectPaused(projectId)) return false;
+    this.store.appendEvent("run.fenced", { projectId, missionId }, {
+      reason: `project paused: ${context} discarded`,
+      context,
+    });
+    this.store.appendAudit(
+      projectId,
+      "engine",
+      "pause.fenced",
+      `${context}${missionId ? ` (mission ${missionId})` : ""}`,
+    );
+    return true;
   }
 
   // ── scheduling tick ──────────────────────────────────────────────────────
@@ -710,6 +748,7 @@ export class Engine {
     const mission = this.store.getMission(missionId);
     if (!mission || mission.state !== "validating") return;
     const project = this.store.getProject(mission.projectId)!;
+    if (this.fencePausedWork(project.id, missionId, "validation")) return;
 
     const runs = this.store.listRuns({ missionId, states: ["succeeded"] });
     if (runs.length === 0) {
@@ -764,6 +803,8 @@ export class Engine {
 
     // 2) required checks execute their real commands
     for (const kind of mission.contract.requiredChecks) {
+      // A pause during a preceding check must not accept later check results.
+      if (this.fencePausedWork(project.id, missionId, "validation checks")) return;
       const argv = mission.contract.checkCommands[kind];
       if (!argv || argv.length === 0) {
         this.store.upsertCheckpoint(project.id, missionId, kind, "failed", "no command configured for required check");
@@ -792,6 +833,9 @@ export class Engine {
     }
 
     // 3) commit validated work (idempotent: skipped when tree is clean)
+    // Fence before any durable git side effect: a pause here must not commit,
+    // publish a PR or advance the mission.
+    if (this.fencePausedWork(project.id, missionId, "validation commit")) return;
     if (mission.worktreePath && mission.branchName && project.repoPath) {
       try {
         if (!(await isCleanWorkingTree(mission.worktreePath))) {
@@ -876,6 +920,10 @@ export class Engine {
       const deadline = Date.now() + this.config.checkTimeoutMs;
       while (Date.now() < deadline) {
         if (this.stopped) return { ok: false, exitCode: null, detail: "engine stopped" };
+        if (this.store.isProjectPaused(projectId)) {
+          this.store.setTerminalState(terminal.id, "cancelling");
+          return { ok: false, exitCode: null, detail: "project paused during check" };
+        }
         const t = this.store.getTerminal(terminal.id)!;
         if (["succeeded", "failed", "cancelled", "timed_out"].includes(t.state)) {
           const logs = this.store.terminalLogs(terminal.id).map((l) => l.text).join("");
@@ -978,6 +1026,7 @@ export class Engine {
     const mission = this.store.getMission(missionId);
     if (!mission || mission.state !== "review_required") return;
     const project = this.store.getProject(mission.projectId)!;
+    if (this.fencePausedWork(project.id, missionId, "review")) return;
 
     if (project.autonomyProfile === "supervised") {
       this.store.createApproval(
@@ -1064,6 +1113,14 @@ export class Engine {
     }
 
     if (this.stopped) return;
+    // Fence a reviewer that finished after the project was paused: its verdict
+    // must not create a checkpoint, approve or integrate the paused mission.
+    if (this.fencePausedWork(project.id, missionId, "late reviewer verdict")) {
+      if (["running", "starting"].includes(this.store.getRun(run.id)?.state ?? "")) {
+        this.store.transitionRun(run.id, "failed", { exitReason: "fenced: project paused during review" });
+      }
+      return;
+    }
 
     if (resultText === null) {
       this.store.transitionRun(run.id, "failed", { exitReason: "reviewer did not complete" });
@@ -1100,10 +1157,13 @@ export class Engine {
     const mission = this.store.getMission(missionId);
     if (!mission || mission.state !== "approved") return;
     const project = this.store.getProject(mission.projectId)!;
+    if (this.fencePausedWork(project.id, missionId, "integration")) return;
     const pr = this.store.listPullRequests(project.id).find((candidate) => candidate.missionId === missionId);
     if (project.repoRemoteUrl && pr?.number && pr.state === "draft") {
       try {
         await markGitHubPullRequestReady(project.repoRemoteUrl, pr.number);
+        // A pause during the GitHub round-trip must not integrate or complete.
+        if (this.fencePausedWork(project.id, missionId, "integration publish")) return;
         this.store.setPullRequestState(pr.id, "open");
       } catch (err) {
         this.store.transitionMission(missionId, "blocked", `could not mark GitHub PR ready: ${String(err).slice(0, 300)}`);

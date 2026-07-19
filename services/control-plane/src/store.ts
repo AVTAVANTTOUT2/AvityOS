@@ -367,6 +367,14 @@ export class Store {
     return row?.pause_generation ?? 0;
   }
 
+  /** Cheap durable check used by every critical path to fence a paused project. */
+  isProjectPaused(projectId: string): boolean {
+    const row = this.db.prepare("SELECT status FROM projects WHERE id = ?").get(projectId) as
+      | { status: string }
+      | undefined;
+    return row?.status === "paused";
+  }
+
   getProjectPauseState(projectId: string): ProjectPauseState | null {
     const project = this.getProject(projectId);
     if (!project) return null;
@@ -705,17 +713,42 @@ export class Store {
     }
   }
 
+  /**
+   * Revoke terminal leases for one project ONLY. Strictly scoped by
+   * project_id: sessions of the SAME worker that belong to another project are
+   * never touched, preserving cross-project isolation (invariant P-ISO). A
+   * started-but-not-running session is returned to the queue (safe to retry
+   * once resumed); a running/cancelling session is cancelled. Every affected
+   * lease token is invalidated so a later worker result is fenced, and a
+   * `run.fenced` audit event is emitted per session.
+   */
   revokeProjectWorkerLeases(projectId: string): void {
-    const workerIds = (
+    const ts = now();
+    const tx = this.db.transaction(() => {
+      const affected = this.db
+        .prepare(
+          `SELECT id, worker_id, state FROM terminal_sessions
+           WHERE project_id = ? AND state IN ('starting','running','cancelling')`,
+        )
+        .all(projectId) as { id: string; worker_id: string | null; state: string }[];
+      if (affected.length === 0) return;
       this.db
         .prepare(
-          `SELECT DISTINCT worker_id AS id FROM terminal_sessions
-           WHERE project_id = ? AND worker_id IS NOT NULL
-             AND state IN ('queued','starting','running','cancelling')`,
+          `UPDATE terminal_sessions
+           SET state = CASE WHEN state = 'starting' THEN 'queued' ELSE 'cancelled' END,
+               worker_id = NULL, lease_expires_at = NULL, lease_token_hash = NULL, updated_at = ?
+           WHERE project_id = ? AND state IN ('starting','running','cancelling')`,
         )
-        .all(projectId) as { id: string }[]
-    ).map((row) => row.id);
-    for (const workerId of workerIds) this.revokeWorkerLeases(workerId);
+        .run(ts, projectId);
+      for (const session of affected) {
+        this.appendEvent("run.fenced", { projectId }, {
+          terminalId: session.id,
+          workerId: session.worker_id,
+          reason: "project paused: worker lease revoked (project-scoped)",
+        });
+      }
+    });
+    tx();
   }
 
   // ── objectives & clarifications ──────────────────────────────────────────
@@ -995,9 +1028,22 @@ export class Store {
       }
 
       const ts = now();
+      // Optional questions left unanswered are closed (not left dangling in
+      // `pending`) now that the group is answered, so the group has no
+      // lingering open question after closure.
+      const closed = updated.map((question) =>
+        question.status === "pending" && !question.required
+          ? { ...question, status: "cancelled" as const }
+          : question,
+      );
+      // resume_pending = 1 records the durable intent to resume the brain
+      // pipeline. It is committed atomically with the answers so a crash before
+      // the engine kicks planning is reconciled on restart (invariant P-RESUME).
       this.db
-        .prepare("UPDATE clarifications SET questions = ?, status = 'answered', updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(updated), ts, id);
+        .prepare(
+          "UPDATE clarifications SET questions = ?, status = 'answered', resume_pending = 1, updated_at = ? WHERE id = ?",
+        )
+        .run(JSON.stringify(closed), ts, id);
       if (opts.idempotencyKey) {
         this.recordIdempotent(`clr-answer:${id}:${opts.idempotencyKey}`, "clarification", id);
       }
@@ -1027,6 +1073,37 @@ export class Store {
     });
     tx();
     return result!;
+  }
+
+  /** Answered clarification groups whose brain resume has not yet been driven. */
+  listPendingClarificationResumes(): { id: string; projectId: string; objectiveId: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, project_id, objective_id FROM clarifications
+         WHERE resume_pending = 1 AND status = 'answered' ORDER BY created_at ASC`,
+      )
+      .all() as { id: string; project_id: string; objective_id: string }[];
+    return rows.map((r) => ({ id: r.id, projectId: r.project_id, objectiveId: r.objective_id }));
+  }
+
+  /** Clear the durable resume intent once planning has been (re)kicked. */
+  clearClarificationResume(id: string): void {
+    this.db
+      .prepare("UPDATE clarifications SET resume_pending = 0, updated_at = ? WHERE id = ?")
+      .run(now(), id);
+  }
+
+  /** True when the clarification has already fed a decision into brain memory. */
+  clarificationOutcomeRecorded(clarificationId: string): boolean {
+    const clarification = this.getClarification(clarificationId);
+    if (!clarification) return false;
+    const source = `clarification:${clarificationId}`;
+    const row = this.db
+      .prepare(
+        "SELECT 1 AS present FROM brain_entries WHERE project_id = ? AND sources LIKE ? LIMIT 1",
+      )
+      .get(clarification.projectId, `%${source}%`) as { present: number } | undefined;
+    return Boolean(row);
   }
 
   // ── brain ────────────────────────────────────────────────────────────────
@@ -1990,8 +2067,17 @@ export class Store {
         .get(workerId) as { count: number };
       if (active.count >= worker.max_concurrent_runs) return;
       const capabilities = new Set(JSON.parse(worker.capabilities) as string[]);
+      // A queued terminal whose project is paused must never be leased: the
+      // durable pause is authoritative even in the window before its leases are
+      // revoked (invariant P-FENCE).
       const rows = this.db
-        .prepare("SELECT id, required_capabilities FROM terminal_sessions WHERE state = 'queued' ORDER BY created_at ASC")
+        .prepare(
+          `SELECT t.id AS id, t.required_capabilities AS required_capabilities
+           FROM terminal_sessions t
+           JOIN projects p ON p.id = t.project_id
+           WHERE t.state = 'queued' AND p.status != 'paused'
+           ORDER BY t.created_at ASC`,
+        )
         .all() as unknown as { id: string; required_capabilities: string }[];
       const row = rows.find((candidate) =>
         (JSON.parse(candidate.required_capabilities) as string[]).every((capability) => capabilities.has(capability)),
@@ -2399,13 +2485,17 @@ function normalizeStoredQuestion(raw: unknown, index: number): ClarificationQues
           : (option as { key: string; label: string }),
       )
     : [];
+  const slug = String(value.id ?? `q-${index + 1}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+/, "")
+    .slice(0, 64);
+  // LogicalKey requires at least two characters starting with [a-z0-9]; a
+  // degenerate legacy id must not make the whole group unparseable.
+  const logicalKey = /^[a-z0-9][a-z0-9_-]{1,63}$/.test(slug) ? slug : `q-${index + 1}`;
   return {
     id: String(value.id ?? `legacy-${index}`),
-    logicalKey: String(value.id ?? `q-${index + 1}`)
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, "-")
-      .replace(/^-+/, "")
-      .slice(0, 64) || `q-${index + 1}`,
+    logicalKey,
     category: legacyOptions.length > 0 ? "decision" : "other",
     question: String(value.question ?? ""),
     reason: "Legacy clarification question retained for compatibility.",

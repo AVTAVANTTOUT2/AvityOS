@@ -379,17 +379,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (project?.status === "paused") {
       return apiError(reply, 409, "project_paused", `project ${existing.projectId} is paused`);
     }
-    if (project && !["clarifying", "planning", "draft", "blocked"].includes(project.status) && existing.status === "open") {
-      // Answering is allowed while clarifying; refuse incompatible active execution states.
-      if (project.status === "active" && existing.status !== "open") {
-        return apiError(
-          reply,
-          409,
-          "conflict",
-          `project ${existing.projectId} is ${project.status} and cannot accept clarification answers`,
-        );
-      }
-    }
+    // The clarification group's own status (open vs answered/expired) is the
+    // authority on whether answers are accepted; the store enforces it
+    // transactionally, so no additional project-status gate is needed here.
     const body = parse(AnswerClarificationRequest, req.body);
     const wasOpen = existing.status === "open";
     const updated = store.answerClarification(id, body.answers, { idempotencyKey: body.idempotencyKey });
@@ -608,6 +600,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.post("/v1/projects/:id/terminals", async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    if (store.isProjectPaused(id)) {
+      return apiError(reply, 409, "project_paused", `project ${id} is paused; resume it before creating terminals`);
+    }
     const body = parse(TerminalCreate, req.body);
 
     const policy = body.missionId ? missionCommandPolicy : commandPolicy;
@@ -683,6 +678,14 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (!terminal) return apiError(reply, 404, "not_found", `terminal ${id} not found`);
     if (terminal.workerId !== workerId) return apiError(reply, 403, "policy_denied", "terminal leased to another worker");
     const body = parse(z.object({ text: z.string(), leaseToken: z.string().min(16) }), req.body);
+    if (store.isProjectPaused(terminal.projectId)) {
+      store.appendEvent("run.fenced", { projectId: terminal.projectId, runId: terminal.runId }, {
+        terminalId: id,
+        workerId,
+        reason: "project paused: worker output refused",
+      });
+      return apiError(reply, 409, "project_paused", `project ${terminal.projectId} is paused; worker output refused`);
+    }
     if (!store.validateTerminalLease(id, workerId, body.leaseToken)) {
       return apiError(reply, 409, "conflict", "expired or invalid terminal lease");
     }
@@ -706,6 +709,14 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       }),
       req.body,
     );
+    if (store.isProjectPaused(terminal.projectId)) {
+      store.appendEvent("run.fenced", { projectId: terminal.projectId, runId: terminal.runId }, {
+        terminalId: id,
+        workerId,
+        reason: "project paused: worker exit refused",
+      });
+      return apiError(reply, 409, "project_paused", `project ${terminal.projectId} is paused; worker exit refused`);
+    }
     if (!store.validateTerminalLease(id, workerId, body.leaseToken)) {
       return apiError(reply, 409, "conflict", "expired or invalid terminal lease");
     }

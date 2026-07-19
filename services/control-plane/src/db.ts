@@ -416,6 +416,20 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
         WHERE idempotency_key IS NOT NULL;
     `,
   },
+  {
+    // Durable "resume the brain after this clarification" intent. Set to 1 in
+    // the same transaction that records the answers so a crash between the
+    // answer commit and the brain resume is recovered on restart, guaranteeing
+    // an exactly-once resume (invariant P-RESUME). Additive: existing rows
+    // default to 0 (no pending resume).
+    version: 7,
+    sql: `
+      ALTER TABLE clarifications ADD COLUMN resume_pending INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX idx_clarifications_resume_pending
+        ON clarifications(resume_pending)
+        WHERE resume_pending = 1;
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {
@@ -427,7 +441,12 @@ export function openDatabase(dbPath: string): DB {
   return db;
 }
 
-export function migrate(db: DB): void {
+/**
+ * Apply pending migrations up to (and including) `upto`. The bound is only
+ * used by migration tests that need to reconstruct a real earlier-version
+ * database before applying the newest migration; production callers omit it.
+ */
+export function migrate(db: DB, upto = Number.POSITIVE_INFINITY): void {
   db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
   );
@@ -437,6 +456,7 @@ export function migrate(db: DB): void {
     ),
   );
   for (const migration of MIGRATIONS) {
+    if (migration.version > upto) break;
     if (applied.has(migration.version)) continue;
     const apply = db.transaction(() => {
       db.exec(migration.sql);
