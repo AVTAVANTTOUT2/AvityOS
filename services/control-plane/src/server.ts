@@ -19,7 +19,9 @@ import {
 import { IllegalTransitionError } from "@avityos/orchestration";
 import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
 import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { buildE2EPreflight } from "./e2e-preflight.js";
 import type { Engine } from "./engine.js";
 import { ProjectValidationError, validateRepositoryConfiguration } from "./project-validation.js";
 import { newId, now, StoreConflictError, type Store } from "./store.js";
@@ -798,6 +800,29 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       });
     }
     return { items };
+  });
+
+  // Secret-free readiness preflight for the chantier-4 live E2E campaign.
+  // Reports runnability only; never runs a provider and never leaks credentials.
+  app.get("/v1/e2e/preflight", async () => {
+    const hasBinary = (name: string): boolean => {
+      try {
+        execFileSync(name, ["--version"], { stdio: "ignore", timeout: 5000 });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    return buildE2EPreflight({
+      providers: engine.providers,
+      providerChain: engine.providerChain,
+      roleProviderChains: engine.roleProviderChains,
+      git: hasBinary("git"),
+      gh: hasBinary("gh"),
+      githubCredential: Boolean(
+        process.env.GH_TOKEN || process.env.GITHUB_TOKEN || process.env.SSH_AUTH_SOCK,
+      ),
+    });
   });
 
   // ── pull requests ────────────────────────────────────────────────────────
