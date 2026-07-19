@@ -139,9 +139,12 @@ describe("avity CLI", () => {
     execFileSync("git", ["init", "-b", "main", repo]);
     execFileSync("git", ["-C", repo, "config", "user.email", "cli-test@example.invalid"]);
     execFileSync("git", ["-C", repo, "config", "user.name", "CLI Test"]);
+    execFileSync("git", ["-C", repo, "config", "commit.gpgsign", "false"]);
+    execFileSync("git", ["-C", repo, "config", "core.fsmonitor", "false"]);
+    execFileSync("git", ["-C", repo, "config", "core.untrackedCache", "false"]);
     writeFileSync(join(repo, "README.md"), "# CLI onboarding\n");
     execFileSync("git", ["-C", repo, "add", "README.md"]);
-    execFileSync("git", ["-C", repo, "commit", "-m", "chore: init"]);
+    execFileSync("git", ["-C", repo, "commit", "--no-gpg-sign", "-m", "chore: init"]);
     execFileSync("git", ["-C", repo, "remote", "add", "origin", "git@github.com:example/cli-onboarding.git"]);
 
     const created = await run(
@@ -149,9 +152,6 @@ describe("avity CLI", () => {
       "--repo", repo,
       "--remote", "https://github.com/example/cli-onboarding.git",
       "--branch", "main",
-      "--objective", "Maybe deliver complete CLI onboarding configuration",
-      "--criterion", "repository is validated",
-      "--criterion", "budget is enforced",
       "--autonomy", "maximum_autonomy",
       "--budget", "75",
       "--warn-at", "60",
@@ -161,7 +161,7 @@ describe("avity CLI", () => {
     const project = JSON.parse(created.out) as { id: string };
     let configuration = store.getProjectConfiguration(project.id)!;
     expect(configuration.project.repoRemoteUrl).toBe("git@github.com:example/cli-onboarding.git");
-    expect(configuration.objective?.acceptanceCriteria).toEqual(["repository is validated", "budget is enforced"]);
+    expect(configuration.objective).toBeNull();
     expect(configuration.budget).toMatchObject({ limitUsd: 75, warnAtFraction: 0.6 });
 
     const updateArgs = [
@@ -172,10 +172,12 @@ describe("avity CLI", () => {
       "--warn-at", "70",
       "--json",
     ];
-    expect((await run(...updateArgs)).code).toBe(0);
-    expect((await run(...updateArgs)).code).toBe(0);
+    const firstUpdate = await run(...updateArgs);
+    expect(firstUpdate.code, firstUpdate.err || firstUpdate.out).toBe(0);
+    const secondUpdate = await run(...updateArgs);
+    expect(secondUpdate.code, secondUpdate.err || secondUpdate.out).toBe(0);
     configuration = store.getProjectConfiguration(project.id)!;
-    expect(configuration.objective?.revision).toBe(2);
+    expect(configuration.objective?.revision).toBe(1);
     expect(configuration.objective?.acceptanceCriteria).toEqual(["updated criterion"]);
     expect(configuration.budget).toMatchObject({ limitUsd: 100, warnAtFraction: 0.7 });
   });

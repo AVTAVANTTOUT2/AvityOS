@@ -69,7 +69,7 @@ function apiError(reply: FastifyReply, status: number, code: ApiErrorCode, messa
  */
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
   const { store, engine } = opts;
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, forceCloseConnections: true });
   await app.register(cors, { origin: [...(opts.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS)], credentials: true });
   const startedAt = Date.now();
 
@@ -553,11 +553,11 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     store.emitter.on("event", send);
     const keepalive = setInterval(() => reply.raw.write(": keepalive\n\n"), 15_000);
 
-    req.raw.on("close", () => {
+    await new Promise<void>((resolve) => req.raw.once("close", () => {
       store.emitter.off("event", send);
       clearInterval(keepalive);
-    });
-    await new Promise(() => undefined); // hold the connection open
+      resolve();
+    }));
   });
 
   // ── terminal sessions ────────────────────────────────────────────────────

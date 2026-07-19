@@ -63,7 +63,7 @@ async function makeFixtureRepo(scratch: string): Promise<string> {
   await writeFile(join(repo, "README.md"), "# brain fixture\n");
   await writeFile(join(repo, ".env"), "SECRET_TOKEN=do-not-leak-me\n");
   await git(repo, "add", "-A", "-f");
-  await git(repo, "commit", "--no-verify", "-m", "chore: initial commit");
+  await git(repo, "commit", "--no-verify", "--no-gpg-sign", "-m", "chore: initial commit");
   return repo;
 }
 

@@ -47,8 +47,14 @@ export class GitError extends Error {
  * repository directory.
  */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
+  const gitArgs = [
+    "-c", "commit.gpgsign=false",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.untrackedCache=false",
+    ...args,
+  ];
   try {
-    const { stdout } = await execFileAsync("git", args, {
+    const { stdout } = await execFileAsync("git", gitArgs, {
       cwd,
       maxBuffer: 16 * 1024 * 1024,
       env: scopedGitEnvironment(),
@@ -56,7 +62,7 @@ export async function git(cwd: string, ...args: string[]): Promise<string> {
     return stdout;
   } catch (err) {
     const e = err as { stderr?: string; code?: number };
-    throw new GitError(args, e.stderr ?? String(err), e.code ?? null);
+    throw new GitError(gitArgs, e.stderr ?? String(err), e.code ?? null);
   }
 }
 
@@ -191,9 +197,9 @@ export async function listWorktrees(repoPath: string): Promise<WorktreeInfo[]> {
 export async function commitAll(repoPath: string, message: string): Promise<string> {
   await git(repoPath, "add", "-A");
   // Validation is an explicit AvityOS checkpoint. Repository-controlled Git
-  // hooks are untrusted executable code and must not run with control-plane
-  // authority during the commit side effect.
-  await git(repoPath, "commit", "--no-verify", "-m", message);
+  // hooks and inherited signing programs are untrusted executable code and
+  // must not run with control-plane authority during the commit side effect.
+  await git(repoPath, "commit", "--no-verify", "--no-gpg-sign", "-m", message);
   return headCommit(repoPath);
 }
 
@@ -218,4 +224,7 @@ export async function initRepo(repoPath: string, defaultBranch = "main"): Promis
   await git(repoPath, "init", "-b", defaultBranch);
   await git(repoPath, "config", "user.email", "avityos@local");
   await git(repoPath, "config", "user.name", "AvityOS");
+  await git(repoPath, "config", "commit.gpgsign", "false");
+  await git(repoPath, "config", "core.fsmonitor", "false");
+  await git(repoPath, "config", "core.untrackedCache", "false");
 }

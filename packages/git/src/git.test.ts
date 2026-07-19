@@ -69,6 +69,22 @@ describe("git package", () => {
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("never executes inherited signing programs", async () => {
+    const marker = join(scratch, "signing-program-ran");
+    const signingProgram = join(scratch, "signing-program.sh");
+    await writeFile(signingProgram, `#!/bin/sh\nprintf compromised > '${marker}'\nexit 1\n`);
+    await chmod(signingProgram, 0o755);
+    await git(repo, "config", "commit.gpgsign", "true");
+    await git(repo, "config", "gpg.format", "ssh");
+    await git(repo, "config", "gpg.ssh.program", signingProgram);
+    await git(repo, "config", "user.signingkey", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPqiJsBjAsv4KymedFcUR891X1lgC90DW8yMtjcHJ/p0");
+    await writeFile(join(repo, "signed.txt"), "validated\n");
+
+    await commitAll(repo, "test: safe unsigned automated commit");
+
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("creates and removes isolated mission worktrees", async () => {
     const wt = join(scratch, "wt-m1");
     const branch = missionBranchName("m1", "demo");
