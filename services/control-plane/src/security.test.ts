@@ -84,6 +84,7 @@ describe("API authentication", () => {
     });
     expect(res.status).toBe(200);
     controller.abort();
+    await res.body?.cancel().catch(() => undefined);
     const denied = await fetch(`${baseUrl}/v1/events/stream?afterSeq=0&token=${TOKEN}`);
     expect(denied.status).toBe(401);
   });

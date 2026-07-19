@@ -63,7 +63,7 @@ async function makeFixtureRepo(scratch: string): Promise<string> {
   await writeFile(join(repo, "README.md"), "# brain fixture\n");
   await writeFile(join(repo, ".env"), "SECRET_TOKEN=do-not-leak-me\n");
   await git(repo, "add", "-A", "-f");
-  await git(repo, "commit", "--no-verify", "-m", "chore: initial commit");
+  await git(repo, "commit", "--no-verify", "--no-gpg-sign", "-m", "chore: initial commit");
   return repo;
 }
 
@@ -207,13 +207,39 @@ describe("AI brain pipeline", () => {
     expect(store.verifyAuditChain()).toBe(true);
   });
 
-  it.each([
-    ["ambiguous", "fake:plan-ambiguous", "material ambiguity"],
-    ["infeasible", "fake:plan-infeasible", "infeasible"],
-  ] as const)("blocks after an %s AI analysis instead of scheduling work", async (_kind, model, reason) => {
-    ({ store, engine } = makeEngine(db, { brain: model }));
+  it("opens a structured AI clarification group when analysis is ambiguous", async () => {
+    ({ store, engine } = makeEngine(db, { brain: "fake:plan-ambiguous" }));
     const project = store.createProject({
       name: "Analysis gate", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Deliver a deliberately detailed objective whose material feasibility is decided by the reasoning provider",
+      ["the analysis outcome controls whether execution may begin"],
+    );
+
+    const result = await engine.brain.ensurePlan(project.id, objective.id);
+
+    expect(result.status).toBe("clarifying");
+    expect(store.getProject(project.id)!.status).toBe("clarifying");
+    expect(store.activePlan(project.id)).toBeNull();
+    expect(store.listMissions(project.id)).toEqual([]);
+    expect(store.listBrainRuns(project.id, objective.id).map((run) => run.step)).toEqual([
+      "analysis",
+      "clarification",
+    ]);
+    const clarification = store.listClarifications(project.id, "open")[0]!;
+    expect(clarification.provenance).toBe("fake_fixture");
+    expect(clarification.questions.length).toBeGreaterThanOrEqual(2);
+    expect(clarification.questions.every((question) => question.logicalKey.length > 0)).toBe(true);
+    expect(store.getObjective(objective.id)!.analysisSummary).toContain("Deterministic fixture analysis");
+  });
+
+  it("blocks after an infeasible AI analysis instead of scheduling work", async () => {
+    ({ store, engine } = makeEngine(db, { brain: "fake:plan-infeasible" }));
+    const project = store.createProject({
+      name: "Infeasible gate", description: "", repoPath: null, repoRemoteUrl: null,
       autonomyProfile: "autonomous_with_checkpoints",
     });
     const objective = store.createObjective(
@@ -230,7 +256,7 @@ describe("AI brain pipeline", () => {
     expect(store.listMissions(project.id)).toEqual([]);
     expect(store.listBrainRuns(project.id, objective.id).map((run) => run.step)).toEqual(["analysis"]);
     expect(store.getObjective(objective.id)!.analysisSummary).toContain("Deterministic fixture analysis");
-    expect(store.listApprovals("open", project.id)[0]?.description).toContain(reason);
+    expect(store.listApprovals("open", project.id)[0]?.description).toContain("infeasible");
   });
 
   it("redacts provider-shaped secrets from durable brain artifacts", () => {

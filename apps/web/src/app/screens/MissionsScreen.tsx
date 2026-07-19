@@ -20,7 +20,7 @@ const TEST_LABELS: Record<string, string> = {
 };
 
 export function MissionsScreen({ projectId }: { projectId?: number | string }) {
-  const { kanban: KANBAN, actions, mode } = useData();
+  const { kanban: KANBAN, actions, mode, projects } = useData();
   const [sel, setSel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -29,10 +29,22 @@ export function MissionsScreen({ projectId }: { projectId?: number | string }) {
   );
   const allCards = Object.values(columns).flat();
   const selCard = allCards.find(c => c.id === sel);
+  const project = projects.find((entry) => entry.id === projectId);
+  const projectPaused = project?.phase === "En pause";
 
   const runTransition = async (apiId: string, to: string) => {
     setBusy(true);
     const result = await actions.transitionMission(apiId, to);
+    setBusy(false);
+    setFeedback(result.detail);
+  };
+
+  const runProjectPauseToggle = async () => {
+    if (!projectId) return;
+    setBusy(true);
+    const result = projectPaused
+      ? await actions.resumeProject(String(projectId))
+      : await actions.pauseProject(String(projectId), "pause demandée depuis Missions");
     setBusy(false);
     setFeedback(result.detail);
   };
@@ -117,7 +129,10 @@ export function MissionsScreen({ projectId }: { projectId?: number | string }) {
             live={mode === "live"}
             busy={busy}
             feedback={feedback}
+            projectPaused={projectPaused}
+            canPauseProject={mode === "live" && projectId !== undefined}
             onTransition={runTransition}
+            onPauseToggle={() => void runProjectPauseToggle()}
           />
         </Glass>
       )}
@@ -130,13 +145,16 @@ const CANCELLABLE_STATES = [
   "review_required", "approved", "paused", "blocked", "retrying",
 ];
 
-function MissionActions({ apiId, state, live, busy, feedback, onTransition }: {
+function MissionActions({ apiId, state, live, busy, feedback, projectPaused, canPauseProject, onTransition, onPauseToggle }: {
   apiId?: string;
   state?: string;
   live: boolean;
   busy: boolean;
   feedback: string | null;
+  projectPaused: boolean;
+  canPauseProject: boolean;
   onTransition: (apiId: string, to: string) => void;
+  onPauseToggle: () => void;
 }) {
   const canAct = live && !!apiId && !!state;
   const offTitle = live ? "État de mission inconnu" : "Disponible uniquement connecté au control plane";
@@ -145,11 +163,14 @@ function MissionActions({ apiId, state, live, busy, feedback, onTransition }: {
     <div className="mt-5 pt-4 border-t border-black/[0.05] space-y-2">
       <div className="grid grid-cols-2 gap-2">
         <button
-          disabled
-          title="Pause/reprise indisponible : le control plane ne sait pas encore suspendre le run actif sans perdre sa cohérence."
+          disabled={!canPauseProject || busy}
+          title={canPauseProject
+            ? "Pause/reprise atomique du projet : annule les runs actifs, révoque les leases et refuse les résultats tardifs."
+            : "Disponible uniquement connecté au control plane"}
+          onClick={onPauseToggle}
           className="flex items-center gap-1.5 justify-center text-[11px] bg-[#F7F4EE] text-[#202124] py-2 rounded-xl transition-all enabled:hover:bg-[#F0EDE7] disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {state === "paused" ? <><Play size={10} />Reprise indisponible</> : <><Pause size={10} />Pause indisponible</>}
+          {projectPaused ? <><Play size={10} />Reprendre le projet</> : <><Pause size={10} />Pause atomique</>}
         </button>
         <button
           disabled={!canAct || busy || !cancellable}
@@ -161,10 +182,14 @@ function MissionActions({ apiId, state, live, busy, feedback, onTransition }: {
         </button>
       </div>
       {feedback && <div className="text-[10px] text-[#74716B]">{feedback}</div>}
-      {canAct && (
-        <div className="text-[10px] text-[#74716B]">Pause/reprise désactivées tant que le control plane ne suspend pas aussi le run actif.</div>
+      {canPauseProject && (
+        <div className="text-[10px] text-[#74716B]">
+          {projectPaused
+            ? "Projet pausé durablement — reprise idempotente via le control plane."
+            : "Pause atomique projet : scheduling gelé, runs annulés, fencing des résultats tardifs."}
+        </div>
       )}
-      {!canAct && (
+      {!canAct && !canPauseProject && (
         <div className="text-[10px] text-[#74716B]">Actions de mission disponibles uniquement en mode live.</div>
       )}
     </div>

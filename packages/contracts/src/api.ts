@@ -4,6 +4,7 @@ import {
   MissionState,
   TeamRole,
 } from "./enums.js";
+import { ClarificationAnswerValue } from "./clarification.js";
 import { Id, MissionContract } from "./entities.js";
 
 /** Stable machine-readable API error codes. */
@@ -15,6 +16,11 @@ export const ApiErrorCode = z.enum([
   "policy_denied",
   "budget_exceeded",
   "provider_unavailable",
+  "clarification_obsolete",
+  "clarification_incomplete",
+  "clarification_already_answered",
+  "project_paused",
+  "project_not_paused",
   "internal",
 ]);
 export type ApiErrorCode = z.infer<typeof ApiErrorCode>;
@@ -132,12 +138,61 @@ export const SubmitObjectiveRequest = z.object({
 });
 export type SubmitObjectiveRequest = z.infer<typeof SubmitObjectiveRequest>;
 
-export const AnswerClarificationRequest = z.object({
-  answers: z
-    .array(z.object({ questionId: Id, answer: z.string().min(1) }))
-    .min(1),
-});
+/**
+ * Answer a whole clarification group atomically. Each answer is a typed
+ * value; a legacy `answer` string is accepted only for `text` questions and
+ * is normalized server-side into `{ type: "text", value }`.
+ */
+export const AnswerClarificationRequest = z
+  .object({
+    answers: z
+      .array(
+        z
+          .object({
+            questionId: Id,
+            value: ClarificationAnswerValue.optional(),
+            /** Legacy free-text answer; normalized to text values server-side. */
+            answer: z.string().min(1).max(10_000).optional(),
+          })
+          .strict()
+          .refine((entry) => entry.value !== undefined || entry.answer !== undefined, {
+            message: "either value or answer is required",
+          }),
+      )
+      .min(1)
+      .max(20),
+    idempotencyKey: z.string().min(1).max(128).optional(),
+  })
+  .strict();
 export type AnswerClarificationRequest = z.infer<typeof AnswerClarificationRequest>;
+
+export const PauseProjectRequest = z
+  .object({
+    reason: z.string().trim().max(2000).default(""),
+    idempotencyKey: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+export type PauseProjectRequest = z.infer<typeof PauseProjectRequest>;
+
+export const ResumeProjectRequest = z
+  .object({
+    idempotencyKey: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+export type ResumeProjectRequest = z.infer<typeof ResumeProjectRequest>;
+
+export const ProjectPauseState = z.object({
+  projectId: Id,
+  status: z.enum(["active", "pausing", "paused", "resuming"]),
+  reason: z.string().nullable(),
+  actor: z.string().nullable(),
+  previousStatus: z.string().nullable(),
+  generation: z.number().int().min(0),
+  pausedAt: z.string().datetime({ offset: true }).nullable(),
+  resumedAt: z.string().datetime({ offset: true }).nullable(),
+  cancellingRunIds: z.array(Id).default([]),
+});
+export type ProjectPauseState = z.infer<typeof ProjectPauseState>;
 
 export const CreateMissionRequest = z.object({
   title: z.string().min(1).max(300),

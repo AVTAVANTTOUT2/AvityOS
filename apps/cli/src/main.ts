@@ -194,6 +194,152 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
         ].join("\n"),
       );
     },
+    pause: async (ctx) => {
+      const id = requireArg(ctx, 1, "project-id");
+      const reason = flag(ctx, "reason") ?? "";
+      const state = await ctx.client.post<Record<string, unknown>>(`/v1/projects/${id}/pause`, {
+        reason,
+        idempotencyKey: flag(ctx, "idempotency-key"),
+      });
+      out(ctx, state, (s: Record<string, unknown>) =>
+        `project ${id} ${s.status}${s.reason ? ` — ${s.reason}` : ""} (generation ${s.generation})`,
+      );
+    },
+    resume: async (ctx) => {
+      const id = requireArg(ctx, 1, "project-id");
+      const state = await ctx.client.post<Record<string, unknown>>(`/v1/projects/${id}/resume`, {
+        idempotencyKey: flag(ctx, "idempotency-key"),
+      });
+      out(ctx, state, (s: Record<string, unknown>) => `project ${id} resumed → ${s.status}`);
+    },
+  },
+
+  clarification: {
+    list: async (ctx) => {
+      const projectId = requireArg(ctx, 1, "project-id");
+      const status = flag(ctx, "status");
+      const path = status
+        ? `/v1/projects/${projectId}/clarifications?status=${encodeURIComponent(status)}`
+        : `/v1/projects/${projectId}/clarifications`;
+      const { items } = await ctx.client.get<{ items: Record<string, unknown>[] }>(path);
+      out(ctx, items, (rows: Record<string, unknown>[]) =>
+        table(
+          rows.map((row) => ({
+            id: row.id,
+            status: row.status,
+            round: row.round,
+            provenance: row.provenance,
+            questions: Array.isArray(row.questions) ? (row.questions as unknown[]).length : 0,
+          })),
+          ["id", "status", "round", "provenance", "questions"],
+        ),
+      );
+    },
+    show: async (ctx) => {
+      const projectId = requireArg(ctx, 1, "project-id");
+      const { items } = await ctx.client.get<{
+        items: {
+          id: string;
+          status: string;
+          provenance: string;
+          round: number;
+          questions: {
+            id: string;
+            logicalKey: string;
+            question: string;
+            reason: string;
+            answerType: string;
+            required: boolean;
+            options: { key: string; label: string }[];
+          }[];
+        }[];
+      }>(`/v1/projects/${projectId}/clarifications?status=open`);
+      const open = items[0];
+      if (!open) {
+        out(ctx, { items: [] }, () => "no open clarification group");
+        return;
+      }
+      out(ctx, open, (group: typeof open) =>
+        [
+          `${group.id} — round ${group.round} — ${group.status} — provenance=${group.provenance}`,
+          ...group.questions.map(
+            (question, index) =>
+              `${index + 1}. [${question.logicalKey}] (${question.answerType}${question.required ? ", required" : ""})\n   Q: ${question.question}\n   why: ${question.reason}${
+                question.options.length
+                  ? `\n   options: ${question.options.map((option) => `${option.key}=${option.label}`).join(", ")}`
+                  : ""
+              }`,
+          ),
+        ].join("\n"),
+      );
+    },
+    answer: async (ctx) => {
+      const projectId = requireArg(ctx, 1, "project-id");
+      const { items } = await ctx.client.get<{
+        items: {
+          id: string;
+          questions: {
+            id: string;
+            logicalKey: string;
+            answerType: string;
+            required: boolean;
+            question: string;
+            options: { key: string; label: string }[];
+          }[];
+        }[];
+      }>(`/v1/projects/${projectId}/clarifications?status=open`);
+      const open = items[0];
+      if (!open) throw new Error(`no open clarification for project ${projectId}`);
+
+      const jsonFlag = flag(ctx, "answers-json");
+      let answers: { questionId: string; answer?: string; value?: unknown }[] = [];
+      if (jsonFlag) {
+        const parsed = JSON.parse(jsonFlag) as { questionId?: string; logicalKey?: string; answer?: string; value?: unknown }[];
+        answers = parsed.map((entry) => {
+          const question = open.questions.find(
+            (candidate) => candidate.id === entry.questionId || candidate.logicalKey === entry.logicalKey,
+          );
+          if (!question) throw new Error(`unknown question in --answers-json: ${JSON.stringify(entry)}`);
+          return {
+            questionId: question.id,
+            ...(entry.value !== undefined ? { value: entry.value } : { answer: String(entry.answer ?? "") }),
+          };
+        });
+      } else {
+        const pairs = ctx.args.slice(2).filter((arg) => !arg.startsWith("--") && arg.includes("="));
+        if (pairs.length === 0) {
+          // Interactive: prompt for every required question on stdin.
+          const readline = await import("node:readline/promises");
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+          try {
+            for (const question of open.questions) {
+              const hint = question.options.length
+                ? ` [${question.options.map((option) => option.key).join("|")}]`
+                : "";
+              const answer = (await rl.question(`${question.logicalKey}${hint}: ${question.question}\n> `)).trim();
+              if (!answer && question.required) throw new Error(`missing required answer for ${question.logicalKey}`);
+              if (answer) answers.push({ questionId: question.id, answer });
+            }
+          } finally {
+            rl.close();
+          }
+        } else {
+          answers = pairs.map((pair) => {
+            const [key, ...rest] = pair.split("=");
+            const question = open.questions.find(
+              (candidate) => candidate.id === key || candidate.logicalKey === key,
+            );
+            if (!question) throw new Error(`unknown question key ${key}`);
+            return { questionId: question.id, answer: rest.join("=") };
+          });
+        }
+      }
+      const result = await ctx.client.post<Record<string, unknown>>(`/v1/clarifications/${open.id}/answers`, {
+        answers,
+        idempotencyKey: flag(ctx, "idempotency-key"),
+      });
+      out(ctx, result, () => `clarification ${open.id} answered; planning resumes automatically`);
+    },
   },
 
   objective: {
@@ -306,10 +452,18 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
     answer: async (ctx) => {
       const id = requireArg(ctx, 1, "intervention-id");
       if (id.startsWith("clr_")) {
+        const clarification = await ctx.client.get<{
+          id: string;
+          questions: { id: string; logicalKey: string }[];
+        }>(`/v1/clarifications/${id}`);
         const pairs = ctx.args.slice(2).filter((a) => !a.startsWith("--"));
         const answers = pairs.map((p) => {
-          const [questionId, ...rest] = p.split("=");
-          return { questionId: questionId!, answer: rest.join("=") };
+          const [key, ...rest] = p.split("=");
+          const question = clarification.questions.find(
+            (candidate) => candidate.id === key || candidate.logicalKey === key,
+          );
+          if (!question) throw new Error(`unknown question key ${key}`);
+          return { questionId: question.id, answer: rest.join("=") };
         });
         const result = await ctx.client.post<Record<string, unknown>>(`/v1/clarifications/${id}/answers`, { answers });
         out(ctx, result, () => `clarification ${id} answered; execution resumes automatically`);
@@ -397,13 +551,16 @@ commands:
          [--repo <path> --remote <github-url> --branch <name>]
          [--autonomy <profile> --budget <usd> --warn-at <percent>]
   project update <id> [same options] [--no-repo] [--no-budget] [--clear-criteria]
-  project list | show <id>
+  project list | show <id> | pause <id> [--reason <text>] | resume <id>
+  clarification list <project-id> [--status open|answered|expired]
+  clarification show <project-id>
+  clarification answer <project-id> [logicalKey=answer...] [--answers-json <json>]
   objective submit <project-id> <text> [criteria...]
   plan show <project-id>
   brain show <project-id>                persisted AI planning state
   mission list <project-id>
   run list [--project <id>] | logs <run-id> | pause|resume|cancel <mission-id>
-  intervention list | answer <id> [q=answer...|--decision approved|rejected]
+  intervention list | answer <id> [key=answer...|--decision approved|rejected]
   provider list | status
   worker list | enroll <name> | revoke <id>
   pr list [--project <id>] | show <id>

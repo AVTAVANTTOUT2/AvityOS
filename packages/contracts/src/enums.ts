@@ -142,11 +142,11 @@ export type PolicyEffect = z.infer<typeof PolicyEffect>;
 export const WorkerStatus = z.enum(["online", "draining", "offline", "revoked"]);
 export type WorkerStatus = z.infer<typeof WorkerStatus>;
 
-/** Pipeline steps of the central AI brain (chantier 2). */
-export const BrainStep = z.enum(["analysis", "architecture", "plan"]);
+/** Pipeline steps of the central AI brain (chantiers 2–3). */
+export const BrainStep = z.enum(["analysis", "clarification", "architecture", "plan"]);
 export type BrainStep = z.infer<typeof BrainStep>;
 
-export const BrainRunState = z.enum(["running", "succeeded", "failed"]);
+export const BrainRunState = z.enum(["running", "succeeded", "failed", "cancelled"]);
 export type BrainRunState = z.infer<typeof BrainRunState>;
 
 /**
@@ -172,10 +172,13 @@ export const EventType = z.enum([
   "project.created",
   "project.updated",
   "project.status_changed",
+  "project.paused",
+  "project.resumed",
   "objective.submitted",
   "objective.analyzed",
   "clarification.requested",
   "clarification.answered",
+  "clarification.obsolete",
   "plan.created",
   "plan.updated",
   "plan.replanned",
@@ -186,6 +189,7 @@ export const EventType = z.enum([
   "run.state_changed",
   "run.output",
   "run.usage",
+  "run.fenced",
   "terminal.output",
   "git.branch_created",
   "git.commit_created",

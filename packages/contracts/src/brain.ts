@@ -203,7 +203,7 @@ export type BrainRun = z.infer<typeof BrainRun>;
 export const BrainStateResponse = z.object({
   projectId: Id,
   objectiveId: Id.nullable(),
-  status: z.enum(["idle", "clarifying", "running", "planned", "blocked", "failed"]),
+  status: z.enum(["idle", "clarifying", "running", "planned", "blocked", "failed", "paused"]),
   currentStep: BrainStep.nullable(),
   runs: z.array(BrainRun),
   analysis: BrainObjectiveAnalysis.nullable(),
@@ -211,6 +211,7 @@ export const BrainStateResponse = z.object({
   plan: Plan.nullable(),
   dependencies: z.array(MissionDependency),
   replanCount: z.number().int().min(0),
+  clarificationRound: z.number().int().min(0).default(0),
   lastReplan: z
     .object({
       trigger: ReplanTrigger,

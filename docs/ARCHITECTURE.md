@@ -68,7 +68,58 @@ transaction; approval handling also refuses inactive-plan missions. On
 restart, orphan brain runs are failed exactly once and planning resumes without
 duplicating an already-persisted plan.
 
+When analysis reports material ambiguity, a dedicated `clarification` brain
+step proposes a Zod-validated question group through `ProviderAdapter`. The
+control plane alone persists the group, opens one intervention, validates
+answers transactionally and resumes the pipeline exactly once. Deterministic
+policy strips secret/out-of-scope/command requests; round counts are bounded.
+Heuristic/deterministic short-objective gates are labelled
+`deterministic_policy` and never presented as AI clarifications.
+
+## Atomic project pause and resume
+
+Pause is owned by the control plane, not by optimistic UI state. A successful
+`POST /v1/projects/:id/pause` persists the pause request, transitions the
+project to `paused`, cancels active runs, revokes project leases (fencing),
+and appends `project.paused` in one transaction. Scheduling and new runs are
+refused while paused; late worker/provider results for fenced runs are
+rejected. Resume (`POST /v1/projects/:id/resume`) reactivates once, does not
+replay completed missions, and continues interrupted work as a new attempt.
+Restart preserves paused state. Pause does not claim to freeze an external
+provider’s in-memory session — only that no further accepted work can integrate
+after a successful pause.
+
+Three concurrency invariants make this operational (enforced by
+`services/control-plane/src/chantier3-hardening.test.ts`):
+
+- **P-ISO — cross-project isolation.** `revokeProjectWorkerLeases(projectId)`
+  is strictly scoped by `project_id`. A worker running sessions for two
+  projects keeps the other project’s session (and its lease token) fully valid
+  when only one project is paused; global per-worker revocation is reserved for
+  administrative worker revocation.
+- **P-FENCE — fence at the moment of acceptance.** The durable paused status is
+  re-checked with the workflow's captured `pause_generation` inside critical
+  Store transactions at the instant a result would be accepted, not merely at
+  pause start. A continuation from before a pause therefore remains fenced even
+  after a fast resume. Terminal lease selection skips paused projects, and
+  `output`/`exit`/terminal-create endpoints plus `validateMission`,
+  the brain pipeline, `reviewMission`, `integrateMission` and worker checks
+  re-check after each `await` and emit `run.fenced` instead of committing a
+  plan/checkpoint, integrating a change or consuming budget again. This closes
+  the window between the pause commit and lease revocation.
+- **P-RESUME — durable, exactly-once clarification resume.** The answer
+  transaction commits a `clarifications.resume_pending` intent (migration v7)
+  atomically with the answers. The engine claims that outbox intent, records all
+  question decisions and per-question idempotency keys in one transaction, then
+  kicks planning and acknowledges the claim. Orphaned claims are released and
+  redriven by `Engine.reconcile`; explicit project resume also drains pending
+  clarification intents without requiring a restart.
+
 ## State machines
+
+Project: includes legal transitions into and out of `paused` /
+`clarifying` alongside planning and execution states
+(`packages/orchestration/src/machines.ts`).
 
 Mission: `proposed → ready → assigned → running → result_submitted →
 validating → review_required → approved → integrated → completed`, plus

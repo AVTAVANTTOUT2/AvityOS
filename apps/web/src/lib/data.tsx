@@ -29,6 +29,12 @@ export interface AppData {
     createProject: (input: ProjectOnboardingInput) => Promise<{ ok: boolean; detail: string }>;
     updateProject: (projectId: string, input: ProjectOnboardingInput) => Promise<{ ok: boolean; detail: string }>;
     answerIntervention: (id: string, answer: string, decision: "approved" | "rejected") => Promise<void>;
+    answerClarificationGroup: (
+      id: string,
+      answers: { questionId: string; answer?: string; value?: unknown }[],
+    ) => Promise<{ ok: boolean; detail: string }>;
+    pauseProject: (projectId: string, reason?: string) => Promise<{ ok: boolean; detail: string }>;
+    resumeProject: (projectId: string) => Promise<{ ok: boolean; detail: string }>;
     transitionMission: (id: string, to: string) => Promise<{ ok: boolean; detail: string }>;
     cancelTerminal: (id: string) => Promise<{ ok: boolean; detail: string }>;
   };
@@ -71,6 +77,10 @@ const EVENT_LABELS: Record<string, string> = {
   "objective.submitted": "Objectif soumis",
   "clarification.requested": "Clarification demandée",
   "clarification.answered": "Clarification répondue",
+  "clarification.obsolete": "Clarification obsolète",
+  "project.paused": "Projet mis en pause",
+  "project.resumed": "Projet repris",
+  "run.fenced": "Résultat tardif refusé",
   "plan.created": "Plan créé",
   "mission.created": "Mission créée",
   "mission.state_changed": "Mission mise à jour",
@@ -248,15 +258,25 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
       kind: "clarification",
       questionId: c.questions[0]?.id,
       project: projectNames.get(c.projectId) ?? c.projectId,
+      projectId: c.projectId,
+      clarification: c,
       question: c.questions.map((q) => q.question).join(" — "),
-      reason: "L'objectif est ambigu ; une réponse groupée permet de reprendre automatiquement.",
-      impact: "La planification est en pause jusqu'à la réponse.",
-      options: c.questions[0]?.options ?? [],
+      reason:
+        c.provenance === "fake_fixture"
+          ? "Clarification structurée produite par le FakeProvider (provenance fake_fixture explicite)."
+          : c.provenance === "deterministic_policy"
+            ? "Politique déterministe du control plane (ce n'est pas une clarification IA)."
+            : c.questions[0]?.reason ?? "Des informations matérielles manquent avant la planification.",
+      impact: "La planification reprend automatiquement après une réponse groupée valide.",
+      options: (c.questions[0]?.options ?? []).map((option) =>
+        typeof option === "string" ? option : option.label,
+      ),
       recommendation: "",
       urgency: "haute",
       blockedAgents: [],
       time: "en attente",
       type: "clarification",
+      provenance: c.provenance,
     })),
   ] as unknown as typeof demo.INTERVENTIONS;
 
@@ -428,24 +448,48 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
       answerIntervention: async (apiId, answer, decision) => {
         if (apiId.startsWith("clr_")) {
-          // answer every open question of the clarification with the given text
-          const clarification = (
-            await Promise.all(
-              (await api.projects()).items.map(async (p) => (await api.clarifications(p.id)).items),
-            )
-          )
-            .flat()
-            .find((c) => c.id === apiId);
-          if (clarification) {
-            await api.answerClarification(
-              apiId,
-              clarification.questions.map((q) => ({ questionId: q.id, answer })),
-            );
-          }
+          const clarification = await api.clarification(apiId);
+          await api.answerClarification(
+            apiId,
+            clarification.questions.map((q) => ({ questionId: q.id, answer })),
+          );
         } else {
           await api.resolveApproval(apiId, decision, answer);
         }
         refresh();
+      },
+      answerClarificationGroup: async (id, answers) => {
+        try {
+          await api.answerClarification(id, answers);
+          refresh();
+          return { ok: true, detail: "Clarifications enregistrées — reprise du cerveau." };
+        } catch (err) {
+          return { ok: false, detail: (err as Error).message };
+        }
+      },
+      pauseProject: async (projectId, reason = "") => {
+        try {
+          const state = await api.pauseProject(projectId, reason);
+          refresh();
+          return {
+            ok: true,
+            detail:
+              state.status === "pausing"
+                ? `Pause en cours — ${state.cancellingRunIds.length} run(s) en arrêt.`
+                : "Projet pausé de façon durable.",
+          };
+        } catch (err) {
+          return { ok: false, detail: (err as Error).message };
+        }
+      },
+      resumeProject: async (projectId) => {
+        try {
+          const state = await api.resumeProject(projectId);
+          refresh();
+          return { ok: true, detail: `Reprise enregistrée — statut ${state.status}.` };
+        } catch (err) {
+          return { ok: false, detail: (err as Error).message };
+        }
       },
       transitionMission: async (id, to) => {
         try {

@@ -38,6 +38,10 @@ describe("git package", () => {
     expect(parseGitHubRemote("https://github.com/acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
     expect(parseGitHubRemote("git@github.com:acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
     expect(parseGitHubRemote("ssh://git@github.com/acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
+    expect(parseGitHubRemote("https://x-access-token:redacted@github.com/acme/widget.git")).toEqual({
+      owner: "acme",
+      name: "widget",
+    });
     expect(parseGitHubRemote("https://github.example/acme/widget")).toBeNull();
   });
   it("derives predictable, safe branch names from missions", () => {
@@ -62,6 +66,22 @@ describe("git package", () => {
     await chmod(hook, 0o755);
     await writeFile(join(repo, "safe.txt"), "validated\n");
     await commitAll(repo, "test: safe automated commit");
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never executes inherited signing programs", async () => {
+    const marker = join(scratch, "signing-program-ran");
+    const signingProgram = join(scratch, "signing-program.sh");
+    await writeFile(signingProgram, `#!/bin/sh\nprintf compromised > '${marker}'\nexit 1\n`);
+    await chmod(signingProgram, 0o755);
+    await git(repo, "config", "commit.gpgsign", "true");
+    await git(repo, "config", "gpg.format", "ssh");
+    await git(repo, "config", "gpg.ssh.program", signingProgram);
+    await git(repo, "config", "user.signingkey", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPqiJsBjAsv4KymedFcUR891X1lgC90DW8yMtjcHJ/p0");
+    await writeFile(join(repo, "signed.txt"), "validated\n");
+
+    await commitAll(repo, "test: safe unsigned automated commit");
+
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 

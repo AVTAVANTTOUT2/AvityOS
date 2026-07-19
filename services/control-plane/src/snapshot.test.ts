@@ -81,7 +81,7 @@ describe("bounded repository snapshot", () => {
     );
     await symlink(join(scratch, "outside-package.json"), join(repo, "package.json"));
     await git(repo, "add", "-A", "-f");
-    await git(repo, "commit", "--no-verify", "-m", "chore: fixture with secrets");
+    await git(repo, "commit", "--no-verify", "--no-gpg-sign", "-m", "chore: fixture with secrets");
 
     const snapshot = (await buildRepoSnapshot(projectFor(repo)))!;
     const serialized = JSON.stringify(snapshot);

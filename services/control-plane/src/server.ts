@@ -7,7 +7,9 @@ import {
   CreateProjectRequest,
   EnrollWorkerRequest,
   EventStreamQuery,
+  PauseProjectRequest,
   ResolveApprovalRequest,
+  ResumeProjectRequest,
   SubmitObjectiveRequest,
   TransitionMissionRequest,
   UpdateProjectRequest,
@@ -20,7 +22,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { Engine } from "./engine.js";
 import { ProjectValidationError, validateRepositoryConfiguration } from "./project-validation.js";
-import { newId, now, type Store } from "./store.js";
+import { newId, now, StoreConflictError, type Store } from "./store.js";
 
 export interface ServerOptions {
   store: Store;
@@ -67,7 +69,7 @@ function apiError(reply: FastifyReply, status: number, code: ApiErrorCode, messa
  */
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
   const { store, engine } = opts;
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, forceCloseConnections: true });
   await app.register(cors, { origin: [...(opts.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS)], credentials: true });
   const startedAt = Date.now();
 
@@ -96,6 +98,15 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     }
     if (err instanceof IllegalTransitionError) {
       return apiError(reply, 409, "illegal_transition", err.message);
+    }
+    if (err instanceof StoreConflictError) {
+      const status =
+        err.code === "clarification_incomplete" || err.code === "clarification_obsolete"
+          ? 409
+          : err.code === "project_paused" || err.code === "project_not_paused"
+            ? 409
+            : 409;
+      return apiError(reply, status, err.code, err.message);
     }
     if (err instanceof ProjectValidationError) {
       return apiError(reply, 400, "validation_failed", err.message);
@@ -289,9 +300,10 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       return null;
     };
 
-    let status: "idle" | "clarifying" | "running" | "planned" | "blocked" | "failed" = "idle";
+    let status: "idle" | "clarifying" | "running" | "planned" | "blocked" | "failed" | "paused" = "idle";
     if (objective) {
-      if (project.status === "clarifying") status = "clarifying";
+      if (project.status === "paused") status = "paused";
+      else if (project.status === "clarifying") status = "clarifying";
       else if (planForObjective) status = "planned";
       else if (runs.some((run) => run.state === "running") || project.status === "planning") status = "running";
       else if (project.status === "blocked") status = "blocked";
@@ -311,6 +323,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       plan: planForObjective,
       dependencies: store.listDependencies(id),
       replanCount: replans.length,
+      clarificationRound: objective ? store.clarificationRoundCount(id, objective.id) : 0,
       lastReplan: lastReplanPlan
         ? {
             trigger: lastReplanPlan.replanTrigger!,
@@ -351,13 +364,60 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return { items: store.listClarifications(id, status) };
   });
 
+  app.get("/v1/clarifications/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const clarification = store.getClarification(id);
+    if (!clarification) return apiError(reply, 404, "not_found", `clarification ${id} not found`);
+    return clarification;
+  });
+
   app.post("/v1/clarifications/:id/answers", async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!store.getClarification(id)) return apiError(reply, 404, "not_found", `clarification ${id} not found`);
+    const existing = store.getClarification(id);
+    if (!existing) return apiError(reply, 404, "not_found", `clarification ${id} not found`);
+    const project = store.getProject(existing.projectId);
+    if (project?.status === "paused") {
+      return apiError(reply, 409, "project_paused", `project ${existing.projectId} is paused`);
+    }
+    // The clarification group's own status (open vs answered/expired) is the
+    // authority on whether answers are accepted; the store enforces it
+    // transactionally, so no additional project-status gate is needed here.
     const body = parse(AnswerClarificationRequest, req.body);
-    const updated = store.answerClarification(id, body.answers);
-    engine.resumeAfterClarification(id);
+    const wasOpen = existing.status === "open";
+    const updated = store.answerClarification(id, body.answers, { idempotencyKey: body.idempotencyKey });
+    if (wasOpen && updated.status === "answered") {
+      engine.resumeAfterClarification(id);
+    }
     return updated;
+  });
+
+  app.get("/v1/projects/:id/pause", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    return store.getProjectPauseState(id);
+  });
+
+  app.post("/v1/projects/:id/pause", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    const body = parse(PauseProjectRequest, req.body ?? {});
+    const state = await engine.pauseProject(id, {
+      reason: body.reason,
+      actor: "user",
+      idempotencyKey: body.idempotencyKey,
+    });
+    return state;
+  });
+
+  app.post("/v1/projects/:id/resume", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    const body = parse(ResumeProjectRequest, req.body ?? {});
+    const state = await engine.resumeProject(id, {
+      actor: "user",
+      idempotencyKey: body.idempotencyKey,
+    });
+    return state;
   });
 
   // ── plans & missions ─────────────────────────────────────────────────────
@@ -485,11 +545,11 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     store.emitter.on("event", send);
     const keepalive = setInterval(() => reply.raw.write(": keepalive\n\n"), 15_000);
 
-    req.raw.on("close", () => {
+    await new Promise<void>((resolve) => req.raw.once("close", () => {
       store.emitter.off("event", send);
       clearInterval(keepalive);
-    });
-    await new Promise(() => undefined); // hold the connection open
+      resolve();
+    }));
   });
 
   // ── terminal sessions ────────────────────────────────────────────────────
@@ -540,6 +600,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.post("/v1/projects/:id/terminals", async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!store.getProject(id)) return apiError(reply, 404, "not_found", `project ${id} not found`);
+    if (store.isProjectPaused(id)) {
+      return apiError(reply, 409, "project_paused", `project ${id} is paused; resume it before creating terminals`);
+    }
     const body = parse(TerminalCreate, req.body);
 
     const policy = body.missionId ? missionCommandPolicy : commandPolicy;
@@ -615,6 +678,14 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (!terminal) return apiError(reply, 404, "not_found", `terminal ${id} not found`);
     if (terminal.workerId !== workerId) return apiError(reply, 403, "policy_denied", "terminal leased to another worker");
     const body = parse(z.object({ text: z.string(), leaseToken: z.string().min(16) }), req.body);
+    if (store.isProjectPaused(terminal.projectId)) {
+      store.appendEvent("run.fenced", { projectId: terminal.projectId, runId: terminal.runId }, {
+        terminalId: id,
+        workerId,
+        reason: "project paused: worker output refused",
+      });
+      return apiError(reply, 409, "project_paused", `project ${terminal.projectId} is paused; worker output refused`);
+    }
     if (!store.validateTerminalLease(id, workerId, body.leaseToken)) {
       return apiError(reply, 409, "conflict", "expired or invalid terminal lease");
     }
@@ -638,6 +709,14 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       }),
       req.body,
     );
+    if (store.isProjectPaused(terminal.projectId)) {
+      store.appendEvent("run.fenced", { projectId: terminal.projectId, runId: terminal.runId }, {
+        terminalId: id,
+        workerId,
+        reason: "project paused: worker exit refused",
+      });
+      return apiError(reply, 409, "project_paused", `project ${terminal.projectId} is paused; worker exit refused`);
+    }
     if (!store.validateTerminalLease(id, workerId, body.leaseToken)) {
       return apiError(reply, 409, "conflict", "expired or invalid terminal lease");
     }

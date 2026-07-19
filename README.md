@@ -217,7 +217,10 @@ Implemented and covered by automated tests:
   or infeasible analyses stop before delegation; repository checks must match
   the server snapshot exactly; replans persist their idempotency key and
   withdraw stale interventions in the same transaction;
-- durable objective, clarification, planning, mission and intervention flows;
+- durable objective, structured clarification, planning, mission and
+  intervention flows;
+- atomic project pause/resume with run cancellation, lease revocation and
+  late-result fencing;
 - restart recovery, transactional events and a hash-chained audit trail;
 - concurrent project isolation and ordered per-project execution;
 - real worktree changes, validation commands, commits, correction and
@@ -235,8 +238,9 @@ Known remaining proof or product work:
   fixture provider (labelled `fake_fixture`, never real planning evidence);
   a planning run with a live reasoning provider requires operator-owned API
   credentials and is deliberately part of the live-validation chantier;
-- grouped clarifications remain heuristic and atomic pause/resume of an
-  active run is not implemented yet (next chantier);
+- structured clarifications and atomic project pause/resume (chantier 3),
+  covered by control-plane/API/CLI/Web tests, Playwright `chantier3.spec.ts`,
+  and green CI on the delivery PR;
 - live-provider smoke tests require operator-owned API credentials;
 - autonomous push and draft-PR creation still need a dedicated external
   fixture repository and GitHub credentials for end-to-end proof;
@@ -301,6 +305,14 @@ cd apps/macos && swift run AvityOS
 Drive the same control plane from the CLI:
 
 ```sh
+# Structured clarifications (interactive or JSON)
+avity clarification list <project>
+avity clarification show <project>
+avity clarification answer <project>
+
+# Atomic project pause / resume
+avity project pause <project> --reason "operator hold"
+avity project resume <project>
 node apps/cli/dist/main.js doctor
 node apps/cli/dist/main.js project create "My project" \
   --repo /absolute/path/to/repository \

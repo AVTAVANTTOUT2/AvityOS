@@ -72,7 +72,10 @@ export async function validateRepositoryConfiguration(
   try {
     const names = (await git(repoPath, "remote")).split("\n").map((name) => name.trim()).filter(Boolean);
     for (const name of names) {
-      const url = (await git(repoPath, "remote", "get-url", name)).trim();
+      // Read the configured URL from git-config, not `remote get-url`.
+      // `get-url` applies url.*.insteadOf rewrites and can surface credentialed
+      // HTTPS URLs from the agent environment; those must never be persisted.
+      const url = (await git(repoPath, "config", "--get", `remote.${name}.url`)).trim();
       const parsed = parseGitHubRemote(url);
       if (
         parsed &&

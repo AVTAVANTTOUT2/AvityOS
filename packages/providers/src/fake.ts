@@ -174,9 +174,11 @@ export class FakeProviderAdapter implements ProviderAdapter {
         const target = join(input.cwd, "AVITY.md");
         const firstAttempt = model === "fake:code-defect-once" && !self.defectiveRuns.has(input.cwd);
         if (firstAttempt) self.defectiveRuns.add(input.cwd);
-        const content = firstAttempt
-          ? `# Mission result\n\nDEFECT: intentionally wrong first attempt\n`
-          : `# Mission result\n\n${input.userPrompt}\n`;
+        // Strip trailing whitespace so repository `git diff --check` gates stay green.
+        const body = firstAttempt
+          ? "DEFECT: intentionally wrong first attempt"
+          : input.userPrompt.replace(/[ \t]+$/gm, "").trimEnd();
+        const content = `# Mission result\n\n${body}\n`;
         writeFileSync(target, content);
         yield { type: "output", text: `fake coding agent wrote ${target}\n` };
         yield { type: "artifact", path: target, description: "mission result file" };
@@ -286,6 +288,68 @@ function fakeBrainStepOutput(
         },
       ],
       evidence: [{ kind: "objective", ref: "objective:current", detail: "" }],
+    };
+  }
+
+  if (step === "clarification") {
+    if (analysisDisposition !== "ambiguous") {
+      return {
+        summary: "No material clarification required by the deterministic fixture.",
+        needsClarification: false,
+        questions: [],
+      };
+    }
+    const priorAnswerCount = (prompt.match(/→/g) ?? []).length;
+    const suffix = priorAnswerCount > 0 ? `-r${priorAnswerCount + 1}` : "";
+    return {
+      summary: "Deterministic fixture clarification: material acceptance and scope decisions are missing.",
+      needsClarification: true,
+      questions: [
+        {
+          key: `acceptance-criteria${suffix}`,
+          category: "acceptance_criteria",
+          question:
+            "What are the concrete acceptance criteria? List the observable behaviors that must be true for this objective to be complete.",
+          reason: "Without measurable acceptance criteria the planner cannot cover the objective safely.",
+          answerType: "text",
+          options: [],
+          required: true,
+          acceptanceCriteriaRefs: [],
+          blockedDecisions: ["plan coverage"],
+          blockedMissions: [],
+          displayOrder: 0,
+        },
+        {
+          key: `out-of-scope${suffix}`,
+          category: "scope",
+          question:
+            "What is explicitly out of scope for this objective (platforms, integrations, environments to ignore)?",
+          reason: "Scope boundaries prevent the planner from inventing unbounded missions.",
+          answerType: "text",
+          options: [],
+          required: true,
+          acceptanceCriteriaRefs: [],
+          blockedDecisions: ["mission scope"],
+          blockedMissions: [],
+          displayOrder: 1,
+        },
+        {
+          key: `delivery-shape${suffix}`,
+          category: "decision",
+          question: "Should delivery prefer a minimal vertical slice or a broader multi-mission plan?",
+          reason: "The planning DAG shape depends on this product decision.",
+          answerType: "single_choice",
+          options: [
+            { key: "vertical-slice", label: "Minimal vertical slice" },
+            { key: "broad-plan", label: "Broader multi-mission plan" },
+          ],
+          required: true,
+          acceptanceCriteriaRefs: [],
+          blockedDecisions: ["plan shape"],
+          blockedMissions: [],
+          displayOrder: 2,
+        },
+      ],
     };
   }
 

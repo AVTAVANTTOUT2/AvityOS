@@ -34,6 +34,9 @@ function makeData(overrides: Partial<AppData> = {}): AppData {
       createProject: vi.fn(async () => ({ ok: true, detail: "" })),
       updateProject: vi.fn(async () => ({ ok: true, detail: "" })),
       answerIntervention: vi.fn(async () => undefined),
+      answerClarificationGroup: vi.fn(async () => ({ ok: true, detail: "" })),
+      pauseProject: vi.fn(async () => ({ ok: true, detail: "Projet pausé de façon durable." })),
+      resumeProject: vi.fn(async () => ({ ok: true, detail: "Reprise enregistrée — statut active." })),
       transitionMission: vi.fn(async () => ({ ok: true, detail: "" })),
       cancelTerminal: vi.fn(async () => ({ ok: true, detail: "" })),
     },
@@ -268,19 +271,20 @@ describe("controls without fake behavior", () => {
     expect(screen.getByText("Actions de mission disponibles uniquement en mode live.")).toBeInTheDocument();
   });
 
-  it("only exposes a safe live cancellation transition", async () => {
+  it("exposes atomic project pause and a safe live cancellation transition", async () => {
     const liveKanban = {
       ...demo.KANBAN,
       "En cours": [
-        { ...demo.KANBAN["En cours"]![0]!, apiId: "msn_1", state: "running" },
+        { ...demo.KANBAN["En cours"]![0]!, apiId: "msn_1", state: "running", projectId: demo.PROJECTS[0]!.id },
       ],
     } as AppData["kanban"];
     const data = makeData({ mode: "live", kanban: liveKanban });
-    renderWithData(<MissionsScreen />, data);
+    renderWithData(<MissionsScreen projectId={demo.PROJECTS[0]!.id} />, data);
     await userEvent.click(screen.getByText("API REST facturation v2"));
-    const pause = screen.getByRole("button", { name: /Pause indisponible/ });
-    expect(pause).toBeDisabled();
-    expect(screen.getByText(/control plane ne suspend pas aussi le run actif/)).toBeInTheDocument();
+    const pause = screen.getByRole("button", { name: /Pause atomique/ });
+    expect(pause).toBeEnabled();
+    await userEvent.click(pause);
+    expect(data.actions.pauseProject).toHaveBeenCalledWith(String(demo.PROJECTS[0]!.id), "pause demandée depuis Missions");
     const cancel = screen.getByRole("button", { name: /^Annuler$/ });
     expect(cancel).toBeEnabled();
     await userEvent.click(cancel);

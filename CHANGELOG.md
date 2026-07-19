@@ -12,11 +12,78 @@ sémantique lorsque le processus de release sera établi.
 
 ### Added
 
+- Clarifications IA structurées et versionnées (`CLARIFICATION_SCHEMA_VERSION=1`)
+  avec types de réponse fermés, groupe unique par tour, provenance provider /
+  modèle, persistance SQLite et reprise exacte du pipeline cerveau.
+- Politique déterministe de validation des propositions (secrets, hors périmètre,
+  commandes, redondance) et borne des tours de clarification.
+- API REST/SSE pour lister / répondre aux clarifications et pour pause /
+  reprise projet atomiques (`project.paused`, `project.resumed`,
+  `clarification.obsolete`, `run.fenced`).
+- CLI `avity clarification list|show|answer` et `avity project pause|resume`.
+- Panneau Web de clarification groupée et boutons pause/reprise branchés sur
+  l’état durable du control plane.
+- Migration SQLite v6 (`project_pauses`, métadonnées de clarification,
+  `missions.paused_from_state`) puis v7 additive (`clarifications.resume_pending`
+  pour la reprise durable exactement-une-fois).
+
 ### Changed
+
+- Les analyses ambiguës du cerveau déclenchent une étape `clarification` via
+  `ProviderAdapter` au lieu d’un blocage générique ou d’une heuristique présentée
+  comme clarification IA.
+- Les machines d’état projet/mission couvrent explicitement pause/reprise et
+  les états de clarification.
 
 ### Fixed
 
+- **Audit concurrence PR #35.** Isolation inter-projets rétablie : la
+  révocation des leases sur pause est strictement bornée au `project_id`
+  (`revokeProjectWorkerLeases`) et ne touche plus les sessions d’un autre
+  projet exécutées sur le même worker (invariant P-ISO).
+- Fenêtre de course sur pause fermée : `lease`, `output`, `exit` et la création
+  de terminaux refusent un projet durablement pausé au moment exact de
+  l’acceptation, avant même la révocation post-commit (invariant P-FENCE) ; un
+  événement `run.fenced` est émis.
+- Fencing des workflows asynchrones (`validateMission`, `reviewMission`,
+  `integrateMission`, checks worker) après chaque `await` : un verdict de
+  reviewer ou un résultat de check arrivant après la pause ne crée plus de
+  checkpoint, n’approuve pas, n’intègre pas et ne reconsomme pas de budget.
+- Le fencing asynchrone transporte désormais la `pause_generation` capturée au
+  départ jusque dans les transactions Store critiques. Une continuation
+  antérieure reste donc rejetée après un cycle pause → reprise rapide ; les
+  créations de run/terminal, checkpoints, usage, transitions et publications
+  PR ne reposent plus sur un contrôle Engine séparé de leur écriture durable.
+- Le pipeline cerveau transporte le même jeton de génération. Un provider de
+  planning qui ignore l’annulation ne peut plus persister son ancien plan après
+  pause/reprise, et son ancien `finally` ne peut pas libérer le slot `inFlight`
+  d’une nouvelle génération.
+- Reprise après clarification durable et exactement-une-fois : l’intent
+  `resume_pending` est committé avec les réponses et réconcilié au redémarrage,
+  fermant la fenêtre crash-entre-commit-et-reprise (invariant P-RESUME).
+- L’outbox de clarification est revendiquée atomiquement (`pending` →
+  `processing` → acquittée), ses décisions sont matérialisées dans une seule
+  transaction avec une clé d’idempotence par question, et les claims orphelins
+  sont réconciliés. Une reprise explicite d’un projet draine aussi l’intent sans
+  exiger un redémarrage du control plane.
+- Durcissement des réponses de clarification : rejet des doublons `multi_choice`,
+  des chemins Windows/UNC/absolus/traversées encodées en `path_scope`, détection
+  de secret plus robuste (sans faux positif sur le simple mot « token ») et
+  clôture des questions facultatives non répondues à la fermeture du groupe.
+- Normalisation des clarifications héritées : une `logicalKey` dégénérée ne rend
+  plus tout le groupe illisible.
+- Lecture des remotes Git via `git config --get remote.*.url` pour éviter de
+  persister des URL HTTPS réécrites avec credentials (`url.*.insteadOf`).
+- Les opérations Git automatisées (`@avityos/git`) isolent les commits de
+  fixtures de `commit.gpgsign` / `fsmonitor` hérités de l’environnement hôte,
+  qui pouvaient faire timeout les suites control-plane sous charge.
+
 ### Security
+
+- Les propositions de clarification refusent secrets, clés API, mots de passe,
+  chemins hors dépôt et commandes arbitraires.
+- Pause atomique : annulation des runs, révocation des leases et refus des
+  résultats tardifs fenced.
 
 ## [0.1.0] - 2026-07-17
 
