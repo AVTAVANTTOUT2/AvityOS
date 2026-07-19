@@ -11,6 +11,31 @@ const COMMAND_PATTERNS =
 const OUT_OF_SCOPE =
   /\b(outside the (repo|repository)|absolute path|\/etc\/|\/var\/|C:\\\\|credentials? store)\b/i;
 
+/**
+ * Robust secret detection for FREE-TEXT ANSWERS. Unlike the question gate,
+ * merely mentioning the word "token" or "password" is not a secret — an answer
+ * like "use token-based auth" must be accepted. A real leaked secret looks like
+ * a value, so we flag: a labelled assignment with a non-trivial value, a PEM
+ * private-key block, a Bearer credential, or a recognizable provider key
+ * shape. This keeps false positives low while still refusing pasted secrets.
+ */
+const SECRET_ASSIGNMENT =
+  /\b(api[_-]?key|secret|password|passwd|token|credential|access[_-]?key|client[_-]?secret)\b\s*[:=]\s*\S{6,}/i;
+const SECRET_VALUE_SHAPES: readonly RegExp[] = [
+  /-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/,
+  /\bBearer\s+[A-Za-z0-9._\-]{16,}\b/,
+  /\bAKIA[0-9A-Z]{16}\b/, // AWS access key id
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/, // GitHub token
+  /\bsk-[A-Za-z0-9]{20,}\b/, // OpenAI-style key
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, // Slack token
+  /\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/, // JWT
+];
+
+export function looksLikeSecret(text: string): boolean {
+  if (SECRET_ASSIGNMENT.test(text)) return true;
+  return SECRET_VALUE_SHAPES.some((pattern) => pattern.test(text));
+}
+
 export interface ClarificationPolicyIssue {
   path: string;
   message: string;
@@ -115,29 +140,59 @@ export function validateAnswerForQuestion(
     issues.push({ path: "value", message: `choice ${value.value} is not an allowed option` });
   }
   if (value.type === "multi_choice") {
+    const seen = new Set<string>();
     for (const key of value.value) {
       if (!optionKeys.has(key)) {
         issues.push({ path: "value", message: `choice ${key} is not an allowed option` });
       }
+      if (seen.has(key)) {
+        issues.push({ path: "value", message: `choice ${key} is duplicated` });
+      }
+      seen.add(key);
     }
   }
   if (value.type === "path_scope") {
     for (const path of value.value) {
-      if (path.startsWith("/") || path.includes("..") || path.includes("\0")) {
-        issues.push({
-          path: "value",
-          message: `path ${path} escapes the repository scope`,
-        });
-      }
+      const reason = repositoryScopeViolation(path);
+      if (reason) issues.push({ path: "value", message: `path ${path}: ${reason}` });
     }
   }
-  if (value.type === "text" && SECRET_PATTERNS.test(value.value)) {
+  if (value.type === "text" && looksLikeSecret(value.value)) {
     issues.push({
       path: "value",
       message: "answers must not contain secrets, API keys, passwords or tokens",
     });
   }
   return issues;
+}
+
+/**
+ * Reject anything that is not a repository-relative path. Covers POSIX
+ * absolute paths, Windows drive-letter and UNC paths, backslash separators,
+ * `..` traversal (raw or percent-encoded), URL-encoded separators and NUL.
+ * Returns a reason string when the path is rejected, or null when it is safe.
+ */
+export function repositoryScopeViolation(rawPath: string): string | null {
+  const path = rawPath.trim();
+  if (path.length === 0) return "empty path";
+  if (path.includes("\0")) return "contains a NUL byte";
+  if (path.includes("\\")) return "uses a Windows/UNC path separator";
+  if (/^[A-Za-z]:/.test(path)) return "is a Windows drive-absolute path";
+  if (path.startsWith("/")) return "is an absolute path";
+  if (path.startsWith("~")) return "references a home directory";
+  // Decode percent-encoding once so encoded traversals cannot slip through.
+  let decoded = path;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    return "contains invalid percent-encoding";
+  }
+  if (decoded.includes("\\") || decoded.startsWith("/") || /^[A-Za-z]:/.test(decoded)) {
+    return "resolves to an absolute or Windows path once decoded";
+  }
+  const segments = decoded.split("/");
+  if (segments.some((segment) => segment === "..")) return "traverses outside the repository";
+  return null;
 }
 
 /** Normalize legacy free-text answers into typed values when possible. */
