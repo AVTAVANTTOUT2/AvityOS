@@ -38,6 +38,9 @@ sémantique lorsque le processus de release sera établi.
 
 - Lecture des remotes Git via `git config --get remote.*.url` pour éviter de
   persister des URL HTTPS réécrites avec credentials (`url.*.insteadOf`).
+- Les opérations Git automatisées (`@avityos/git`) isolent les commits de
+  fixtures de `commit.gpgsign` / `fsmonitor` hérités de l’environnement hôte,
+  qui pouvaient faire timeout les suites control-plane sous charge.
 
 ### Security
 
