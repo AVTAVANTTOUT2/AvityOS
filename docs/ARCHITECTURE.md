@@ -98,20 +98,22 @@ Three concurrency invariants make this operational (enforced by
   when only one project is paused; global per-worker revocation is reserved for
   administrative worker revocation.
 - **P-FENCE — fence at the moment of acceptance.** The durable paused status is
-  re-checked on every critical path at the instant a result would be accepted,
-  not merely at pause start: terminal lease selection skips paused projects, and
+  re-checked with the workflow's captured `pause_generation` inside critical
+  Store transactions at the instant a result would be accepted, not merely at
+  pause start. A continuation from before a pause therefore remains fenced even
+  after a fast resume. Terminal lease selection skips paused projects, and
   `output`/`exit`/terminal-create endpoints plus `validateMission`,
-  `reviewMission`, `integrateMission` and worker checks re-check after each
-  `await` and emit `run.fenced` instead of committing a checkpoint, integrating
-  a change or consuming budget again. This closes the window between the pause
-  commit and lease revocation.
+  the brain pipeline, `reviewMission`, `integrateMission` and worker checks
+  re-check after each `await` and emit `run.fenced` instead of committing a
+  plan/checkpoint, integrating a change or consuming budget again. This closes
+  the window between the pause commit and lease revocation.
 - **P-RESUME — durable, exactly-once clarification resume.** The answer
   transaction commits a `clarifications.resume_pending` intent (migration v7)
-  atomically with the answers. The engine kicks planning and then clears the
-  intent; a crash anywhere in between is reconciled at restart
-  (`Engine.reconcile` drains pending resumes), and the brain pipeline’s
-  per-objective idempotency guarantees a single plan, a single useful brain run
-  and no double budget consumption.
+  atomically with the answers. The engine claims that outbox intent, records all
+  question decisions and per-question idempotency keys in one transaction, then
+  kicks planning and acknowledges the claim. Orphaned claims are released and
+  redriven by `Engine.reconcile`; explicit project resume also drains pending
+  clarification intents without requiring a restart.
 
 ## State machines
 

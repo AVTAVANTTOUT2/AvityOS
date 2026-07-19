@@ -29,10 +29,13 @@ reproductible dans `docs/TRACEABILITY.md`.
    leases est strictement bornée au `project_id` (invariant **P-ISO** :
    `revokeProjectWorkerLeases` ne touche jamais les sessions d’un autre projet
    sur le même worker) ; tous les chemins worker/asynchrones fencent l’état
-   pausé durable au moment de l’acceptation du résultat (invariant **P-FENCE** :
+   pausé durable et la `pause_generation` dans la transaction d’acceptation du
+   résultat (invariant **P-FENCE** :
    lease/heartbeat/output/exit et `validate`/`review`/`integrate`/checks) ; la
    reprise après clarification est durable et idempotente via un intent
-   `resume_pending` réconcilié au redémarrage (invariant **P-RESUME**). Web/CLI
+   `resume_pending` revendiqué atomiquement, idempotent par question et
+   réconcilié au redémarrage ou à la reprise explicite (invariant
+   **P-RESUME**). Web/CLI
    branchés sur les vraies API. Preuves locales, tests de concurrence
    (`chantier3-hardening.test.ts`) et CI dans `docs/TRACEABILITY.md`.
 4. **⚪ Validation E2E avec Codex, Claude Code et Cursor réels.** Scénarios

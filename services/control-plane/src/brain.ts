@@ -107,7 +107,7 @@ interface StepResult<T> {
 }
 
 export class BrainPipeline {
-  private readonly inFlight = new Set<string>();
+  private readonly inFlight = new Map<string, symbol>();
   private readonly activeHandles = new Map<string, RunHandle>();
   private stopped = false;
 
@@ -186,11 +186,15 @@ export class BrainPipeline {
   async ensurePlan(projectId: string, objectiveId: string, replan?: ReplanRequest): Promise<EnsurePlanResult> {
     if (this.stopped) return { status: "deferred", reason: "engine stopping" };
     if (this.inFlight.has(projectId)) return { status: "deferred", reason: "planning already in flight" };
-    this.inFlight.add(projectId);
+    const token = Symbol(projectId);
+    this.inFlight.set(projectId, token);
     try {
       return await this.run(projectId, objectiveId, replan ?? null);
     } finally {
-      this.inFlight.delete(projectId);
+      // cancelProject deliberately frees the slot so resume can start a fresh
+      // generation before an uncooperative old provider returns. The old
+      // continuation must never delete the replacement generation's token.
+      if (this.inFlight.get(projectId) === token) this.inFlight.delete(projectId);
     }
   }
 
@@ -203,6 +207,7 @@ export class BrainPipeline {
     if (project.status === "paused") {
       return { status: "paused", reason: "project is paused" };
     }
+    const pauseGeneration = this.store.getPauseGeneration(projectId);
     const latest = this.store.latestObjective(projectId);
     if (!latest || latest.id !== objectiveId) {
       return { status: "deferred", reason: "objective revision superseded" };
@@ -271,11 +276,13 @@ export class BrainPipeline {
       } catch (err) {
         throw new BrainBlocked(`repository snapshot failed: ${String(err).slice(0, 300)}`);
       }
+      this.assertNotPaused(projectId, pauseGeneration);
 
       const priorAnswers = this.priorClarificationContext(projectId, objectiveId);
       const analysisResult = await this.runStep<Analysis>({
         project,
         objective,
+        expectedPauseGeneration: pauseGeneration,
         step: "analysis",
         schema: BrainObjectiveAnalysis,
         buildPrompts: (repair) =>
@@ -291,7 +298,8 @@ export class BrainPipeline {
             priorAnswers,
           }),
       });
-      this.store.setObjectiveAnalysis(objective.id, analysisResult.value.summary);
+      this.assertNotPaused(projectId, pauseGeneration);
+      this.store.setObjectiveAnalysis(objective.id, analysisResult.value.summary, pauseGeneration);
       if (analysisResult.value.feasibility === "infeasible") {
         throw new BrainBlocked(
           "AI analysis found the objective infeasible under the persisted constraints; revise the objective or constraints before retrying",
@@ -308,15 +316,17 @@ export class BrainPipeline {
           providerId: analysisResult.providerId,
           model: analysisResult.model,
           provenance: analysisResult.provenance,
+          expectedPauseGeneration: pauseGeneration,
         });
         return clarifying;
       }
 
-      this.assertNotPaused(projectId);
+      this.assertNotPaused(projectId, pauseGeneration);
       this.assertPlanningBudget(projectId);
       const architectureResult = await this.runStep<Architecture>({
         project,
         objective,
+        expectedPauseGeneration: pauseGeneration,
         step: "architecture",
         schema: BrainArchitectureProposal,
         buildPrompts: (repair) =>
@@ -333,12 +343,13 @@ export class BrainPipeline {
           }),
       });
 
-      this.assertNotPaused(projectId);
+      this.assertNotPaused(projectId, pauseGeneration);
       this.assertPlanningBudget(projectId);
       const budget = this.store.getBudget(projectId);
       const planResult = await this.runStep<PlanProposal>({
         project,
         objective,
+        expectedPauseGeneration: pauseGeneration,
         step: "plan",
         schema: BrainPlanProposal,
         buildPrompts: (repair) =>
@@ -365,7 +376,7 @@ export class BrainPipeline {
         },
       });
 
-      this.assertNotPaused(projectId);
+      this.assertNotPaused(projectId, pauseGeneration);
       const persisted = this.persistPlan({
         project,
         objective,
@@ -375,6 +386,7 @@ export class BrainPipeline {
         plan: planResult,
         idempotencyKey: replanIdempotencyKey,
         replan: replan ? { ...replan, basedOnVersion: activePlan?.version ?? 0 } : null,
+        expectedPauseGeneration: pauseGeneration,
       });
       return persisted.created
         ? { status: "planned", plan: persisted.plan }
@@ -386,6 +398,14 @@ export class BrainPipeline {
       if (err instanceof BrainStopped || this.stopped) {
         return { status: "deferred", reason: "engine stopped during planning; recovery resumes it" };
       }
+      try {
+        this.assertNotPaused(projectId, pauseGeneration);
+      } catch (pauseErr) {
+        if (pauseErr instanceof BrainPaused) {
+          return { status: "paused", reason: pauseErr.message };
+        }
+        throw pauseErr;
+      }
       if (err instanceof BrainBlocked) {
         this.blockPlanning(projectId, "AI planning blocked", `${err.message}. Fix the cause, then approve to retry planning.`);
         return { status: "blocked", reason: err.message };
@@ -394,9 +414,16 @@ export class BrainPipeline {
     }
   }
 
-  private assertNotPaused(projectId: string): void {
-    if (this.store.getProject(projectId)?.status === "paused") {
-      throw new BrainPaused("project paused during brain pipeline");
+  private assertNotPaused(projectId: string, expectedPauseGeneration?: number): void {
+    const project = this.store.getProject(projectId);
+    const generation = this.store.getPauseGeneration(projectId);
+    if (
+      project?.status === "paused" ||
+      (expectedPauseGeneration !== undefined && generation !== expectedPauseGeneration)
+    ) {
+      throw new BrainPaused(
+        `project pause fence changed during brain pipeline (expected generation ${expectedPauseGeneration ?? generation}, actual ${generation})`,
+      );
     }
   }
 
@@ -427,6 +454,7 @@ export class BrainPipeline {
     providerId: string;
     model: string;
     provenance: BrainProvenance;
+    expectedPauseGeneration: number;
   }): Promise<EnsurePlanResult> {
     const rounds = this.store.clarificationRoundCount(input.project.id, input.objective.id);
     if (rounds >= this.config.maxClarificationRounds) {
@@ -434,7 +462,7 @@ export class BrainPipeline {
         `clarification round limit reached (${this.config.maxClarificationRounds}) for objective ${input.objective.id}`,
       );
     }
-    this.assertNotPaused(input.project.id);
+    this.assertNotPaused(input.project.id, input.expectedPauseGeneration);
     const answeredKeys = new Set(
       this.store
         .listClarifications(input.project.id)
@@ -444,6 +472,7 @@ export class BrainPipeline {
     const clarificationResult = await this.runStep<ClarificationProposal>({
       project: input.project,
       objective: input.objective,
+      expectedPauseGeneration: input.expectedPauseGeneration,
       step: "clarification",
       schema: BrainClarificationProposal,
       buildPrompts: (repair) =>
@@ -475,11 +504,12 @@ export class BrainPipeline {
         `${input.analysis.summary} (clarification step found no material questions).`,
       );
       // Force clarity by continuing the pipeline from architecture.
-      this.assertNotPaused(input.project.id);
+      this.assertNotPaused(input.project.id, input.expectedPauseGeneration);
       this.assertPlanningBudget(input.project.id);
       const architectureResult = await this.runStep<Architecture>({
         project: input.project,
         objective: input.objective,
+        expectedPauseGeneration: input.expectedPauseGeneration,
         step: "architecture",
         schema: BrainArchitectureProposal,
         buildPrompts: (repair) =>
@@ -495,12 +525,13 @@ export class BrainPipeline {
             priorAnswers: input.priorAnswers,
           }),
       });
-      this.assertNotPaused(input.project.id);
+      this.assertNotPaused(input.project.id, input.expectedPauseGeneration);
       this.assertPlanningBudget(input.project.id);
       const budget = this.store.getBudget(input.project.id);
       const planResult = await this.runStep<PlanProposal>({
         project: input.project,
         objective: input.objective,
+        expectedPauseGeneration: input.expectedPauseGeneration,
         step: "plan",
         schema: BrainPlanProposal,
         buildPrompts: (repair) =>
@@ -541,6 +572,7 @@ export class BrainPipeline {
         plan: planResult,
         idempotencyKey: null,
         replan: null,
+        expectedPauseGeneration: input.expectedPauseGeneration,
       });
       return persisted.created
         ? { status: "planned", plan: persisted.plan }
@@ -549,6 +581,7 @@ export class BrainPipeline {
 
     const clarificationProvenance: Clarification["provenance"] =
       clarificationResult.provenance === "fake_fixture" ? "fake_fixture" : "live";
+    this.assertNotPaused(input.project.id, input.expectedPauseGeneration);
     const clarification = this.store.createClarification({
       projectId: input.project.id,
       objectiveId: input.objective.id,
@@ -557,6 +590,7 @@ export class BrainPipeline {
       model: clarificationResult.model,
       brainRunId: clarificationResult.runId,
       idempotencyKey: `clr:${input.project.id}:${input.objective.id}:${rounds + 1}:${clarificationResult.runId}`,
+      expectedPauseGeneration: input.expectedPauseGeneration,
       questions: clarificationResult.value.questions.map((question) => ({
         logicalKey: question.key,
         category: question.category,
@@ -571,7 +605,7 @@ export class BrainPipeline {
         displayOrder: question.displayOrder,
       })),
     });
-    this.store.setProjectStatus(input.project.id, "clarifying");
+    this.store.setProjectStatus(input.project.id, "clarifying", input.expectedPauseGeneration);
     this.store.appendAudit(
       input.project.id,
       "engine",
@@ -613,6 +647,7 @@ export class BrainPipeline {
   private async runStep<T>(input: {
     project: Project;
     objective: Objective;
+    expectedPauseGeneration: number;
     step: BrainStep;
     schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: { path: (string | number)[]; message: string }[] } } };
     buildPrompts(repair: RepairContext | null): { systemPrompt: string; userPrompt: string };
@@ -632,7 +667,7 @@ export class BrainPipeline {
 
     while (true) {
       if (this.stopped) throw new BrainStopped();
-      this.assertNotPaused(input.project.id);
+      this.assertNotPaused(input.project.id, input.expectedPauseGeneration);
       const providerName = eligible[providerIdx];
       const adapter = providerName ? this.providers.get(providerName) : undefined;
       if (!providerName || !adapter) {
@@ -640,6 +675,7 @@ export class BrainPipeline {
       }
       const models = await adapter.listModels();
       if (this.stopped) throw new BrainStopped();
+      this.assertNotPaused(input.project.id, input.expectedPauseGeneration);
       if (model === null || !models.includes(model)) {
         model = this.config.models.get(providerName) ?? models[0] ?? "default";
       }
@@ -656,6 +692,7 @@ export class BrainPipeline {
         model,
         provenance,
         input: prompts.userPrompt.slice(0, 20_000),
+        expectedPauseGeneration: input.expectedPauseGeneration,
       });
 
       const handle = adapter.startRun({
@@ -679,6 +716,7 @@ export class BrainPipeline {
       }, this.config.stepTimeoutMs);
       try {
         for await (const ev of handle.events) {
+          this.assertNotPaused(input.project.id, input.expectedPauseGeneration);
           if (ev.type === "output") streamed += ev.text;
           if (ev.type === "completed") resultText = ev.resultText;
           if (ev.type === "usage") {
@@ -693,6 +731,7 @@ export class BrainPipeline {
               inputTokens: ev.inputTokens,
               outputTokens: ev.outputTokens,
               costUsd: ev.costUsd,
+              expectedPauseGeneration: input.expectedPauseGeneration,
             });
           }
           if (ev.type === "error") {
@@ -706,6 +745,7 @@ export class BrainPipeline {
 
       // A stop mid-step leaves this run `running`; recovery fails it once.
       if (this.stopped) throw new BrainStopped();
+      this.assertNotPaused(input.project.id, input.expectedPauseGeneration);
 
       if (timedOut) {
         error = {
@@ -718,12 +758,16 @@ export class BrainPipeline {
       const text = resultText ?? (streamed || null);
       if (error || text === null) {
         const category = error?.category ?? "agent_crash";
-        this.store.finishBrainRun(run.id, {
-          state: "failed",
-          errorCategory: category,
-          errorDetail: error?.message ?? "provider produced no result",
-          ...usage,
-        });
+        this.store.finishBrainRun(
+          run.id,
+          {
+            state: "failed",
+            errorCategory: category,
+            errorDetail: error?.message ?? "provider produced no result",
+            ...usage,
+          },
+          input.expectedPauseGeneration,
+        );
         const decision = decideFallback({
           category: category as never,
           attempt,
@@ -783,16 +827,24 @@ export class BrainPipeline {
       }
 
       if (value !== null) {
-        this.store.finishBrainRun(run.id, { state: "succeeded", output: value, ...usage });
+        this.store.finishBrainRun(
+          run.id,
+          { state: "succeeded", output: value, ...usage },
+          input.expectedPauseGeneration,
+        );
         return { value, runId: run.id, providerId: providerName, model, provenance };
       }
 
-      this.store.finishBrainRun(run.id, {
-        state: "failed",
-        errorCategory: "invalid_request",
-        errorDetail: `invalid structured output: ${issues.join("; ")}`.slice(0, 2000),
-        ...usage,
-      });
+      this.store.finishBrainRun(
+        run.id,
+        {
+          state: "failed",
+          errorCategory: "invalid_request",
+          errorDetail: `invalid structured output: ${issues.join("; ")}`.slice(0, 2000),
+          ...usage,
+        },
+        input.expectedPauseGeneration,
+      );
       if (repairs < this.config.maxRepairAttempts) {
         repairs += 1;
         repair = { issues, previousOutput: text!.slice(0, 4000) };
@@ -814,6 +866,7 @@ export class BrainPipeline {
     plan: StepResult<PlanProposal>;
     idempotencyKey: string | null;
     replan: (ReplanRequest & { basedOnVersion: number }) | null;
+    expectedPauseGeneration: number;
   }): { plan: Plan; missions: Mission[]; created: boolean } {
     const { project, objective } = input;
     const proposal = input.plan.value;
@@ -837,6 +890,7 @@ export class BrainPipeline {
       architectureRunId: input.architecture.runId,
       planRunId: input.plan.runId,
       idempotencyKey: input.idempotencyKey,
+      expectedPauseGeneration: input.expectedPauseGeneration,
       replan: input.replan
         ? {
             trigger: input.replan.trigger,
@@ -889,6 +943,7 @@ export class BrainPipeline {
         `brainRun:${input.plan.runId}`,
         ...(input.snapshot ? [`snapshot:${input.snapshot.hash}`] : []),
       ],
+      input.expectedPauseGeneration,
     );
     this.store.addBrainEntry(
       project.id,
@@ -896,11 +951,12 @@ export class BrainPipeline {
       `Proposed architecture (plan v${persisted.plan.version})${fixtureNote}`,
       input.architecture.value.overview.slice(0, 2000),
       [`brainRun:${input.architecture.runId}`, `plan:${persisted.plan.id}`],
+      input.expectedPauseGeneration,
     );
     for (const decision of input.architecture.value.decisions.slice(0, 5)) {
       this.store.addBrainEntry(project.id, "proposal", decision.title.slice(0, 300), decision.rationale, [
         `brainRun:${input.architecture.runId}`,
-      ]);
+      ], input.expectedPauseGeneration);
     }
     for (const risk of [...input.analysis.value.risks, ...input.architecture.value.risks].slice(0, 5)) {
       this.store.addBrainEntry(
@@ -909,6 +965,7 @@ export class BrainPipeline {
         risk.title.slice(0, 300),
         [risk.detail, risk.mitigation && `Mitigation: ${risk.mitigation}`].filter(Boolean).join("\n"),
         [`brainRun:${input.analysis.runId}`],
+        input.expectedPauseGeneration,
       );
     }
     return persisted;

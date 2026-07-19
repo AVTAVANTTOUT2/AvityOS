@@ -341,10 +341,13 @@ export class Store {
     return this.getProjectConfiguration(id)!;
   }
 
-  setProjectStatus(id: string, status: Project["status"]): void {
+  setProjectStatus(id: string, status: Project["status"], expectedPauseGeneration?: number): void {
     const tx = this.db.transaction(() => {
       const project = this.getProject(id);
       if (!project) throw new Error(`project ${id} not found`);
+      if (expectedPauseGeneration !== undefined) {
+        this.assertProjectAcceptingWork(id, expectedPauseGeneration);
+      }
       if (project.status === status) return;
       // Pause/resume own their transitions and fencing side effects.
       if (status === "paused" || project.status === "paused") {
@@ -373,6 +376,27 @@ export class Store {
       | { status: string }
       | undefined;
     return row?.status === "paused";
+  }
+
+  /**
+   * Transactional fencing guard for durable work acceptance. The generation
+   * check keeps a continuation that crossed pause -> resume fenced even though
+   * the project is active again by the time it attempts its write.
+   */
+  assertProjectAcceptingWork(projectId: string, expectedPauseGeneration?: number): void {
+    const row = this.db
+      .prepare("SELECT status, pause_generation FROM projects WHERE id = ?")
+      .get(projectId) as { status: string; pause_generation: number } | undefined;
+    if (!row) throw new Error(`project ${projectId} not found`);
+    if (
+      row.status === "paused" ||
+      (expectedPauseGeneration !== undefined && row.pause_generation !== expectedPauseGeneration)
+    ) {
+      throw new StoreConflictError(
+        "project_paused",
+        `project ${projectId} rejected stale work (status=${row.status}, generation=${row.pause_generation}, expected=${expectedPauseGeneration ?? "current"})`,
+      );
+    }
   }
 
   getProjectPauseState(projectId: string): ProjectPauseState | null {
@@ -693,16 +717,22 @@ export class Store {
   }
 
   /** Refuse late provider/worker results against a paused or fenced project. */
-  assertRunAcceptable(runId: string): void {
+  assertRunAcceptable(runId: string, expectedPauseGeneration?: number): void {
     const run = this.getRun(runId);
     if (!run) throw new Error(`run ${runId} not found`);
     const project = this.getProject(run.projectId);
     if (!project) throw new Error(`project ${run.projectId} not found`);
-    if (project.status === "paused") {
+    if (
+      project.status === "paused" ||
+      (expectedPauseGeneration !== undefined &&
+        this.getPauseGeneration(run.projectId) !== expectedPauseGeneration)
+    ) {
       this.appendEvent("run.fenced", { projectId: run.projectId, missionId: run.missionId, runId }, {
-        reason: "project is paused",
+        reason: "project is paused or the run crossed a pause generation",
+        expectedPauseGeneration,
+        actualPauseGeneration: this.getPauseGeneration(run.projectId),
       });
-      throw new StoreConflictError("project_paused", `run ${runId} refused: project ${run.projectId} is paused`);
+      throw new StoreConflictError("project_paused", `run ${runId} refused by project pause fence`);
     }
     if (!["running", "starting", "queued"].includes(run.state)) {
       this.appendEvent("run.fenced", { projectId: run.projectId, missionId: run.missionId, runId }, {
@@ -802,10 +832,18 @@ export class Store {
     return r ? this.getObjective(r.id) : null;
   }
 
-  setObjectiveAnalysis(id: string, summary: string): void {
-    this.db
-      .prepare("UPDATE objectives SET analysis_summary = ?, updated_at = ? WHERE id = ?")
-      .run(redactSecrets(summary).slice(0, 5000), now(), id);
+  setObjectiveAnalysis(id: string, summary: string, expectedPauseGeneration?: number): void {
+    const tx = this.db.transaction(() => {
+      const objective = this.getObjective(id);
+      if (!objective) throw new Error(`objective ${id} not found`);
+      if (expectedPauseGeneration !== undefined) {
+        this.assertProjectAcceptingWork(objective.projectId, expectedPauseGeneration);
+      }
+      this.db
+        .prepare("UPDATE objectives SET analysis_summary = ?, updated_at = ? WHERE id = ?")
+        .run(redactSecrets(summary).slice(0, 5000), now(), id);
+    });
+    tx();
   }
 
   createClarification(input: {
@@ -818,6 +856,7 @@ export class Store {
     brainRunId?: string | null;
     round?: number;
     idempotencyKey?: string | null;
+    expectedPauseGeneration?: number;
   }): Clarification {
     if (input.idempotencyKey) {
       const existing = this.db
@@ -856,6 +895,7 @@ export class Store {
       questions,
     });
     const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(input.projectId, input.expectedPauseGeneration);
       // Only one open group per project at a time — withdraw older opens.
       for (const open of this.listClarifications(input.projectId, "open")) {
         this.markClarificationObsolete(open.id, "superseded by a new clarification round");
@@ -965,6 +1005,7 @@ export class Store {
           return;
         }
       }
+      this.assertProjectAcceptingWork(clarification.projectId);
       if (clarification.status === "answered") {
         throw new StoreConflictError(
           "clarification_already_answered",
@@ -1075,7 +1116,7 @@ export class Store {
     return result!;
   }
 
-  /** Answered clarification groups whose brain resume has not yet been driven. */
+  /** Answered clarification groups whose brain resume has not yet been claimed. */
   listPendingClarificationResumes(): { id: string; projectId: string; objectiveId: string }[] {
     const rows = this.db
       .prepare(
@@ -1086,24 +1127,85 @@ export class Store {
     return rows.map((r) => ({ id: r.id, projectId: r.project_id, objectiveId: r.objective_id }));
   }
 
-  /** Clear the durable resume intent once planning has been (re)kicked. */
-  clearClarificationResume(id: string): void {
+  /**
+   * Release claims left by a dead engine. Called once during startup
+   * reconciliation before pending intents are drained.
+   */
+  releaseOrphanedClarificationResumeClaims(): void {
     this.db
-      .prepare("UPDATE clarifications SET resume_pending = 0, updated_at = ? WHERE id = ?")
+      .prepare("UPDATE clarifications SET resume_pending = 1, updated_at = ? WHERE resume_pending = 2")
+      .run(now());
+  }
+
+  /**
+   * Claim and materialize one clarification outcome atomically. All decision
+   * rows and their idempotency keys commit together, so a crash cannot leave a
+   * partially recorded outcome. resume_pending=2 is an in-flight outbox claim.
+   */
+  claimClarificationResume(
+    id: string,
+  ): { projectId: string; objectiveId: string } | null {
+    let result: { projectId: string; objectiveId: string } | null = null;
+    const tx = this.db.transaction(() => {
+      const clarification = this.getClarification(id);
+      if (!clarification || clarification.status !== "answered") return;
+      this.assertProjectAcceptingWork(clarification.projectId);
+      const claimed = this.db
+        .prepare(
+          "UPDATE clarifications SET resume_pending = 2, updated_at = ? WHERE id = ? AND resume_pending = 1",
+        )
+        .run(now(), id);
+      if (Number(claimed.changes) !== 1) return;
+
+      for (const question of clarification.questions) {
+        if (!question.answer) continue;
+        const key = `clarification-decision:${id}:${question.id}`;
+        if (this.findIdempotent(key)) continue;
+        const entryId = this.addBrainEntry(
+          clarification.projectId,
+          "decision",
+          `Clarified (${question.logicalKey}): ${question.question.slice(0, 80)}`,
+          question.answer,
+          [`clarification:${id}`, `question:${question.logicalKey}`, "user"],
+        );
+        this.recordIdempotent(key, "brain_entry", entryId);
+      }
+
+      const acceptance = clarification.questions.find(
+        (question) =>
+          question.logicalKey === "acceptance-criteria" ||
+          question.category === "acceptance_criteria",
+      )?.answer;
+      if (acceptance) {
+        const objective = this.getObjective(clarification.objectiveId);
+        if (objective && objective.acceptanceCriteria.length === 0) {
+          const criteria = acceptance
+            .split(/\n|;/)
+            .map((value) => value.trim())
+            .filter(Boolean);
+          this.db
+            .prepare("UPDATE objectives SET acceptance_criteria = ?, updated_at = ? WHERE id = ?")
+            .run(JSON.stringify(criteria), now(), objective.id);
+        }
+      }
+      result = { projectId: clarification.projectId, objectiveId: clarification.objectiveId };
+    });
+    tx();
+    return result;
+  }
+
+  /** Release a live claim when planning could not be kicked. */
+  releaseClarificationResume(id: string): void {
+    this.db
+      .prepare("UPDATE clarifications SET resume_pending = 1, updated_at = ? WHERE id = ? AND resume_pending = 2")
       .run(now(), id);
   }
 
-  /** True when the clarification has already fed a decision into brain memory. */
-  clarificationOutcomeRecorded(clarificationId: string): boolean {
-    const clarification = this.getClarification(clarificationId);
-    if (!clarification) return false;
-    const source = `clarification:${clarificationId}`;
-    const row = this.db
-      .prepare(
-        "SELECT 1 AS present FROM brain_entries WHERE project_id = ? AND sources LIKE ? LIMIT 1",
-      )
-      .get(clarification.projectId, `%${source}%`) as { present: number } | undefined;
-    return Boolean(row);
+  /** Clear the durable resume intent once planning has been (re)kicked. */
+  clearClarificationResume(id: string): void {
+    this.db
+      .prepare("UPDATE clarifications SET resume_pending = 0, updated_at = ? WHERE id = ? AND resume_pending = 2")
+      .run(now(), id);
   }
 
   // ── brain ────────────────────────────────────────────────────────────────
@@ -1114,24 +1216,33 @@ export class Store {
     title: string,
     body: string,
     sources: string[],
-  ): void {
+    expectedPauseGeneration?: number,
+  ): string {
     const ts = now();
+    const id = newId("brn");
     const cleanSources = redactStructured(sources);
-    this.db
-      .prepare(
-        `INSERT INTO brain_entries (id, project_id, kind, title, body, sources, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        newId("brn"),
-        projectId,
-        kind,
-        redactSecrets(title).slice(0, 300),
-        redactSecrets(body).slice(0, 10_000),
-        JSON.stringify(cleanSources),
-        ts,
-        ts,
-      );
+    const tx = this.db.transaction(() => {
+      if (expectedPauseGeneration !== undefined) {
+        this.assertProjectAcceptingWork(projectId, expectedPauseGeneration);
+      }
+      this.db
+        .prepare(
+          `INSERT INTO brain_entries (id, project_id, kind, title, body, sources, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          projectId,
+          kind,
+          redactSecrets(title).slice(0, 300),
+          redactSecrets(body).slice(0, 10_000),
+          JSON.stringify(cleanSources),
+          ts,
+          ts,
+        );
+    });
+    tx();
+    return id;
   }
 
   listBrainEntries(projectId: string): {
@@ -1231,10 +1342,12 @@ export class Store {
     model: string | null;
     provenance: BrainProvenance;
     input: string | null;
+    expectedPauseGeneration?: number;
   }): BrainRun {
     const id = newId("brr");
     const ts = now();
     const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(input.projectId, input.expectedPauseGeneration);
       this.db
         .prepare(
           `INSERT INTO brain_runs (id, project_id, objective_id, step, state, attempt, provider_id, model, provenance, input, created_at, updated_at)
@@ -1279,11 +1392,15 @@ export class Store {
       outputTokens?: number;
       costUsd?: number;
     },
+    expectedPauseGeneration?: number,
   ): BrainRun {
     const run = this.getBrainRun(id);
     if (!run) throw new Error(`brain run ${id} not found`);
     const ts = now();
     const tx = this.db.transaction(() => {
+      if (expectedPauseGeneration !== undefined) {
+        this.assertProjectAcceptingWork(run.projectId, expectedPauseGeneration);
+      }
       this.db
         .prepare(
           `UPDATE brain_runs SET state = ?, output = ?, error_category = ?, error_detail = ?,
@@ -1366,6 +1483,7 @@ export class Store {
     planRunId: string | null;
     /** Persisted in the same transaction as the plan for crash-safe replans. */
     idempotencyKey: string | null;
+    expectedPauseGeneration?: number;
     replan: { trigger: ReplanTrigger; cause: string; sources: string[]; basedOnVersion: number } | null;
     missions: {
       logicalKey: string;
@@ -1411,6 +1529,8 @@ export class Store {
           return;
         }
       }
+
+      this.assertProjectAcceptingWork(input.projectId, input.expectedPauseGeneration);
 
       const latest = this.latestObjective(input.projectId);
       if (!latest || latest.id !== input.objectiveId) {
@@ -1625,10 +1745,19 @@ export class Store {
    * transition table inside a transaction and appends the state event
    * atomically. Illegal transitions throw and change nothing.
    */
-  transitionMission(id: string, to: MissionState, reason: string, actor = "engine"): Mission {
+  transitionMission(
+    id: string,
+    to: MissionState,
+    reason: string,
+    actor = "engine",
+    expectedPauseGeneration?: number,
+  ): Mission {
     const tx = this.db.transaction(() => {
       const mission = this.getMission(id);
       if (!mission) throw new Error(`mission ${id} not found`);
+      if (expectedPauseGeneration !== undefined) {
+        this.assertProjectAcceptingWork(mission.projectId, expectedPauseGeneration);
+      }
       assertMissionTransition(mission.state, to);
       this.db
         .prepare("UPDATE missions SET state = ?, state_reason = ?, updated_at = ? WHERE id = ?")
@@ -1647,20 +1776,27 @@ export class Store {
   updateMissionMeta(
     id: string,
     fields: Partial<{ branchName: string; worktreePath: string; correctionAttempts: number }>,
+    expectedPauseGeneration?: number,
   ): void {
-    const mission = this.getMission(id);
-    if (!mission) throw new Error(`mission ${id} not found`);
-    this.db
-      .prepare(
-        "UPDATE missions SET branch_name = ?, worktree_path = ?, correction_attempts = ?, updated_at = ? WHERE id = ?",
-      )
-      .run(
-        fields.branchName ?? mission.branchName,
-        fields.worktreePath ?? mission.worktreePath,
-        fields.correctionAttempts ?? mission.correctionAttempts,
-        now(),
-        id,
-      );
+    const tx = this.db.transaction(() => {
+      const mission = this.getMission(id);
+      if (!mission) throw new Error(`mission ${id} not found`);
+      if (expectedPauseGeneration !== undefined) {
+        this.assertProjectAcceptingWork(mission.projectId, expectedPauseGeneration);
+      }
+      this.db
+        .prepare(
+          "UPDATE missions SET branch_name = ?, worktree_path = ?, correction_attempts = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(
+          fields.branchName ?? mission.branchName,
+          fields.worktreePath ?? mission.worktreePath,
+          fields.correctionAttempts ?? mission.correctionAttempts,
+          now(),
+          id,
+        );
+    });
+    tx();
   }
 
   // ── runs ─────────────────────────────────────────────────────────────────
@@ -1671,10 +1807,12 @@ export class Store {
     providerId: string | null;
     model: string | null;
     workerId?: string | null;
+    expectedPauseGeneration?: number;
   }): AgentRun {
     const id = newId("run");
     const ts = now();
     const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(input.projectId, input.expectedPauseGeneration);
       this.db
         .prepare(
           `INSERT INTO runs (id, project_id, mission_id, provider_id, model, worker_id, state, created_at, updated_at)
@@ -1719,10 +1857,18 @@ export class Store {
     return rows.map(rowToRun);
   }
 
-  transitionRun(id: string, to: RunState, extras: { exitReason?: string; errorCategory?: string } = {}): AgentRun {
+  transitionRun(
+    id: string,
+    to: RunState,
+    extras: { exitReason?: string; errorCategory?: string } = {},
+    expectedPauseGeneration?: number,
+  ): AgentRun {
     const tx = this.db.transaction(() => {
       const run = this.getRun(id);
       if (!run) throw new Error(`run ${id} not found`);
+      if (expectedPauseGeneration !== undefined) {
+        this.assertProjectAcceptingWork(run.projectId, expectedPauseGeneration);
+      }
       assertRunTransition(run.state, to);
       const ts = now();
       this.db
@@ -1744,19 +1890,25 @@ export class Store {
     return this.getRun(id)!;
   }
 
-  appendRunLog(runId: string, text: string): void {
-    const run = this.getRun(runId);
-    if (!run) return;
-    const clean = redactSecrets(text);
-    const seq = (this.db
-      .prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM run_logs WHERE run_id = ?")
-      .get(runId) as { s: number }).s;
-    this.db
-      .prepare("INSERT INTO run_logs (run_id, seq, text, created_at) VALUES (?, ?, ?, ?)")
-      .run(runId, seq, clean, now());
-    this.appendEvent("run.output", { projectId: run.projectId, missionId: run.missionId, runId }, {
-      text: clean.length > 4000 ? `${clean.slice(0, 4000)}…` : clean,
+  appendRunLog(runId: string, text: string, expectedPauseGeneration?: number): void {
+    const tx = this.db.transaction(() => {
+      const run = this.getRun(runId);
+      if (!run) return;
+      if (expectedPauseGeneration !== undefined) {
+        this.assertProjectAcceptingWork(run.projectId, expectedPauseGeneration);
+      }
+      const clean = redactSecrets(text);
+      const seq = (this.db
+        .prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM run_logs WHERE run_id = ?")
+        .get(runId) as { s: number }).s;
+      this.db
+        .prepare("INSERT INTO run_logs (run_id, seq, text, created_at) VALUES (?, ?, ?, ?)")
+        .run(runId, seq, clean, now());
+      this.appendEvent("run.output", { projectId: run.projectId, missionId: run.missionId, runId }, {
+        text: clean.length > 4000 ? `${clean.slice(0, 4000)}…` : clean,
+      });
     });
+    tx();
   }
 
   runLogs(runId: string): { seq: number; text: string; createdAt: string }[] {
@@ -1774,9 +1926,11 @@ export class Store {
     inputTokens: number;
     outputTokens: number;
     costUsd: number;
+    expectedPauseGeneration?: number;
   }): void {
     const ts = now();
     const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(input.projectId, input.expectedPauseGeneration);
       this.db
         .prepare(
           `INSERT INTO usage_records (id, project_id, run_id, provider_id, model, input_tokens, output_tokens, cost_usd, created_at, updated_at)
@@ -1919,12 +2073,14 @@ export class Store {
     kind: Checkpoint["kind"],
     status: Checkpoint["status"],
     detail: string,
+    expectedPauseGeneration?: number,
   ): void {
     const ts = now();
-    const existing = this.db
-      .prepare("SELECT id FROM checkpoints WHERE mission_id = ? AND kind = ?")
-      .get(missionId, kind) as { id: string } | undefined;
     const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(projectId, expectedPauseGeneration);
+      const existing = this.db
+        .prepare("SELECT id FROM checkpoints WHERE mission_id = ? AND kind = ?")
+        .get(missionId, kind) as { id: string } | undefined;
       if (existing) {
         this.db
           .prepare("UPDATE checkpoints SET status = ?, detail = ?, updated_at = ? WHERE id = ?")
@@ -1967,6 +2123,7 @@ export class Store {
     cwd: string,
     runId: string | null = null,
     requiredCapabilities: string[] = commandCapabilities(command),
+    expectedPauseGeneration?: number,
   ): {
     id: string;
     state: string;
@@ -1974,6 +2131,7 @@ export class Store {
     const id = newId("trm");
     const ts = now();
     const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(projectId, expectedPauseGeneration);
       this.db
         .prepare(
           `INSERT INTO terminal_sessions
@@ -2225,10 +2383,12 @@ export class Store {
     state: "draft" | "open" | "merged" | "closed";
     number?: number | null;
     url?: string | null;
+    expectedPauseGeneration?: number;
   }): PullRequestRef {
     const id = newId("pr");
     const ts = now();
     const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(input.projectId, input.expectedPauseGeneration);
       this.db
         .prepare(
           `INSERT INTO pull_requests (id, project_id, mission_id, number, url, branch, title, state, created_at, updated_at)
@@ -2253,30 +2413,48 @@ export class Store {
     state: "draft" | "open" | "merged" | "closed";
     number?: number | null;
     url?: string | null;
+    expectedPauseGeneration?: number;
   }): PullRequestRef {
-    const existing = this.db
-      .prepare("SELECT id FROM pull_requests WHERE mission_id = ?")
-      .get(input.missionId) as { id: string } | undefined;
-    if (!existing) return this.recordPullRequest(input);
-    this.db
-      .prepare(
-        `UPDATE pull_requests SET number = ?, url = ?, branch = ?, title = ?, state = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(input.number ?? null, input.url ?? null, input.branch, input.title, input.state, now(), existing.id);
-    this.appendEvent("git.pr_updated", { projectId: input.projectId, missionId: input.missionId }, {
-      prId: existing.id,
-      number: input.number ?? null,
-      url: input.url ?? null,
-      state: input.state,
+    let id: string | null = null;
+    const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(input.projectId, input.expectedPauseGeneration);
+      const existing = this.db
+        .prepare("SELECT id FROM pull_requests WHERE mission_id = ?")
+        .get(input.missionId) as { id: string } | undefined;
+      if (!existing) {
+        id = this.recordPullRequest(input).id;
+        return;
+      }
+      id = existing.id;
+      this.db
+        .prepare(
+          `UPDATE pull_requests SET number = ?, url = ?, branch = ?, title = ?, state = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(input.number ?? null, input.url ?? null, input.branch, input.title, input.state, now(), existing.id);
+      this.appendEvent("git.pr_updated", { projectId: input.projectId, missionId: input.missionId }, {
+        prId: existing.id,
+        number: input.number ?? null,
+        url: input.url ?? null,
+        state: input.state,
+      });
     });
-    return this.getPullRequest(existing.id)!;
+    tx();
+    return this.getPullRequest(id!)!;
   }
 
-  setPullRequestState(id: string, state: PullRequestRef["state"]): PullRequestRef {
+  setPullRequestState(
+    id: string,
+    state: PullRequestRef["state"],
+    expectedPauseGeneration?: number,
+  ): PullRequestRef {
     const pr = this.getPullRequest(id);
     if (!pr) throw new Error(`pull request ${id} not found`);
-    this.db.prepare("UPDATE pull_requests SET state = ?, updated_at = ? WHERE id = ?").run(state, now(), id);
-    this.appendEvent("git.pr_updated", { projectId: pr.projectId, missionId: pr.missionId }, { prId: id, state });
+    const tx = this.db.transaction(() => {
+      this.assertProjectAcceptingWork(pr.projectId, expectedPauseGeneration);
+      this.db.prepare("UPDATE pull_requests SET state = ?, updated_at = ? WHERE id = ?").run(state, now(), id);
+      this.appendEvent("git.pr_updated", { projectId: pr.projectId, missionId: pr.missionId }, { prId: id, state });
+    });
+    tx();
     return this.getPullRequest(id)!;
   }
 

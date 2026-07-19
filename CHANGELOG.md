@@ -49,9 +49,23 @@ sémantique lorsque le processus de release sera établi.
   `integrateMission`, checks worker) après chaque `await` : un verdict de
   reviewer ou un résultat de check arrivant après la pause ne crée plus de
   checkpoint, n’approuve pas, n’intègre pas et ne reconsomme pas de budget.
+- Le fencing asynchrone transporte désormais la `pause_generation` capturée au
+  départ jusque dans les transactions Store critiques. Une continuation
+  antérieure reste donc rejetée après un cycle pause → reprise rapide ; les
+  créations de run/terminal, checkpoints, usage, transitions et publications
+  PR ne reposent plus sur un contrôle Engine séparé de leur écriture durable.
+- Le pipeline cerveau transporte le même jeton de génération. Un provider de
+  planning qui ignore l’annulation ne peut plus persister son ancien plan après
+  pause/reprise, et son ancien `finally` ne peut pas libérer le slot `inFlight`
+  d’une nouvelle génération.
 - Reprise après clarification durable et exactement-une-fois : l’intent
   `resume_pending` est committé avec les réponses et réconcilié au redémarrage,
   fermant la fenêtre crash-entre-commit-et-reprise (invariant P-RESUME).
+- L’outbox de clarification est revendiquée atomiquement (`pending` →
+  `processing` → acquittée), ses décisions sont matérialisées dans une seule
+  transaction avec une clé d’idempotence par question, et les claims orphelins
+  sont réconciliés. Une reprise explicite d’un projet draine aussi l’intent sans
+  exiger un redémarrage du control plane.
 - Durcissement des réponses de clarification : rejet des doublons `multi_choice`,
   des chemins Windows/UNC/absolus/traversées encodées en `path_scope`, détection
   de secret plus robuste (sans faux positif sur le simple mot « token ») et

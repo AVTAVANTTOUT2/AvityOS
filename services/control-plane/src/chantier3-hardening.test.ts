@@ -61,6 +61,32 @@ function enrollWorker(store: Store, capabilities: string[] = ["shell"], max = 8)
   return { id };
 }
 
+function createMission(store: Store, projectId: string, requiredChecks: string[] = []) {
+  return store.createMission({
+    projectId,
+    planId: null,
+    milestoneId: null,
+    title: "fencing fixture",
+    role: "backend",
+    contract: {
+      objective: "prove pause fencing",
+      rationale: "",
+      context: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      acceptanceCriteria: ["late work is discarded"],
+      requiredChecks: requiredChecks as never[],
+      checkCommands: requiredChecks.length > 0 ? { test: ["node", "-e", "process.exit(0)"] } : {},
+      budgetUsd: null,
+      timeoutSeconds: 60,
+      expectedArtifacts: [],
+      workspaceChangesRequired: false,
+    },
+    priority: 50,
+    dependsOn: [],
+  });
+}
+
 // ── BUG 1: project-scoped lease revocation preserves cross-project isolation ──
 
 describe("chantier 3 hardening: worker isolation on pause", () => {
@@ -279,19 +305,77 @@ describe("chantier 3 hardening: durable clarification resume", () => {
             : "mobile is out of scope",
       })),
     );
+    // Claim once, then simulate a crash before the planning kick/ack. Startup
+    // releases the orphaned claim and re-drives it without duplicating memory.
+    expect(store.claimClarificationResume(group.id)).not.toBeNull();
+    expect(store.listPendingClarificationResumes()).toHaveLength(0);
     engine.start();
-    // Two concurrent resume calls of the same answered group.
-    engine.resumeAfterClarification(group.id);
-    engine.resumeAfterClarification(group.id);
     await waitFor(() => store.activePlan(project.id) !== null, 12_000);
     expect(store.listPlans(project.id)).toHaveLength(1);
     const decisions = store
       .listBrainEntries(project.id)
       .filter((e) => e.kind === "decision" && e.sources.some((s) => s === `clarification:${group.id}`));
-    expect(decisions).toHaveLength(group.questions.filter((q) => q.answer !== null || true).length);
+    expect(decisions).toHaveLength(group.questions.length);
     // No decision key appears twice.
     const keys = decisions.flatMap((d) => d.sources.filter((s) => s.startsWith("question:")));
     expect(new Set(keys).size).toBe(keys.length);
+    await engine.stop();
+  });
+
+  it("drains an answered clarification when an explicitly paused project resumes", async () => {
+    let { store, engine } = makeEngine(db, new Map([["fake", new FakeProviderAdapter()]]), "fake:plan-ambiguous");
+    const project = store.createProject({
+      name: "Paused clarification", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Deliver a deliberately detailed objective that still lacks material product decisions for safe planning",
+      ["resume without a control-plane restart"],
+    );
+    await engine.brain.ensurePlan(project.id, objective.id);
+    const group = store.listClarifications(project.id, "open")[0]!;
+    store.answerClarification(
+      group.id,
+      group.questions.map((question) => ({
+        questionId: question.id,
+        answer: question.answerType === "single_choice"
+          ? question.options[0]!.key
+          : question.logicalKey === "acceptance-criteria"
+            ? "first behavior\nsecond behavior"
+            : "mobile is out of scope",
+      })),
+    );
+    await engine.pauseProject(project.id, { reason: "operator pause", actor: "test" });
+    await engine.stop();
+
+    ({ store, engine } = makeEngine(db, new Map([["fake", new FakeProviderAdapter()]]), "fake:plan"));
+    await engine.resumeProject(project.id, { actor: "test" });
+    await waitFor(() => store.activePlan(project.id) !== null, 12_000);
+    expect(store.listPendingClarificationResumes()).toHaveLength(0);
+    const decisions = store
+      .listBrainEntries(project.id)
+      .filter((entry) => entry.sources.includes(`clarification:${group.id}`));
+    expect(decisions).toHaveLength(group.questions.length);
+    await engine.stop();
+  });
+
+  it("rejects an answer committed after the project pause wins the race", async () => {
+    const { store, engine } = makeEngine(db, new Map([["fake", new FakeProviderAdapter()]]), "fake:plan-ambiguous");
+    const project = store.createProject({
+      name: "Answer fence", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Deliver a deliberately detailed objective that still lacks material product decisions for safe planning",
+      ["answers are fenced"],
+    );
+    await engine.brain.ensurePlan(project.id, objective.id);
+    const group = store.listClarifications(project.id, "open")[0]!;
+    await engine.pauseProject(project.id, { reason: "wins race", actor: "test" });
+    expect(() => store.answerClarification(group.id, [])).toThrow(StoreConflictError);
+    expect(store.getClarification(group.id)!.status).toBe("open");
     await engine.stop();
   });
 });
@@ -345,6 +429,220 @@ describe("chantier 3 hardening: async workflow fencing", () => {
       .flatMap((m) => store.listCheckpoints(m.id))
       .some((c) => c.kind === "review" && c.status === "passed");
     expect(reviewPassed).toBe(false);
+    await engine.stop();
+    db.close();
+  });
+
+  it("does not accept a check result that returns after pause", async () => {
+    const db = openDatabase(":memory:");
+    const { store, engine } = makeEngine(db, new Map([["fake", new FakeProviderAdapter()]]));
+    const project = store.createProject({
+      name: "Validation fence", description: "", repoPath: "/tmp", repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = createMission(store, project.id, ["test"]);
+    store.transitionMission(mission.id, "ready", "fixture");
+    store.transitionMission(mission.id, "assigned", "fixture");
+    store.transitionMission(mission.id, "running", "fixture");
+    const run = store.createRun({ projectId: project.id, missionId: mission.id, providerId: "fake", model: "fake:succeed" });
+    store.transitionRun(run.id, "starting");
+    store.transitionRun(run.id, "running");
+    store.transitionRun(run.id, "succeeded");
+    store.transitionMission(mission.id, "result_submitted", "fixture");
+    store.transitionMission(mission.id, "validating", "fixture");
+
+    let checkStarted!: () => void;
+    const started = new Promise<void>((resolve) => (checkStarted = resolve));
+    let releaseCheck!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseCheck = resolve));
+    const internal = engine as unknown as {
+      runCheckCommand: () => Promise<{ ok: boolean; exitCode: number; detail: string }>;
+    };
+    internal.runCheckCommand = async () => {
+      checkStarted();
+      await gate;
+      return { ok: true, exitCode: 0, detail: "late success" };
+    };
+
+    const validation = engine.validateMission(mission.id);
+    await started;
+    await engine.pauseProject(project.id, { reason: "pause during check", actor: "test" });
+    releaseCheck();
+    await validation;
+    expect(store.getProject(project.id)!.status).toBe("paused");
+    expect(store.getMission(mission.id)!.state).toBe("paused");
+    expect(store.listCheckpoints(mission.id).some((checkpoint) => checkpoint.status === "passed")).toBe(false);
+    await engine.stop();
+    db.close();
+  });
+
+  it("does not complete integration after pause lands during cleanup", async () => {
+    const db = openDatabase(":memory:");
+    const { store, engine } = makeEngine(db, new Map([["fake", new FakeProviderAdapter()]]));
+    const project = store.createProject({
+      name: "Integration fence", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = createMission(store, project.id);
+    store.transitionMission(mission.id, "ready", "fixture");
+    store.transitionMission(mission.id, "assigned", "fixture");
+    store.transitionMission(mission.id, "running", "fixture");
+    store.transitionMission(mission.id, "result_submitted", "fixture");
+    store.transitionMission(mission.id, "validating", "fixture");
+    store.transitionMission(mission.id, "review_required", "fixture");
+    store.transitionMission(mission.id, "approved", "fixture");
+
+    let cleanupStarted!: () => void;
+    const started = new Promise<void>((resolve) => (cleanupStarted = resolve));
+    let releaseCleanup!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseCleanup = resolve));
+    const internal = engine as unknown as { cleanupWorktree: () => Promise<void> };
+    internal.cleanupWorktree = async () => {
+      cleanupStarted();
+      await gate;
+    };
+
+    const integration = engine.integrateMission(mission.id);
+    await started;
+    await engine.pauseProject(project.id, { reason: "pause during cleanup", actor: "test" });
+    releaseCleanup();
+    await integration;
+    expect(store.getProject(project.id)!.status).toBe("paused");
+    expect(store.getMission(mission.id)!.state).toBe("paused");
+    await engine.stop();
+    db.close();
+  });
+
+  it("rejects stale generation writes after a pause and resume", async () => {
+    const db = openDatabase(":memory:");
+    const { store, engine } = makeEngine(db, new Map([["fake", new FakeProviderAdapter()]]));
+    const project = store.createProject({
+      name: "Generation fence", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = createMission(store, project.id);
+    const objective = store.createObjective(project.id, "generation fencing objective", ["fenced"]);
+    const staleGeneration = store.getPauseGeneration(project.id);
+    const staleRun = store.createRun({
+      projectId: project.id,
+      missionId: mission.id,
+      providerId: "fake",
+      model: "fake:succeed",
+      expectedPauseGeneration: staleGeneration,
+    });
+    const staleBrainRun = store.createBrainRun({
+      projectId: project.id,
+      objectiveId: objective.id,
+      step: "analysis",
+      attempt: 0,
+      providerId: "fake",
+      model: "fake:plan",
+      provenance: "fake_fixture",
+      input: "fixture",
+      expectedPauseGeneration: staleGeneration,
+    });
+    await engine.pauseProject(project.id, { reason: "bump generation", actor: "test" });
+    await engine.resumeProject(project.id, { actor: "test" });
+
+    expect(() => store.createRun({
+      projectId: project.id,
+      missionId: mission.id,
+      providerId: "fake",
+      model: "fake:succeed",
+      expectedPauseGeneration: staleGeneration,
+    })).toThrow(StoreConflictError);
+    expect(() => store.createTerminal(
+      project.id,
+      ["echo", "late"],
+      "/tmp",
+      null,
+      undefined,
+      staleGeneration,
+    )).toThrow(StoreConflictError);
+    expect(() => store.transitionRun(staleRun.id, "starting", {}, staleGeneration)).toThrow(StoreConflictError);
+    expect(() => store.appendRunLog(staleRun.id, "late output", staleGeneration)).toThrow(StoreConflictError);
+    expect(() => store.finishBrainRun(
+      staleBrainRun.id,
+      { state: "succeeded", output: { late: true } },
+      staleGeneration,
+    )).toThrow(StoreConflictError);
+    expect(() => store.updateMissionMeta(
+      mission.id,
+      { correctionAttempts: 1 },
+      staleGeneration,
+    )).toThrow(StoreConflictError);
+    expect(() => store.setObjectiveAnalysis(objective.id, "late analysis", staleGeneration)).toThrow(StoreConflictError);
+    expect(() => store.setProjectStatus(project.id, "active", staleGeneration)).toThrow(StoreConflictError);
+    expect(() => store.createClarification({
+      projectId: project.id,
+      objectiveId: objective.id,
+      provenance: "deterministic_policy",
+      expectedPauseGeneration: staleGeneration,
+      questions: [{
+        logicalKey: "late", category: "scope", question: "Late?", reason: "fence",
+        answerType: "text", options: [], required: true, acceptanceCriteriaRefs: [],
+        blockedDecisions: [], blockedMissions: [], displayOrder: 0,
+      }],
+    })).toThrow(StoreConflictError);
+    expect(store.listRuns({ projectId: project.id })).toHaveLength(1);
+    expect(store.listTerminals(project.id)).toHaveLength(0);
+    expect(store.runLogs(staleRun.id)).toHaveLength(0);
+    expect(store.getObjective(objective.id)!.analysisSummary).toBeNull();
+    expect(store.listClarifications(project.id)).toHaveLength(0);
+    await engine.stop();
+    db.close();
+  });
+
+  it("fences an uncooperative old brain run after pause and lets the resumed generation plan", async () => {
+    let firstBrainRun = true;
+    let oldRunStarted!: () => void;
+    const started = new Promise<void>((resolve) => (oldRunStarted = resolve));
+    let releaseOldRun!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseOldRun = resolve));
+    class UncooperativeBrainFake extends FakeProviderAdapter {
+      override startRun(input: Parameters<FakeProviderAdapter["startRun"]>[0]) {
+        const base = super.startRun(input);
+        if (input.model !== "fake:plan" || !firstBrainRun) return base;
+        firstBrainRun = false;
+        async function* events() {
+          oldRunStarted();
+          await gate;
+          for await (const event of base.events) yield event;
+        }
+        // Deliberately ignore cancellation to model a provider that returns a
+        // late result after the operator has already resumed the project.
+        return { events: events(), cancel: async () => undefined };
+      }
+    }
+
+    const db = openDatabase(":memory:");
+    const provider = new UncooperativeBrainFake();
+    const { store, engine } = makeEngine(db, new Map([["fake", provider]]), "fake:plan");
+    const project = store.createProject({
+      name: "Brain generation fence", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Deliver a complete planning workflow while an obsolete provider result arrives after pause and resume",
+      ["only the resumed generation may persist a plan"],
+    );
+    const oldPlanning = engine.brain.ensurePlan(project.id, objective.id);
+    await started;
+    await engine.pauseProject(project.id, { reason: "replace brain generation", actor: "test" });
+    await engine.resumeProject(project.id, { actor: "test" });
+    await waitFor(() => store.activePlan(project.id) !== null, 12_000);
+    releaseOldRun();
+    await oldPlanning;
+
+    expect(store.listPlans(project.id)).toHaveLength(1);
+    expect(store.getProject(project.id)!.status).toBe("active");
+    const runs = store.listBrainRuns(project.id, objective.id);
+    expect(runs.some((run) => run.state === "cancelled")).toBe(true);
+    expect(runs.filter((run) => run.state === "succeeded").length).toBeGreaterThanOrEqual(3);
     await engine.stop();
     db.close();
   });

@@ -32,8 +32,10 @@ Implemented flow (all steps durable, all resumable after restart):
    are enriched without erasing history, a durable event is appended, and
    the brain pipeline resumes exactly once (no concurrent plan from the
    same answer). Resume is **durable**: a `resume_pending` intent is committed
-   in the same transaction as the answers and reconciled on restart, so a
-   crash between the answer commit and the brain kick still resumes exactly
+   in the same transaction as the answers, atomically claimed by the engine,
+   and materialized with one idempotency key per question. Orphaned claims are
+   reconciled on restart and explicit project resume drains pending intents, so
+   a crash between the answer commit and the brain kick still resumes exactly
    once (P-RESUME). Optional questions left unanswered are closed, not left
    dangling, when the group is answered.
 5. **AI planning pipeline** — a durable asynchronous pipeline builds a
@@ -73,14 +75,16 @@ Implemented flow (all steps durable, all resumable after restart):
    an audit event is written in the same transaction. Lease revocation is
    **strictly scoped to the paused project’s sessions** — a shared worker’s
    sessions for other projects are never touched (P-ISO). The durable paused
-   status is re-checked at the exact moment any later result would be accepted
-   — terminal `lease`/`output`/`exit`, and the asynchronous `validate` /
-   `review` / `integrate` / check workflows re-check after every `await` and
+   status and captured `pause_generation` are re-checked inside the Store
+   transaction at the exact moment any later result would be accepted — terminal
+   `lease`/`output`/`exit`, and the asynchronous `validate` /
+   brain / `review` / `integrate` / check workflows re-check after every `await` and
    emit `run.fenced` rather than committing a late checkpoint, integrating a
    change, or reconsuming budget (P-FENCE). Pause does **not** claim to freeze
    an external provider process in its exact memory; it guarantees that after a
    successful pause the project cannot plan or start work, late results cannot
-   integrate, and restart preserves the paused state. Resume reactivates the
+   integrate, and an old continuation remains fenced after resume because its
+   generation is stale. Restart preserves the paused state. Resume reactivates the
    project once, does not replay completed missions, and interrupted work
    continues as a new attempt linked to history; old leases never become valid
    again.
