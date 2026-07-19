@@ -28,10 +28,9 @@ reproductible dans `docs/TRACEABILITY.md`.
    (demande durable, annulation des runs, révocation des leases, fencing des
    résultats tardifs, reprise idempotente après redémarrage). Web/CLI branchés
    sur les vraies API. Preuves locales dans `docs/TRACEABILITY.md`. Reste pour
-   ✅ : CI Linux/macOS vertes sur la PR de ce chantier, plus preuves Playwright
-   du panneau de clarification et des boutons pause/reprise sur le flux
-   navigateur réel (les tests control-plane/API/CLI et Vitest Web couvrent déjà
-   les contrats et l’activation des contrôles).
+   ✅ : CI Linux/macOS vertes sur la PR de ce chantier (Playwright local
+   `chantier3.spec.ts` couvre clarification groupée + pause/reprise côté
+   navigateur avec API interceptée, en plus des suites control-plane/CLI/Vitest).
 4. **⚪ Validation E2E avec Codex, Claude Code et Cursor réels.** Scénarios
    reproductibles sur des dépôts fixtures externes et preuves de livraison.
 5. **⚪ Pont distant sécurisé.** Connexion sortante, chiffrement de bout en

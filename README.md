@@ -239,9 +239,8 @@ Known remaining proof or product work:
   a planning run with a live reasoning provider requires operator-owned API
   credentials and is deliberately part of the live-validation chantier;
 - chantier 3 (structured clarifications + atomic pause/resume) is implemented
-  and covered by control-plane/API/CLI/Web unit tests; full ✅ awaits green
-  GitHub CI on the delivery PR and browser E2E proof of the clarification
-  panel and pause/resume controls;
+  and covered by control-plane/API/CLI/Web unit tests plus Playwright
+  `chantier3.spec.ts`; full ✅ awaits green GitHub CI on the delivery PR;
 - live-provider smoke tests require operator-owned API credentials;
 - autonomous push and draft-PR creation still need a dedicated external
   fixture repository and GitHub credentials for end-to-end proof;
