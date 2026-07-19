@@ -375,6 +375,47 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       ALTER TABLE missions ADD COLUMN logical_key TEXT;
     `,
   },
+  {
+    version: 6,
+    sql: `
+      ALTER TABLE projects ADD COLUMN pause_generation INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE projects ADD COLUMN status_before_pause TEXT;
+      ALTER TABLE projects ADD COLUMN paused_reason TEXT;
+      ALTER TABLE projects ADD COLUMN paused_at TEXT;
+      ALTER TABLE projects ADD COLUMN paused_by TEXT;
+
+      ALTER TABLE missions ADD COLUMN paused_from_state TEXT;
+
+      ALTER TABLE clarifications ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE clarifications ADD COLUMN round INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE clarifications ADD COLUMN provenance TEXT NOT NULL DEFAULT 'deterministic_policy';
+      ALTER TABLE clarifications ADD COLUMN provider_id TEXT;
+      ALTER TABLE clarifications ADD COLUMN model TEXT;
+      ALTER TABLE clarifications ADD COLUMN brain_run_id TEXT;
+      ALTER TABLE clarifications ADD COLUMN idempotency_key TEXT;
+
+      CREATE TABLE project_pauses (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        status TEXT NOT NULL,
+        reason TEXT,
+        actor TEXT NOT NULL,
+        previous_status TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        idempotency_key TEXT,
+        cancelling_run_ids TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        resumed_at TEXT
+      );
+      CREATE INDEX idx_project_pauses_project ON project_pauses(project_id, created_at);
+      CREATE UNIQUE INDEX idx_project_pauses_idem
+        ON project_pauses(project_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+      CREATE UNIQUE INDEX idx_clarifications_idem
+        ON clarifications(project_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {

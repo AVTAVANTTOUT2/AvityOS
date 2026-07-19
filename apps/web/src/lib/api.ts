@@ -106,11 +106,44 @@ export interface ApiApproval {
   description: string;
 }
 
+export interface ApiClarificationQuestion {
+  id: string;
+  logicalKey: string;
+  category: string;
+  question: string;
+  reason: string;
+  answerType: string;
+  options: { key: string; label: string }[];
+  required: boolean;
+  displayOrder: number;
+  status: string;
+  answer: string | null;
+  answerValue: unknown;
+}
+
 export interface ApiClarification {
   id: string;
   projectId: string;
+  objectiveId: string;
   status: string;
-  questions: { id: string; question: string; options: string[]; answer: string | null }[];
+  schemaVersion: number;
+  round: number;
+  provenance: string;
+  providerId: string | null;
+  model: string | null;
+  questions: ApiClarificationQuestion[];
+}
+
+export interface ApiProjectPauseState {
+  projectId: string;
+  status: "active" | "pausing" | "paused" | "resuming";
+  reason: string | null;
+  actor: string | null;
+  previousStatus: string | null;
+  generation: number;
+  pausedAt: string | null;
+  resumedAt: string | null;
+  cancellingRunIds: string[];
 }
 
 export interface ApiEvent {
@@ -204,11 +237,16 @@ export const api = {
   missions: (projectId: string) => request<{ items: ApiMission[] }>("GET", `/v1/projects/${projectId}/missions`),
   runs: () => request<{ items: ApiRun[] }>("GET", "/v1/runs"),
   approvals: () => request<{ items: ApiApproval[] }>("GET", "/v1/approvals?status=open"),
-  clarifications: (projectId: string) =>
-    request<{ items: ApiClarification[] }>("GET", `/v1/projects/${projectId}/clarifications?status=open`),
+  clarifications: (projectId: string, status = "open") =>
+    request<{ items: ApiClarification[] }>(
+      "GET",
+      `/v1/projects/${projectId}/clarifications${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+  clarification: (id: string) => request<ApiClarification>("GET", `/v1/clarifications/${id}`),
   events: (afterSeq = 0) => request<{ items: ApiEvent[] }>("GET", `/v1/events?afterSeq=${afterSeq}`),
   providers: () => request<{ items: ApiProvider[] }>("GET", "/v1/providers"),
   brainState: (projectId: string) => request<ApiBrainState>("GET", `/v1/projects/${projectId}/brain/state`),
+  pauseState: (projectId: string) => request<ApiProjectPauseState>("GET", `/v1/projects/${projectId}/pause`),
   prs: () => request<{ items: ApiPr[] }>("GET", "/v1/prs"),
   terminals: () => request<{ items: ApiTerminal[] }>("GET", "/v1/terminals"),
   terminalDetail: (id: string) =>
@@ -226,8 +264,15 @@ export const api = {
       `/v1/projects/${projectId}/objectives`,
       { text, acceptanceCriteria },
     ),
-  answerClarification: (id: string, answers: { questionId: string; answer: string }[]) =>
-    request("POST", `/v1/clarifications/${id}/answers`, { answers }),
+  answerClarification: (
+    id: string,
+    answers: { questionId: string; answer?: string; value?: unknown }[],
+    idempotencyKey?: string,
+  ) => request("POST", `/v1/clarifications/${id}/answers`, { answers, idempotencyKey }),
+  pauseProject: (projectId: string, reason = "", idempotencyKey?: string) =>
+    request<ApiProjectPauseState>("POST", `/v1/projects/${projectId}/pause`, { reason, idempotencyKey }),
+  resumeProject: (projectId: string, idempotencyKey?: string) =>
+    request<ApiProjectPauseState>("POST", `/v1/projects/${projectId}/resume`, { idempotencyKey }),
   resolveApproval: (id: string, decision: "approved" | "rejected", note = "") =>
     request("POST", `/v1/approvals/${id}/resolve`, { decision, note }),
   transitionMission: (id: string, to: string, reason = "") =>

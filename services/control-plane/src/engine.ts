@@ -46,6 +46,10 @@ export interface EngineConfig {
   maxPlanRepairAttempts: number;
   /** Evidence-based replans allowed per objective before escalating. */
   maxReplansPerObjective: number;
+  /** Clarification rounds allowed per objective before escalating. */
+  maxClarificationRounds: number;
+  /** Hard cap on questions in one clarification round. */
+  maxClarificationQuestions: number;
   /** Timeout for one AI brain pipeline step. */
   brainStepTimeoutMs: number;
 }
@@ -65,12 +69,10 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
   checkTimeoutMs: 10 * 60 * 1000,
   maxPlanRepairAttempts: 2,
   maxReplansPerObjective: 3,
+  maxClarificationRounds: 3,
+  maxClarificationQuestions: 8,
   brainStepTimeoutMs: 5 * 60 * 1000,
 };
-
-const AMBIGUITY_MARKERS = [
-  "maybe", "not sure", "something like", "etc", "peut-être", "je ne sais pas", "quelque chose comme",
-];
 
 /**
  * The deterministic project engine. LLM providers write code and review it;
@@ -113,6 +115,8 @@ export class Engine {
       maxWaitMs: config.maxWaitMs,
       maxRepairAttempts: config.maxPlanRepairAttempts,
       maxReplansPerObjective: config.maxReplansPerObjective,
+      maxClarificationRounds: config.maxClarificationRounds,
+      maxClarificationQuestions: config.maxClarificationQuestions,
       stepTimeoutMs: config.brainStepTimeoutMs,
       checkCommandPolicy: config.checkCommandPolicy,
       allowModelSwitch: config.allowModelSwitch,
@@ -188,39 +192,60 @@ export class Engine {
     const objective = this.store.getObjective(objectiveId);
     const project = this.store.getProject(projectId);
     if (!objective || !project) throw new Error("objective or project not found");
+    if (project.status === "paused") {
+      throw new Error(`project ${projectId} is paused; resume before submitting a new objective analysis`);
+    }
 
     const text = objective.text.trim();
-    const lower = text.toLowerCase();
+    // Deterministic policy gate only — never labelled as AI clarification.
     const tooVague = text.length < 80 && objective.acceptanceCriteria.length === 0;
-    const marked = AMBIGUITY_MARKERS.some((m) => lower.includes(m));
-
-    if (tooVague || marked) {
-      const questions = [
-        {
-          id: "q_acceptance",
-          question:
-            "What are the concrete acceptance criteria? List the observable behaviors that must be true for this objective to be complete.",
-          options: [],
-          answer: null,
-        },
-        {
-          id: "q_scope",
-          question:
-            "What is explicitly out of scope for this objective (platforms, integrations, environments to ignore)?",
-          options: [],
-          answer: null,
-        },
-      ];
-      const clarification = this.store.createClarification(projectId, objectiveId, questions);
+    if (tooVague) {
+      const clarification = this.store.createClarification({
+        projectId,
+        objectiveId,
+        provenance: "deterministic_policy",
+        providerId: null,
+        model: null,
+        questions: [
+          {
+            logicalKey: "acceptance-criteria",
+            category: "acceptance_criteria",
+            question:
+              "What are the concrete acceptance criteria? List the observable behaviors that must be true for this objective to be complete.",
+            reason: "The objective is too short and has no acceptance criteria, so planning cannot start safely.",
+            answerType: "text",
+            options: [],
+            required: true,
+            acceptanceCriteriaRefs: [],
+            blockedDecisions: ["plan coverage"],
+            blockedMissions: [],
+            displayOrder: 0,
+          },
+          {
+            logicalKey: "out-of-scope",
+            category: "scope",
+            question:
+              "What is explicitly out of scope for this objective (platforms, integrations, environments to ignore)?",
+            reason: "Scope boundaries are required before the AI planner can propose missions.",
+            answerType: "text",
+            options: [],
+            required: true,
+            acceptanceCriteriaRefs: [],
+            blockedDecisions: ["mission scope"],
+            blockedMissions: [],
+            displayOrder: 1,
+          },
+        ],
+      });
       this.store.setObjectiveAnalysis(
         objectiveId,
-        `Objective needs clarification (${tooVague ? "no acceptance criteria and very short" : "ambiguity markers present"}).`,
+        "Deterministic policy gate: objective needs clarification (no acceptance criteria and very short). Not an AI clarification.",
       );
       this.store.setProjectStatus(projectId, "clarifying");
       return { clarificationId: clarification.id };
     }
 
-    this.store.setObjectiveAnalysis(objectiveId, "Objective is actionable; AI planning started.");
+    this.store.setObjectiveAnalysis(objectiveId, "Objective intake accepted; AI planning started.");
     this.startPlanning(projectId, objectiveId);
     return { clarificationId: null };
   }
@@ -255,31 +280,110 @@ export class Engine {
   resumeAfterClarification(clarificationId: string): void {
     const clarification = this.store.getClarification(clarificationId);
     if (!clarification) throw new Error(`clarification ${clarificationId} not found`);
+    if (clarification.status !== "answered") {
+      throw new Error(`clarification ${clarificationId} is ${clarification.status}; refusing resume`);
+    }
+    const project = this.store.getProject(clarification.projectId);
+    if (project?.status === "paused") {
+      throw new Error(`project ${clarification.projectId} is paused; resume the project before clarifying`);
+    }
     for (const q of clarification.questions) {
       if (q.answer) {
         this.store.addBrainEntry(
           clarification.projectId,
           "decision",
-          `Clarified: ${q.question.slice(0, 80)}`,
+          `Clarified (${q.logicalKey}): ${q.question.slice(0, 80)}`,
           q.answer,
-          [`clarification:${clarificationId}`],
+          [`clarification:${clarificationId}`, `question:${q.logicalKey}`, `user`],
         );
       }
     }
-    const answered = clarification.questions.find((q) => q.id === "q_acceptance")?.answer;
-    if (answered) {
+    const acceptance = clarification.questions.find(
+      (q) => q.logicalKey === "acceptance-criteria" || q.category === "acceptance_criteria",
+    )?.answer;
+    if (acceptance) {
       const objective = this.store.getObjective(clarification.objectiveId);
       if (objective && objective.acceptanceCriteria.length === 0) {
-        const criteria = answered
+        const criteria = acceptance
           .split(/\n|;/)
           .map((s) => s.trim())
           .filter(Boolean);
         this.store.db
-          .prepare("UPDATE objectives SET acceptance_criteria = ? WHERE id = ?")
-          .run(JSON.stringify(criteria), objective.id);
+          .prepare("UPDATE objectives SET acceptance_criteria = ?, updated_at = ? WHERE id = ?")
+          .run(JSON.stringify(criteria), new Date().toISOString(), objective.id);
       }
     }
+    // Exactly one resume of the brain pipeline from the answered group.
     this.startPlanning(clarification.projectId, clarification.objectiveId);
+  }
+
+  /**
+   * Atomic project pause: durable pause request, scheduling freeze, cancel
+   * active provider runs, revoke worker leases and fence late results.
+   */
+  async pauseProject(
+    projectId: string,
+    opts: { reason?: string; actor?: string; idempotencyKey?: string } = {},
+  ): Promise<ReturnType<Store["getProjectPauseState"]>> {
+    const project = this.store.getProject(projectId);
+    if (!project) throw new Error(`project ${projectId} not found`);
+    const begun = this.store.beginProjectPause({
+      projectId,
+      reason: opts.reason ?? "",
+      actor: opts.actor ?? "user",
+      idempotencyKey: opts.idempotencyKey,
+    });
+    if (begun.alreadyPaused) return begun.state;
+
+    await this.brain.cancelProject(projectId);
+    for (const runId of begun.runIdsToCancel) {
+      const handle = this.activeRuns.get(runId);
+      if (handle) {
+        try {
+          await handle.cancel();
+        } catch {
+          // Provider ignore is fenced by run state + pause generation.
+        }
+        this.activeRuns.delete(runId);
+      }
+      this.store.completePausedRunCancellation(runId, "cancelled by atomic project pause");
+    }
+    this.store.revokeProjectWorkerLeases(projectId);
+    return this.store.getProjectPauseState(projectId);
+  }
+
+  /**
+   * Atomic project resume: restore status, restart interrupted missions as
+   * new attempts, and resume planning exactly once when needed.
+   */
+  async resumeProject(
+    projectId: string,
+    opts: { actor?: string; idempotencyKey?: string } = {},
+  ): Promise<ReturnType<Store["getProjectPauseState"]>> {
+    const resumed = this.store.resumeProject({
+      projectId,
+      actor: opts.actor ?? "user",
+      idempotencyKey: opts.idempotencyKey,
+    });
+    if (resumed.alreadyResumed) return resumed.state;
+
+    if (resumed.resumePlanning) {
+      const objective = this.store.latestObjective(projectId);
+      if (objective) this.startPlanning(projectId, objective.id);
+    }
+
+    for (const item of resumed.missionsToResume) {
+      const mission = this.store.getMission(item.missionId);
+      if (!mission) continue;
+      if (mission.state === "ready" && ["running", "assigned", "retrying"].includes(item.fromState)) {
+        // New attempt linked to history via prior cancelled runs; scheduler starts it.
+        continue;
+      }
+      if (mission.state === "validating") void this.validateMission(mission.id);
+      if (mission.state === "review_required") void this.reviewMission(mission.id);
+      if (mission.state === "approved") void this.integrateMission(mission.id);
+    }
+    return this.store.getProjectPauseState(projectId);
   }
 
   // ── scheduling tick ──────────────────────────────────────────────────────
@@ -498,7 +602,31 @@ export class Engine {
 
       if (this.stopped) return; // process shutting down; reconcile handles this run
 
+      // Atomic pause / fencing: refuse late results from revoked runs.
+      const freshRun = this.store.getRun(run.id);
+      const freshProject = this.store.getProject(project.id);
+      if (
+        !freshRun ||
+        !freshProject ||
+        freshProject.status === "paused" ||
+        !["running", "starting"].includes(freshRun.state)
+      ) {
+        if (freshRun && ["cancelling", "cancelled"].includes(freshRun.state) && outcome?.kind === "completed") {
+          this.store.appendEvent("run.fenced", {
+            projectId: project.id,
+            missionId,
+            runId: run.id,
+          }, { reason: "late provider result after pause/cancel", outcome: "completed" });
+        }
+        return;
+      }
+
       if (outcome?.kind === "completed") {
+        try {
+          this.store.assertRunAcceptable(run.id);
+        } catch {
+          return;
+        }
         this.store.transitionRun(run.id, "succeeded", { exitReason: "completed" });
         this.store.transitionMission(missionId, "result_submitted", "provider reported completion");
         this.store.addBrainEntry(project.id, "fact", `Mission result: ${current.title.slice(0, 80)}`, outcome.result.slice(0, 2000), [
@@ -511,6 +639,7 @@ export class Engine {
       }
 
       const category = outcome?.kind === "error" ? outcome.category : "agent_crash";
+      if (!["running", "starting"].includes(this.store.getRun(run.id)?.state ?? "")) return;
       this.store.transitionRun(run.id, "failed", { exitReason: "provider error", errorCategory: category });
 
       const decision = decideFallback({

@@ -141,11 +141,15 @@ describe("scenario 2: ambiguous objective triggers grouped clarification and res
 
     const clarification = store.getClarification(clarificationId!)!;
     expect(clarification.questions.length).toBeGreaterThanOrEqual(2); // grouped
+    expect(clarification.provenance).toBe("deterministic_policy");
 
-    store.answerClarification(clarificationId!, [
-      { questionId: "q_acceptance", answer: "Users can register; users can log in" },
-      { questionId: "q_scope", answer: "No mobile app" },
-    ]);
+    store.answerClarification(clarificationId!, clarification.questions.map((question) => ({
+      questionId: question.id,
+      answer:
+        question.logicalKey === "acceptance-criteria"
+          ? "Users can register; users can log in"
+          : "No mobile app",
+    })));
     engine.resumeAfterClarification(clarificationId!);
 
     await waitFor(() => store.getProject(project.id)!.status === "completed", 8000);

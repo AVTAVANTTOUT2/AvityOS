@@ -66,22 +66,6 @@ export const ProjectConfiguration = z.object({
 });
 export type ProjectConfiguration = z.infer<typeof ProjectConfiguration>;
 
-export const ClarificationQuestion = z.object({
-  id: Id,
-  question: z.string().min(1),
-  options: z.array(z.string()).default([]),
-  answer: z.string().nullable(),
-});
-
-export const Clarification = z.object({
-  ...base,
-  projectId: Id,
-  objectiveId: Id,
-  status: InterventionStatus,
-  questions: z.array(ClarificationQuestion).min(1),
-});
-export type Clarification = z.infer<typeof Clarification>;
-
 export const BrainEntry = z.object({
   ...base,
   projectId: Id,

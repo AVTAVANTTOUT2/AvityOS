@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Bot, Brain, ChevronLeft, Clock, Folder, GitBranch, Pencil, TrendingUp, Zap,
+  Bot, Brain, ChevronLeft, Clock, Folder, GitBranch, Pause, Pencil, Play, TrendingUp, Zap,
 } from "lucide-react";
+import { api, type ApiClarification, type ApiProjectPauseState } from "../../lib/api";
 import { useData } from "../../lib/data";
 import { BrainPanel } from "../components/BrainPanel";
+import { ClarificationPanel } from "../components/ClarificationPanel";
 import { NewProjectModal } from "../components/NewProjectModal";
 import { Bar2, cn, Glass, StatusDot } from "../components/shared";
 import { CodePRScreen } from "./CodePRScreen";
@@ -24,10 +26,38 @@ const HEALTH_BADGES: Record<string, { label: string; className: string }> = {
 };
 
 export function ProjectDetailScreen({ projectId, onBack }: { projectId: number | string; onBack: () => void }) {
-  const { projects: PROJECTS, agents: AGENTS, prs: PRS, kanban } = useData();
+  const { projects: PROJECTS, agents: AGENTS, prs: PRS, kanban, actions, mode, refresh } = useData();
   const [tab, setTab] = useState("overview");
   const [editing, setEditing] = useState(false);
+  const [clarification, setClarification] = useState<ApiClarification | null>(null);
+  const [pauseState, setPauseState] = useState<ApiProjectPauseState | null>(null);
+  const [pauseBusy, setPauseBusy] = useState(false);
+  const [pauseFeedback, setPauseFeedback] = useState<string | null>(null);
   const p = PROJECTS.find(x => x.id === projectId);
+  useEffect(() => {
+    if (!p || mode !== "live") {
+      setClarification(null);
+      setPauseState(null);
+      return;
+    }
+    let cancelled = false;
+    void Promise.all([
+      api.clarifications(String(p.id)),
+      api.pauseState(String(p.id)),
+    ]).then(([clarifications, pause]) => {
+      if (cancelled) return;
+      setClarification(clarifications.items[0] ?? null);
+      setPauseState(pause);
+    }).catch(() => {
+      if (!cancelled) {
+        setClarification(null);
+        setPauseState(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [p, mode, refresh]);
   if (!p) {
     return <div className="p-6 text-sm text-[#74716B]">Projet introuvable. <button className="text-[#5267D9] underline" onClick={onBack}>Retour</button></div>;
   }
@@ -84,10 +114,52 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
             </div>
             <p className="text-[11px] text-[#74716B]">{p.goal}</p>
           </div>
-          <div className="text-right">
+          <div className="text-right space-y-2">
             <div className="text-[10px] text-[#74716B]">Progression</div>
             <div className="text-xl font-semibold text-[#202124]">{p.progress}%</div>
             <button onClick={() => setEditing(true)} className="mt-1 inline-flex items-center gap-1 text-[10px] text-[#5267D9]"><Pencil size={10} />Modifier</button>
+            {mode === "live" && (
+              <div className="flex flex-col items-end gap-1">
+                {(pauseState?.status === "paused" || pauseState?.status === "pausing" || p.phase === "En pause") ? (
+                  <button
+                    type="button"
+                    disabled={pauseBusy || pauseState?.status === "pausing"}
+                    onClick={() => {
+                      setPauseBusy(true);
+                      void actions.resumeProject(String(p.id)).then((result) => {
+                        setPauseBusy(false);
+                        setPauseFeedback(result.detail);
+                      });
+                    }}
+                    className="inline-flex items-center gap-1 text-[10px] bg-[#202124] text-white px-2.5 py-1.5 rounded-xl disabled:opacity-40"
+                  >
+                    <Play size={10} />{pauseState?.status === "pausing" ? "Arrêt en cours…" : "Reprendre"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={pauseBusy || ["Terminé", "Archivé"].includes(p.phase)}
+                    onClick={() => {
+                      setPauseBusy(true);
+                      void actions.pauseProject(String(p.id), "pause demandée depuis l'UI").then((result) => {
+                        setPauseBusy(false);
+                        setPauseFeedback(result.detail);
+                      });
+                    }}
+                    className="inline-flex items-center gap-1 text-[10px] bg-[#F7F4EE] text-[#202124] px-2.5 py-1.5 rounded-xl disabled:opacity-40"
+                  >
+                    <Pause size={10} />Pause atomique
+                  </button>
+                )}
+                {(pauseState?.status === "paused" || p.phase === "En pause") && (
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-orange-600">Pausé</span>
+                )}
+                {pauseState?.status === "resuming" && (
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-[#5267D9]">Reprise en cours</span>
+                )}
+                {pauseFeedback && <div className="text-[9px] text-[#74716B] max-w-[180px]">{pauseFeedback}</div>}
+              </div>
+            )}
           </div>
         </div>
         <div className="mt-4"><Bar2 value={p.progress} /></div>
@@ -117,6 +189,16 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
               </div>
               <p className="text-[12px] text-[#202124] leading-relaxed">{summary}</p>
             </Glass>
+            {mode === "live" && clarification && (
+              <ClarificationPanel
+                clarification={clarification}
+                onSubmit={async (answers) => {
+                  const result = await actions.answerClarificationGroup(clarification.id, answers);
+                  if (!result.ok) throw new Error(result.detail);
+                  setClarification(null);
+                }}
+              />
+            )}
             <Glass className="p-5">
               <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-3">Configuration persistée</div>
               <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-[10px]">

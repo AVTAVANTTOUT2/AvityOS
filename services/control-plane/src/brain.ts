@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import type {
   BrainObjectiveAnalysis as Analysis,
   BrainArchitectureProposal as Architecture,
+  BrainClarificationProposal as ClarificationProposal,
   BrainPlanProposal as PlanProposal,
   BrainProvenance,
   BrainStep,
+  Clarification,
   Mission,
   Objective,
   Plan,
@@ -15,11 +17,13 @@ import type {
 import {
   BrainObjectiveAnalysis,
   BrainArchitectureProposal,
+  BrainClarificationProposal,
   BrainPlanProposal,
 } from "@avityos/contracts";
 import { decideFallback } from "@avityos/orchestration";
 import { checkBudget, type CommandPolicy } from "@avityos/policy";
 import type { ProviderAdapter, RunHandle } from "@avityos/providers";
+import { validateClarificationProposal } from "./clarification-policy.js";
 import { validatePlanProposal } from "./plan-validation.js";
 import { buildRepoSnapshot } from "./snapshot.js";
 import type { Store } from "./store.js";
@@ -49,6 +53,10 @@ export interface BrainPipelineConfig {
   maxRepairAttempts: number;
   /** Evidence-based replans allowed per objective before escalating. */
   maxReplansPerObjective: number;
+  /** Clarification rounds allowed per objective before escalating. */
+  maxClarificationRounds: number;
+  /** Hard cap on questions produced in one clarification round. */
+  maxClarificationQuestions: number;
   stepTimeoutMs: number;
   checkCommandPolicy: CommandPolicy;
   allowModelSwitch: boolean;
@@ -64,8 +72,10 @@ export interface ReplanRequest {
 export type EnsurePlanResult =
   | { status: "planned"; plan: Plan }
   | { status: "exists"; plan: Plan }
+  | { status: "clarifying"; clarification: Clarification }
   | { status: "deferred"; reason: string }
-  | { status: "blocked"; reason: string };
+  | { status: "blocked"; reason: string }
+  | { status: "paused"; reason: string };
 
 /** Mission states during which a replan must be refused or deferred. */
 const IN_FLIGHT_MISSION_STATES = new Set([
@@ -81,6 +91,7 @@ const IN_FLIGHT_MISSION_STATES = new Set([
 
 class BrainBlocked extends Error {}
 class BrainStopped extends Error {}
+class BrainPaused extends Error {}
 
 interface RepairContext {
   issues: string[];
@@ -114,6 +125,27 @@ export class BrainPipeline {
     }
   }
 
+  /** Cancel in-flight brain provider handles for one project (atomic pause). */
+  async cancelProject(projectId: string): Promise<void> {
+    const active = [...this.activeHandles.entries()].filter(([runId]) => {
+      const run = this.store.getBrainRun(runId);
+      return run?.projectId === projectId;
+    });
+    for (const [runId, handle] of active) {
+      await handle.cancel();
+      this.activeHandles.delete(runId);
+      const run = this.store.getBrainRun(runId);
+      if (run?.state === "running") {
+        this.store.finishBrainRun(runId, {
+          state: "cancelled",
+          errorCategory: "agent_crash",
+          errorDetail: "cancelled because the project was paused",
+        });
+      }
+    }
+    this.inFlight.delete(projectId);
+  }
+
   /**
    * Startup reconciliation: any brain run recorded as running belongs to a
    * dead process — fail it exactly once, then resume planning for projects
@@ -130,6 +162,7 @@ export class BrainPipeline {
       this.store.appendAudit(run.projectId, "engine", "reconcile.orphan_brain_run", run.id);
     }
     for (const project of this.store.listProjects()) {
+      if (project.status === "paused") continue;
       if (project.status !== "planning") continue;
       const objective = this.store.latestObjective(project.id);
       if (!objective) continue;
@@ -167,9 +200,16 @@ export class BrainPipeline {
     if (!project || !objective || objective.projectId !== projectId) {
       return { status: "deferred", reason: "project or objective not found" };
     }
+    if (project.status === "paused") {
+      return { status: "paused", reason: "project is paused" };
+    }
     const latest = this.store.latestObjective(projectId);
     if (!latest || latest.id !== objectiveId) {
       return { status: "deferred", reason: "objective revision superseded" };
+    }
+    const openClarification = this.store.listClarifications(projectId, "open")[0];
+    if (openClarification) {
+      return { status: "clarifying", clarification: openClarification };
     }
 
     const activePlan = this.store.activePlan(projectId);
@@ -232,26 +272,47 @@ export class BrainPipeline {
         throw new BrainBlocked(`repository snapshot failed: ${String(err).slice(0, 300)}`);
       }
 
+      const priorAnswers = this.priorClarificationContext(projectId, objectiveId);
       const analysisResult = await this.runStep<Analysis>({
         project,
         objective,
         step: "analysis",
         schema: BrainObjectiveAnalysis,
         buildPrompts: (repair) =>
-          buildStepPrompts({ step: "analysis", project, objective, snapshot, analysis: null, architecture: null, replan, repair }),
+          buildStepPrompts({
+            step: "analysis",
+            project,
+            objective,
+            snapshot,
+            analysis: null,
+            architecture: null,
+            replan,
+            repair,
+            priorAnswers,
+          }),
       });
       this.store.setObjectiveAnalysis(objective.id, analysisResult.value.summary);
-      if (analysisResult.value.objectiveClarity === "ambiguous") {
-        throw new BrainBlocked(
-          "AI analysis found material ambiguity; revise the objective with the missing decisions before retrying",
-        );
-      }
       if (analysisResult.value.feasibility === "infeasible") {
         throw new BrainBlocked(
           "AI analysis found the objective infeasible under the persisted constraints; revise the objective or constraints before retrying",
         );
       }
+      if (analysisResult.value.objectiveClarity === "ambiguous") {
+        const clarifying = await this.requestStructuredClarifications({
+          project,
+          objective,
+          snapshot,
+          analysis: analysisResult.value,
+          priorAnswers,
+          analysisRunId: analysisResult.runId,
+          providerId: analysisResult.providerId,
+          model: analysisResult.model,
+          provenance: analysisResult.provenance,
+        });
+        return clarifying;
+      }
 
+      this.assertNotPaused(projectId);
       this.assertPlanningBudget(projectId);
       const architectureResult = await this.runStep<Architecture>({
         project,
@@ -268,9 +329,11 @@ export class BrainPipeline {
             architecture: null,
             replan,
             repair,
+            priorAnswers,
           }),
       });
 
+      this.assertNotPaused(projectId);
       this.assertPlanningBudget(projectId);
       const budget = this.store.getBudget(projectId);
       const planResult = await this.runStep<PlanProposal>({
@@ -288,6 +351,7 @@ export class BrainPipeline {
             architecture: architectureResult.value,
             replan,
             repair,
+            priorAnswers,
           }),
         validate: (proposal) => {
           const verdict = validatePlanProposal(proposal, {
@@ -301,6 +365,7 @@ export class BrainPipeline {
         },
       });
 
+      this.assertNotPaused(projectId);
       const persisted = this.persistPlan({
         project,
         objective,
@@ -315,6 +380,9 @@ export class BrainPipeline {
         ? { status: "planned", plan: persisted.plan }
         : { status: "exists", plan: persisted.plan };
     } catch (err) {
+      if (err instanceof BrainPaused) {
+        return { status: "paused", reason: err.message };
+      }
       if (err instanceof BrainStopped || this.stopped) {
         return { status: "deferred", reason: "engine stopped during planning; recovery resumes it" };
       }
@@ -324,6 +392,191 @@ export class BrainPipeline {
       }
       throw err;
     }
+  }
+
+  private assertNotPaused(projectId: string): void {
+    if (this.store.getProject(projectId)?.status === "paused") {
+      throw new BrainPaused("project paused during brain pipeline");
+    }
+  }
+
+  private priorClarificationContext(projectId: string, objectiveId: string): string[] {
+    const answered = this.store
+      .listClarifications(projectId)
+      .filter((group) => group.objectiveId === objectiveId && group.status === "answered");
+    const lines: string[] = [];
+    for (const group of answered) {
+      for (const question of group.questions) {
+        if (question.status === "answered" && question.answer) {
+          lines.push(`${question.logicalKey}: ${question.question} → ${question.answer}`);
+        }
+      }
+    }
+    return lines;
+  }
+
+  private async requestStructuredClarifications(input: {
+    project: Project;
+    objective: Objective;
+    snapshot: RepoSnapshot | null;
+    analysis: Analysis;
+    priorAnswers: string[];
+    analysisRunId: string;
+    providerId: string;
+    model: string;
+    provenance: BrainProvenance;
+  }): Promise<EnsurePlanResult> {
+    const rounds = this.store.clarificationRoundCount(input.project.id, input.objective.id);
+    if (rounds >= this.config.maxClarificationRounds) {
+      throw new BrainBlocked(
+        `clarification round limit reached (${this.config.maxClarificationRounds}) for objective ${input.objective.id}`,
+      );
+    }
+    this.assertNotPaused(input.project.id);
+    const answeredKeys = new Set(
+      this.store
+        .listClarifications(input.project.id)
+        .filter((group) => group.objectiveId === input.objective.id && group.status === "answered")
+        .flatMap((group) => group.questions.filter((q) => q.status === "answered").map((q) => q.logicalKey)),
+    );
+    const clarificationResult = await this.runStep<ClarificationProposal>({
+      project: input.project,
+      objective: input.objective,
+      step: "clarification",
+      schema: BrainClarificationProposal,
+      buildPrompts: (repair) =>
+        buildStepPrompts({
+          step: "clarification",
+          project: input.project,
+          objective: input.objective,
+          snapshot: input.snapshot,
+          analysis: input.analysis,
+          architecture: null,
+          replan: null,
+          repair,
+          priorAnswers: input.priorAnswers,
+        }),
+      validate: (proposal) =>
+        validateClarificationProposal(proposal, {
+          objectiveText: input.objective.text,
+          acceptanceCriteria: input.objective.acceptanceCriteria,
+          priorAnswerKeys: answeredKeys,
+          priorAnswerBodies: input.priorAnswers,
+          maxQuestions: this.config.maxClarificationQuestions,
+        }).map((issue) => `${issue.path}: ${issue.message}`),
+    });
+
+    if (!clarificationResult.value.needsClarification || clarificationResult.value.questions.length === 0) {
+      // Model resolved ambiguity without questions — continue as clear.
+      this.store.setObjectiveAnalysis(
+        input.objective.id,
+        `${input.analysis.summary} (clarification step found no material questions).`,
+      );
+      // Force clarity by continuing the pipeline from architecture.
+      this.assertNotPaused(input.project.id);
+      this.assertPlanningBudget(input.project.id);
+      const architectureResult = await this.runStep<Architecture>({
+        project: input.project,
+        objective: input.objective,
+        step: "architecture",
+        schema: BrainArchitectureProposal,
+        buildPrompts: (repair) =>
+          buildStepPrompts({
+            step: "architecture",
+            project: input.project,
+            objective: input.objective,
+            snapshot: input.snapshot,
+            analysis: { ...input.analysis, objectiveClarity: "clear" },
+            architecture: null,
+            replan: null,
+            repair,
+            priorAnswers: input.priorAnswers,
+          }),
+      });
+      this.assertNotPaused(input.project.id);
+      this.assertPlanningBudget(input.project.id);
+      const budget = this.store.getBudget(input.project.id);
+      const planResult = await this.runStep<PlanProposal>({
+        project: input.project,
+        objective: input.objective,
+        step: "plan",
+        schema: BrainPlanProposal,
+        buildPrompts: (repair) =>
+          buildStepPrompts({
+            step: "plan",
+            project: input.project,
+            objective: input.objective,
+            snapshot: input.snapshot,
+            analysis: { ...input.analysis, objectiveClarity: "clear" },
+            architecture: architectureResult.value,
+            replan: null,
+            repair,
+            priorAnswers: input.priorAnswers,
+          }),
+        validate: (proposal) => {
+          const verdict = validatePlanProposal(proposal, {
+            acceptanceCriteria: input.objective.acceptanceCriteria,
+            repoAvailable: input.project.repoPath !== null,
+            availableChecks: input.snapshot?.availableChecks ?? null,
+            checkCommandPolicy: this.config.checkCommandPolicy,
+            projectBudgetUsd: budget?.limitUsd ?? null,
+          });
+          return verdict.ok ? [] : verdict.issues;
+        },
+      });
+      const persisted = this.persistPlan({
+        project: input.project,
+        objective: input.objective,
+        snapshot: input.snapshot,
+        analysis: {
+          value: { ...input.analysis, objectiveClarity: "clear" },
+          runId: input.analysisRunId,
+          providerId: input.providerId,
+          model: input.model,
+          provenance: input.provenance,
+        },
+        architecture: architectureResult,
+        plan: planResult,
+        idempotencyKey: null,
+        replan: null,
+      });
+      return persisted.created
+        ? { status: "planned", plan: persisted.plan }
+        : { status: "exists", plan: persisted.plan };
+    }
+
+    const clarificationProvenance: Clarification["provenance"] =
+      clarificationResult.provenance === "fake_fixture" ? "fake_fixture" : "live";
+    const clarification = this.store.createClarification({
+      projectId: input.project.id,
+      objectiveId: input.objective.id,
+      provenance: clarificationProvenance,
+      providerId: clarificationResult.providerId,
+      model: clarificationResult.model,
+      brainRunId: clarificationResult.runId,
+      idempotencyKey: `clr:${input.project.id}:${input.objective.id}:${rounds + 1}:${clarificationResult.runId}`,
+      questions: clarificationResult.value.questions.map((question) => ({
+        logicalKey: question.key,
+        category: question.category,
+        question: question.question,
+        reason: question.reason,
+        answerType: question.answerType,
+        options: question.options,
+        required: question.required,
+        acceptanceCriteriaRefs: question.acceptanceCriteriaRefs,
+        blockedDecisions: question.blockedDecisions,
+        blockedMissions: question.blockedMissions,
+        displayOrder: question.displayOrder,
+      })),
+    });
+    this.store.setProjectStatus(input.project.id, "clarifying");
+    this.store.appendAudit(
+      input.project.id,
+      "engine",
+      "brain.clarification",
+      `${clarification.questions.length} structured question(s); provenance=${clarification.provenance}`,
+    );
+    return { status: "clarifying", clarification };
   }
 
   /** Planning consumes the same project budget as execution — fail closed. */
@@ -377,6 +630,7 @@ export class BrainPipeline {
 
     while (true) {
       if (this.stopped) throw new BrainStopped();
+      this.assertNotPaused(input.project.id);
       const providerName = eligible[providerIdx];
       const adapter = providerName ? this.providers.get(providerName) : undefined;
       if (!providerName || !adapter) {
@@ -717,6 +971,19 @@ const STEP_INSTRUCTIONS: Readonly<Record<BrainStep, string>> = {
     ' "risks": [{"title": string, "severity": "low"|"medium"|"high", "detail": string, "mitigation": string}],',
     ' "evidence": [{"kind": "file"|"git"|"manifest"|"script"|"check"|"doc"|"objective", "ref": string, "detail": string}]}',
     "Reference real snapshot entries in evidence (e.g. {\"kind\":\"file\",\"ref\":\"file:README.md@<commit>\"}).",
+    "Mark objectiveClarity=ambiguous only when material decisions are missing and cannot be inferred safely.",
+  ].join("\n"),
+  clarification: [
+    "Propose ONLY material clarification questions as one JSON object with exactly these fields:",
+    '{"summary": string, "needsClarification": boolean,',
+    ' "questions": [{"key": string, "category": "acceptance_criteria"|"scope"|"constraint"|"decision"|"budget"|"path_scope"|"other",',
+    '   "question": string, "reason": string,',
+    '   "answerType": "text"|"boolean"|"single_choice"|"multi_choice"|"number"|"budget"|"path_scope",',
+    '   "options": [{"key": string, "label": string}], "required": boolean,',
+    '   "acceptanceCriteriaRefs": number[], "blockedDecisions": string[], "blockedMissions": string[], "displayOrder": number}]}',
+    "Rules: ask only what is materially necessary; never ask for secrets/API keys/passwords; never ask for out-of-repo paths;",
+    "never ask the user to run arbitrary commands; never repeat already-answered keys; group every question of this round together;",
+    "if nothing material is missing, return needsClarification=false and questions=[].",
   ].join("\n"),
   architecture: [
     "Propose the target architecture as one JSON object with exactly these fields:",
@@ -774,6 +1041,7 @@ function buildStepPrompts(input: {
   architecture: Architecture | null;
   replan: ReplanRequest | null;
   repair: RepairContext | null;
+  priorAnswers?: string[];
 }): { systemPrompt: string; userPrompt: string } {
   const availableChecks = input.snapshot?.availableChecks ?? { requiredChecks: [], checkCommands: {} };
   const sections: string[] = [
@@ -790,6 +1058,11 @@ function buildStepPrompts(input: {
           .join("\n")}`
       : "Acceptance criteria: none declared — derive them from the objective.",
   ];
+  if (input.priorAnswers && input.priorAnswers.length > 0) {
+    sections.push(
+      `Prior user clarification answers (do not re-ask these keys):\n${input.priorAnswers.map((line) => `- ${line}`).join("\n")}`,
+    );
+  }
   if (input.snapshot) {
     sections.push(`Repository snapshot (bounded, secret-free):\n${JSON.stringify(condensedSnapshot(input.snapshot))}`);
   } else {
@@ -814,6 +1087,7 @@ function buildStepPrompts(input: {
       "You reason and propose; the deterministic control plane owns all durable state and validates your output.",
       "Respond with exactly one JSON object matching the required schema, inside a ```json fence, with no other JSON in the reply.",
       "Never invent repository paths, scripts or check commands: only use what the snapshot proves to exist.",
+      "Never request secrets, API keys, passwords, out-of-repository paths or arbitrary shell commands.",
     ].join("\n"),
     userPrompt: sections.join("\n\n"),
   };

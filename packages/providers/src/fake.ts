@@ -289,6 +289,66 @@ function fakeBrainStepOutput(
     };
   }
 
+  if (step === "clarification") {
+    if (analysisDisposition !== "ambiguous") {
+      return {
+        summary: "No material clarification required by the deterministic fixture.",
+        needsClarification: false,
+        questions: [],
+      };
+    }
+    return {
+      summary: "Deterministic fixture clarification: material acceptance and scope decisions are missing.",
+      needsClarification: true,
+      questions: [
+        {
+          key: "acceptance-criteria",
+          category: "acceptance_criteria",
+          question:
+            "What are the concrete acceptance criteria? List the observable behaviors that must be true for this objective to be complete.",
+          reason: "Without measurable acceptance criteria the planner cannot cover the objective safely.",
+          answerType: "text",
+          options: [],
+          required: true,
+          acceptanceCriteriaRefs: [],
+          blockedDecisions: ["plan coverage"],
+          blockedMissions: [],
+          displayOrder: 0,
+        },
+        {
+          key: "out-of-scope",
+          category: "scope",
+          question:
+            "What is explicitly out of scope for this objective (platforms, integrations, environments to ignore)?",
+          reason: "Scope boundaries prevent the planner from inventing unbounded missions.",
+          answerType: "text",
+          options: [],
+          required: true,
+          acceptanceCriteriaRefs: [],
+          blockedDecisions: ["mission scope"],
+          blockedMissions: [],
+          displayOrder: 1,
+        },
+        {
+          key: "delivery-shape",
+          category: "decision",
+          question: "Should delivery prefer a minimal vertical slice or a broader multi-mission plan?",
+          reason: "The planning DAG shape depends on this product decision.",
+          answerType: "single_choice",
+          options: [
+            { key: "vertical-slice", label: "Minimal vertical slice" },
+            { key: "broad-plan", label: "Broader multi-mission plan" },
+          ],
+          required: true,
+          acceptanceCriteriaRefs: [],
+          blockedDecisions: ["plan shape"],
+          blockedMissions: [],
+          displayOrder: 2,
+        },
+      ],
+    };
+  }
+
   if (step === "architecture") {
     return {
       overview: `Deterministic fixture architecture for: ${summarize(objective)}`,

@@ -205,10 +205,30 @@ describe("avity CLI", () => {
 
     const answered = await run(
       "intervention", "answer", clarificationId,
-      "q_acceptance=The CLI demo passes", "q_scope=nothing else",
+      "acceptance-criteria=The CLI demo passes", "out-of-scope=nothing else",
     );
     expect(answered.code).toBe(0);
     await waitFor(() => store.getProject(project.id)?.status === "completed");
+  });
+
+  it("pauses and resumes a project atomically through the CLI", async () => {
+    const created = await run(
+      "project", "create", "Pause CLI",
+      "--objective", "Deliver a durable pause and resume path with automated verification",
+      "--criterion", "pause freezes scheduling",
+      "--json",
+    );
+    const project = JSON.parse(created.out) as { id: string };
+    await waitFor(() => store.getProject(project.id)?.status === "active");
+
+    const paused = await run("project", "pause", project.id, "--reason", "operator break", "--json");
+    expect(paused.code).toBe(0);
+    expect(JSON.parse(paused.out)).toMatchObject({ status: "paused", generation: 1 });
+    expect(store.getProject(project.id)?.status).toBe("paused");
+
+    const resumed = await run("project", "resume", project.id, "--json");
+    expect(resumed.code).toBe(0);
+    expect(store.getProject(project.id)?.status).not.toBe("paused");
   });
 
   it("surfaces API errors with exit code 1", async () => {

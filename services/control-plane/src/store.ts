@@ -8,6 +8,9 @@ import type {
   BrainStep,
   Checkpoint,
   Clarification,
+  ClarificationAnswerValue,
+  ClarificationProvenance,
+  ClarificationQuestion,
   EventEnvelope,
   EventType,
   Mission,
@@ -18,13 +21,44 @@ import type {
   Plan,
   Project,
   ProjectConfiguration,
+  ProjectPauseState,
+  ProjectStatus,
   PullRequestRef,
   ReplanTrigger,
   RunState,
 } from "@avityos/contracts";
-import { assertMissionTransition, assertRunTransition } from "@avityos/orchestration";
+import { Clarification as ClarificationSchema } from "@avityos/contracts";
+import {
+  assertMissionTransition,
+  assertProjectTransition,
+  assertRunTransition,
+  MISSION_PAUSEABLE_STATES,
+  RUN_CANCELLABLE_ON_PAUSE,
+} from "@avityos/orchestration";
 import { redactSecrets } from "@avityos/policy";
+import {
+  coerceLegacyAnswer,
+  serializeAnswerValue,
+  validateAnswerForQuestion,
+} from "./clarification-policy.js";
 import type { DB } from "./db.js";
+
+export class StoreConflictError extends Error {
+  constructor(
+    readonly code:
+      | "clarification_obsolete"
+      | "clarification_incomplete"
+      | "clarification_already_answered"
+      | "project_paused"
+      | "project_not_paused"
+      | "illegal_transition"
+      | "conflict",
+    message: string,
+  ) {
+    super(message);
+    this.name = "StoreConflictError";
+  }
+}
 
 export function now(): string {
   return new Date().toISOString();
@@ -309,10 +343,377 @@ export class Store {
 
   setProjectStatus(id: string, status: Project["status"]): void {
     const tx = this.db.transaction(() => {
+      const project = this.getProject(id);
+      if (!project) throw new Error(`project ${id} not found`);
+      if (project.status === status) return;
+      // Pause/resume own their transitions and fencing side effects.
+      if (status === "paused" || project.status === "paused") {
+        throw new StoreConflictError(
+          "illegal_transition",
+          `use pauseProject/resumeProject for paused transitions (${project.status} -> ${status})`,
+        );
+      }
+      assertProjectTransition(project.status, status);
       this.db.prepare("UPDATE projects SET status = ?, updated_at = ? WHERE id = ?").run(status, now(), id);
-      this.appendEvent("project.status_changed", { projectId: id }, { status });
+      this.appendEvent("project.status_changed", { projectId: id }, { from: project.status, status });
     });
     tx();
+  }
+
+  getPauseGeneration(projectId: string): number {
+    const row = this.db
+      .prepare("SELECT pause_generation FROM projects WHERE id = ?")
+      .get(projectId) as { pause_generation: number } | undefined;
+    return row?.pause_generation ?? 0;
+  }
+
+  getProjectPauseState(projectId: string): ProjectPauseState | null {
+    const project = this.getProject(projectId);
+    if (!project) return null;
+    const pause = this.db
+      .prepare(
+        `SELECT * FROM project_pauses WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(projectId) as Record<string, unknown> | undefined;
+    const generation = this.getPauseGeneration(projectId);
+    const cancelling = this.listRuns({
+      projectId,
+      states: ["cancelling"],
+    }).map((run) => run.id);
+    if (project.status === "paused") {
+      return {
+        projectId,
+        status: cancelling.length > 0 ? "pausing" : "paused",
+        reason: (pause?.reason as string | null) ?? (this.db.prepare("SELECT paused_reason FROM projects WHERE id = ?").get(projectId) as { paused_reason: string | null } | undefined)?.paused_reason ?? null,
+        actor: (pause?.actor as string | null) ?? null,
+        previousStatus: (pause?.previous_status as string | null) ?? null,
+        generation,
+        pausedAt: (pause?.created_at as string | null) ?? null,
+        resumedAt: (pause?.resumed_at as string | null) ?? null,
+        cancellingRunIds: cancelling,
+      };
+    }
+    if (pause && pause.status === "resumed" && !pause.resumed_at) {
+      return {
+        projectId,
+        status: "resuming",
+        reason: (pause.reason as string | null) ?? null,
+        actor: (pause.actor as string | null) ?? null,
+        previousStatus: (pause.previous_status as string | null) ?? null,
+        generation,
+        pausedAt: pause.created_at as string,
+        resumedAt: null,
+        cancellingRunIds: [],
+      };
+    }
+    return {
+      projectId,
+      status: "active",
+      reason: null,
+      actor: null,
+      previousStatus: null,
+      generation,
+      pausedAt: null,
+      resumedAt: (pause?.resumed_at as string | null) ?? null,
+      cancellingRunIds: [],
+    };
+  }
+
+  /**
+   * Begin an atomic project pause inside one transaction: bump the fencing
+   * generation, record the pause row, mark pauseable missions and refuse any
+   * later scheduling until resume. Provider cancellation happens after commit.
+   */
+  beginProjectPause(input: {
+    projectId: string;
+    reason: string;
+    actor: string;
+    idempotencyKey?: string;
+  }): { state: ProjectPauseState; runIdsToCancel: string[]; alreadyPaused: boolean } {
+    let result: { state: ProjectPauseState; runIdsToCancel: string[]; alreadyPaused: boolean } | null = null;
+    const tx = this.db.transaction(() => {
+      const project = this.getProject(input.projectId);
+      if (!project) throw new Error(`project ${input.projectId} not found`);
+      if (input.idempotencyKey) {
+        const existing = this.db
+          .prepare(
+            "SELECT id FROM project_pauses WHERE project_id = ? AND idempotency_key = ?",
+          )
+          .get(input.projectId, input.idempotencyKey) as { id: string } | undefined;
+        if (existing) {
+          result = {
+            state: this.getProjectPauseState(input.projectId)!,
+            runIdsToCancel: [],
+            alreadyPaused: true,
+          };
+          return;
+        }
+      }
+      if (project.status === "paused") {
+        result = {
+          state: this.getProjectPauseState(input.projectId)!,
+          runIdsToCancel: [],
+          alreadyPaused: true,
+        };
+        return;
+      }
+      assertProjectTransition(project.status, "paused");
+      const ts = now();
+      const generation = this.getPauseGeneration(input.projectId) + 1;
+      const pauseId = newId("pause");
+      const runIds = this.listRuns({
+        projectId: input.projectId,
+        states: [...RUN_CANCELLABLE_ON_PAUSE],
+      }).map((run) => run.id);
+      this.db
+        .prepare(
+          `UPDATE projects
+           SET status = 'paused', pause_generation = ?, status_before_pause = ?,
+               paused_reason = ?, paused_at = ?, paused_by = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          generation,
+          project.status,
+          redactSecrets(input.reason).slice(0, 2000),
+          ts,
+          input.actor,
+          ts,
+          input.projectId,
+        );
+      this.db
+        .prepare(
+          `INSERT INTO project_pauses
+             (id, project_id, status, reason, actor, previous_status, generation, idempotency_key, cancelling_run_ids, created_at)
+           VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          pauseId,
+          input.projectId,
+          redactSecrets(input.reason).slice(0, 2000),
+          input.actor,
+          project.status,
+          generation,
+          input.idempotencyKey ?? null,
+          JSON.stringify(runIds),
+          ts,
+        );
+      for (const mission of this.listMissions(input.projectId)) {
+        if (!MISSION_PAUSEABLE_STATES.includes(mission.state)) continue;
+        this.db
+          .prepare("UPDATE missions SET paused_from_state = ?, updated_at = ? WHERE id = ?")
+          .run(mission.state, ts, mission.id);
+        this.transitionMission(mission.id, "paused", `project paused: ${input.reason || "no reason"}`, input.actor);
+      }
+      for (const runId of runIds) {
+        const run = this.getRun(runId);
+        if (!run) continue;
+        if (run.state === "queued") this.transitionRun(runId, "starting");
+        if (["queued", "starting", "running", "paused"].includes(this.getRun(runId)!.state)) {
+          const current = this.getRun(runId)!;
+          if (current.state !== "cancelling" && current.state !== "cancelled") {
+            if (current.state === "paused") {
+              this.transitionRun(runId, "cancelling");
+            } else if (current.state === "running" || current.state === "starting") {
+              this.transitionRun(runId, "cancelling");
+            } else if (current.state === "queued") {
+              // queued already moved to starting above
+              this.transitionRun(runId, "cancelling");
+            }
+          }
+        }
+      }
+      this.appendEvent("project.paused", { projectId: input.projectId }, {
+        reason: input.reason,
+        actor: input.actor,
+        generation,
+        previousStatus: project.status,
+        cancellingRunIds: runIds,
+      });
+      this.appendEvent("project.status_changed", { projectId: input.projectId }, {
+        from: project.status,
+        status: "paused",
+      });
+      this.appendAudit(input.projectId, input.actor, "project.pause", input.reason.slice(0, 500));
+      result = {
+        state: this.getProjectPauseState(input.projectId)!,
+        runIdsToCancel: runIds,
+        alreadyPaused: false,
+      };
+    });
+    tx();
+    return result!;
+  }
+
+  /** Finalize cancelled runs after provider cancel, then leave project paused. */
+  completePausedRunCancellation(runId: string, exitReason: string): void {
+    const run = this.getRun(runId);
+    if (!run) return;
+    if (run.state === "cancelling") {
+      this.transitionRun(runId, "cancelled", { exitReason });
+    } else if (RUN_CANCELLABLE_ON_PAUSE.includes(run.state)) {
+      if (run.state === "queued") this.transitionRun(runId, "starting");
+      const current = this.getRun(runId)!;
+      if (current.state === "starting" || current.state === "running" || current.state === "paused") {
+        this.transitionRun(runId, "cancelling");
+      }
+      if (this.getRun(runId)?.state === "cancelling") {
+        this.transitionRun(runId, "cancelled", { exitReason });
+      }
+    }
+  }
+
+  /**
+   * Resume a paused project transactionally. Returns missions that need a new
+   * execution attempt and whether planning should restart.
+   */
+  resumeProject(input: {
+    projectId: string;
+    actor: string;
+    idempotencyKey?: string;
+  }): {
+    state: ProjectPauseState;
+    alreadyResumed: boolean;
+    resumePlanning: boolean;
+    missionsToResume: { missionId: string; fromState: MissionState }[];
+  } {
+    let result: {
+      state: ProjectPauseState;
+      alreadyResumed: boolean;
+      resumePlanning: boolean;
+      missionsToResume: { missionId: string; fromState: MissionState }[];
+    } | null = null;
+    const tx = this.db.transaction(() => {
+      const project = this.getProject(input.projectId);
+      if (!project) throw new Error(`project ${input.projectId} not found`);
+      if (input.idempotencyKey) {
+        const existing = this.findIdempotent(`resume:${input.projectId}:${input.idempotencyKey}`);
+        if (existing) {
+          result = {
+            state: this.getProjectPauseState(input.projectId)!,
+            alreadyResumed: true,
+            resumePlanning: false,
+            missionsToResume: [],
+          };
+          return;
+        }
+      }
+      if (project.status !== "paused") {
+        if (input.idempotencyKey) {
+          // Idempotent resume against an already-active project.
+          result = {
+            state: this.getProjectPauseState(input.projectId)!,
+            alreadyResumed: true,
+            resumePlanning: false,
+            missionsToResume: [],
+          };
+          return;
+        }
+        throw new StoreConflictError(
+          "project_not_paused",
+          `project ${input.projectId} is ${project.status}, not paused`,
+        );
+      }
+      const meta = this.db
+        .prepare("SELECT status_before_pause FROM projects WHERE id = ?")
+        .get(input.projectId) as { status_before_pause: string | null };
+      const previous = (meta.status_before_pause as ProjectStatus | null) ?? "active";
+      assertProjectTransition("paused", previous);
+      const ts = now();
+      const missionsToResume: { missionId: string; fromState: MissionState }[] = [];
+      for (const mission of this.listMissions(input.projectId)) {
+        if (mission.state !== "paused") continue;
+        const fromRow = this.db
+          .prepare("SELECT paused_from_state FROM missions WHERE id = ?")
+          .get(mission.id) as { paused_from_state: string | null };
+        const fromState = (fromRow.paused_from_state as MissionState | null) ?? "ready";
+        missionsToResume.push({ missionId: mission.id, fromState });
+        const resumeTo = resumeMissionTarget(fromState);
+        this.transitionMission(mission.id, resumeTo, `project resumed (was ${fromState})`, input.actor);
+        this.db
+          .prepare("UPDATE missions SET paused_from_state = NULL, updated_at = ? WHERE id = ?")
+          .run(ts, mission.id);
+      }
+      this.db
+        .prepare(
+          `UPDATE projects
+           SET status = ?, status_before_pause = NULL, paused_reason = NULL,
+               paused_at = NULL, paused_by = NULL, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(previous, ts, input.projectId);
+      this.db
+        .prepare(
+          `UPDATE project_pauses SET status = 'resumed', resumed_at = ?
+           WHERE project_id = ? AND status = 'active'`,
+        )
+        .run(ts, input.projectId);
+      if (input.idempotencyKey) {
+        this.recordIdempotent(`resume:${input.projectId}:${input.idempotencyKey}`, "project", input.projectId);
+      }
+      this.appendEvent("project.resumed", { projectId: input.projectId }, {
+        actor: input.actor,
+        previousStatus: previous,
+        missions: missionsToResume,
+      });
+      this.appendEvent("project.status_changed", { projectId: input.projectId }, {
+        from: "paused",
+        status: previous,
+      });
+      this.appendAudit(input.projectId, input.actor, "project.resume", previous);
+      result = {
+        state: {
+          projectId: input.projectId,
+          status: previous === "planning" ? "resuming" : "active",
+          reason: null,
+          actor: input.actor,
+          previousStatus: previous,
+          generation: this.getPauseGeneration(input.projectId),
+          pausedAt: null,
+          resumedAt: ts,
+          cancellingRunIds: [],
+        },
+        alreadyResumed: false,
+        resumePlanning: previous === "planning" || previous === "clarifying",
+        missionsToResume,
+      };
+    });
+    tx();
+    return result!;
+  }
+
+  /** Refuse late provider/worker results against a paused or fenced project. */
+  assertRunAcceptable(runId: string): void {
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`run ${runId} not found`);
+    const project = this.getProject(run.projectId);
+    if (!project) throw new Error(`project ${run.projectId} not found`);
+    if (project.status === "paused") {
+      this.appendEvent("run.fenced", { projectId: run.projectId, missionId: run.missionId, runId }, {
+        reason: "project is paused",
+      });
+      throw new StoreConflictError("project_paused", `run ${runId} refused: project ${run.projectId} is paused`);
+    }
+    if (!["running", "starting", "queued"].includes(run.state)) {
+      this.appendEvent("run.fenced", { projectId: run.projectId, missionId: run.missionId, runId }, {
+        reason: `run state ${run.state} is not accepting results`,
+        state: run.state,
+      });
+      throw new StoreConflictError("conflict", `run ${runId} in state ${run.state} cannot accept results`);
+    }
+  }
+
+  revokeProjectWorkerLeases(projectId: string): void {
+    const workerIds = (
+      this.db
+        .prepare(
+          `SELECT DISTINCT worker_id AS id FROM terminal_sessions
+           WHERE project_id = ? AND worker_id IS NOT NULL
+             AND state IN ('queued','starting','running','cancelling')`,
+        )
+        .all(projectId) as { id: string }[]
+    ).map((row) => row.id);
+    for (const workerId of workerIds) this.revokeWorkerLeases(workerId);
   }
 
   // ── objectives & clarifications ──────────────────────────────────────────
@@ -330,6 +731,11 @@ export class Store {
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(id, projectId, rev, text, JSON.stringify(acceptanceCriteria), ts, ts);
+      // A new objective revision obsoletes any open clarification groups.
+      const open = this.listClarifications(projectId, "open");
+      for (const clarification of open) {
+        this.markClarificationObsolete(clarification.id, "objective revised");
+      }
       this.appendEvent("objective.submitted", { projectId }, { objectiveId: id, revision: rev });
       this.appendAudit(projectId, "user", "objective.submit", text.slice(0, 200));
     });
@@ -367,24 +773,103 @@ export class Store {
       .run(redactSecrets(summary).slice(0, 5000), now(), id);
   }
 
-  createClarification(
-    projectId: string,
-    objectiveId: string,
-    questions: { id: string; question: string; options: string[]; answer: string | null }[],
-  ): Clarification {
+  createClarification(input: {
+    projectId: string;
+    objectiveId: string;
+    questions: Omit<ClarificationQuestion, "id" | "status" | "answer" | "answerValue">[];
+    provenance: ClarificationProvenance;
+    providerId?: string | null;
+    model?: string | null;
+    brainRunId?: string | null;
+    round?: number;
+    idempotencyKey?: string | null;
+  }): Clarification {
+    if (input.idempotencyKey) {
+      const existing = this.db
+        .prepare("SELECT id FROM clarifications WHERE project_id = ? AND idempotency_key = ?")
+        .get(input.projectId, input.idempotencyKey) as { id: string } | undefined;
+      if (existing) return this.getClarification(existing.id)!;
+    }
     const id = newId("clr");
     const ts = now();
+    const round =
+      input.round ??
+      ((this.db
+        .prepare("SELECT COALESCE(MAX(round), 0) + 1 AS r FROM clarifications WHERE project_id = ? AND objective_id = ?")
+        .get(input.projectId, input.objectiveId) as { r: number }).r);
+    const questions: ClarificationQuestion[] = input.questions.map((question, index) => ({
+      ...question,
+      id: newId("clq"),
+      status: "pending",
+      answer: null,
+      answerValue: null,
+      displayOrder: question.displayOrder ?? index,
+    }));
+    const parsed = ClarificationSchema.parse({
+      id,
+      createdAt: ts,
+      updatedAt: ts,
+      projectId: input.projectId,
+      objectiveId: input.objectiveId,
+      status: "open",
+      schemaVersion: 1,
+      round,
+      provenance: input.provenance,
+      providerId: input.providerId ?? null,
+      model: input.model ?? null,
+      brainRunId: input.brainRunId ?? null,
+      questions,
+    });
     const tx = this.db.transaction(() => {
+      // Only one open group per project at a time — withdraw older opens.
+      for (const open of this.listClarifications(input.projectId, "open")) {
+        this.markClarificationObsolete(open.id, "superseded by a new clarification round");
+      }
       this.db
         .prepare(
-          `INSERT INTO clarifications (id, project_id, objective_id, status, questions, created_at, updated_at)
-           VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+          `INSERT INTO clarifications
+             (id, project_id, objective_id, status, questions, created_at, updated_at,
+              schema_version, round, provenance, provider_id, model, brain_run_id, idempotency_key)
+           VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, projectId, objectiveId, JSON.stringify(questions), ts, ts);
-      this.appendEvent("clarification.requested", { projectId }, {
+        .run(
+          id,
+          input.projectId,
+          input.objectiveId,
+          JSON.stringify(parsed.questions),
+          ts,
+          ts,
+          1,
+          round,
+          input.provenance,
+          input.providerId ?? null,
+          input.model ?? null,
+          input.brainRunId ?? null,
+          input.idempotencyKey ?? null,
+        );
+      this.appendEvent("clarification.requested", { projectId: input.projectId }, {
         clarificationId: id,
-        questions: questions.map((q) => q.question),
+        round,
+        provenance: input.provenance,
+        providerId: input.providerId ?? null,
+        model: input.model ?? null,
+        questions: parsed.questions.map((q) => ({
+          id: q.id,
+          logicalKey: q.logicalKey,
+          category: q.category,
+          question: q.question,
+          reason: q.reason,
+          answerType: q.answerType,
+          required: q.required,
+          displayOrder: q.displayOrder,
+        })),
       });
+      this.appendAudit(
+        input.projectId,
+        "engine",
+        "clarification.request",
+        `${parsed.questions.length} question(s), provenance=${input.provenance}`,
+      );
     });
     tx();
     return this.getClarification(id)!;
@@ -395,15 +880,7 @@ export class Store {
       | Record<string, unknown>
       | undefined;
     if (!r) return null;
-    return {
-      id: r.id as string,
-      createdAt: r.created_at as string,
-      updatedAt: r.updated_at as string,
-      projectId: r.project_id as string,
-      objectiveId: r.objective_id as string,
-      status: r.status as Clarification["status"],
-      questions: JSON.parse(r.questions as string) as Clarification["questions"],
-    };
+    return rowToClarification(r);
   }
 
   listClarifications(projectId: string, status?: string): Clarification[] {
@@ -415,24 +892,139 @@ export class Store {
     return (rows as { id: string }[]).map((r) => this.getClarification(r.id)!);
   }
 
-  answerClarification(id: string, answers: { questionId: string; answer: string }[]): Clarification {
+  clarificationRoundCount(projectId: string, objectiveId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS c FROM clarifications WHERE project_id = ? AND objective_id = ?")
+      .get(projectId, objectiveId) as { c: number };
+    return row.c;
+  }
+
+  markClarificationObsolete(id: string, reason: string): void {
     const clarification = this.getClarification(id);
-    if (!clarification) throw new Error(`clarification ${id} not found`);
-    const questions = clarification.questions.map((q) => {
-      const found = answers.find((a) => a.questionId === q.id);
-      return found ? { ...q, answer: found.answer } : q;
+    if (!clarification || clarification.status !== "open") return;
+    const questions = clarification.questions.map((question) =>
+      question.status === "pending" ? { ...question, status: "obsolete" as const } : question,
+    );
+    this.db
+      .prepare("UPDATE clarifications SET questions = ?, status = 'expired', updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(questions), now(), id);
+    this.appendEvent("clarification.obsolete", { projectId: clarification.projectId }, {
+      clarificationId: id,
+      reason,
     });
+  }
+
+  answerClarification(
+    id: string,
+    answers: { questionId: string; value?: ClarificationAnswerValue; answer?: string }[],
+    opts: { idempotencyKey?: string } = {},
+  ): Clarification {
+    let result: Clarification | null = null;
     const tx = this.db.transaction(() => {
+      const clarification = this.getClarification(id);
+      if (!clarification) throw new Error(`clarification ${id} not found`);
+      if (opts.idempotencyKey) {
+        const existing = this.findIdempotent(`clr-answer:${id}:${opts.idempotencyKey}`);
+        if (existing?.resourceType === "clarification" && existing.resourceId === id) {
+          result = clarification.status === "answered" ? clarification : this.getClarification(id)!;
+          return;
+        }
+      }
+      if (clarification.status === "answered") {
+        throw new StoreConflictError(
+          "clarification_already_answered",
+          `clarification ${id} was already answered`,
+        );
+      }
+      if (clarification.status !== "open") {
+        throw new StoreConflictError(
+          "clarification_obsolete",
+          `clarification ${id} is ${clarification.status} and can no longer accept answers`,
+        );
+      }
+
+      const byId = new Map(answers.map((answer) => [answer.questionId, answer]));
+      const unknown = answers.filter(
+        (answer) => !clarification.questions.some((question) => question.id === answer.questionId),
+      );
+      if (unknown.length > 0) {
+        throw new StoreConflictError(
+          "conflict",
+          `unknown question id(s): ${unknown.map((a) => a.questionId).join(", ")}`,
+        );
+      }
+
+      const updated: ClarificationQuestion[] = [];
+      for (const question of clarification.questions) {
+        const submitted = byId.get(question.id);
+        if (!submitted) {
+          if (question.required) {
+            throw new StoreConflictError(
+              "clarification_incomplete",
+              `required question ${question.id} (${question.logicalKey}) is missing`,
+            );
+          }
+          updated.push(question);
+          continue;
+        }
+        let value = submitted.value ?? null;
+        if (!value && submitted.answer !== undefined) {
+          value = coerceLegacyAnswer(question, submitted.answer);
+          if (!value) {
+            throw new StoreConflictError(
+              "conflict",
+              `could not coerce answer for question ${question.id} as ${question.answerType}`,
+            );
+          }
+        }
+        if (!value) {
+          throw new StoreConflictError("conflict", `answer value missing for question ${question.id}`);
+        }
+        const issues = validateAnswerForQuestion(question, value);
+        if (issues.length > 0) {
+          throw new StoreConflictError("conflict", issues.map((issue) => issue.message).join("; "));
+        }
+        updated.push({
+          ...question,
+          status: "answered",
+          answerValue: value,
+          answer: serializeAnswerValue(value),
+        });
+      }
+
+      const ts = now();
       this.db
         .prepare("UPDATE clarifications SET questions = ?, status = 'answered', updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(questions), now(), id);
+        .run(JSON.stringify(updated), ts, id);
+      if (opts.idempotencyKey) {
+        this.recordIdempotent(`clr-answer:${id}:${opts.idempotencyKey}`, "clarification", id);
+      }
       this.appendEvent("clarification.answered", { projectId: clarification.projectId }, {
         clarificationId: id,
+        round: clarification.round,
+        answers: updated
+          .filter((question) => question.status === "answered")
+          .map((question) => ({
+            questionId: question.id,
+            logicalKey: question.logicalKey,
+            answerType: question.answerType,
+            answer: question.answer,
+          })),
       });
-      this.appendAudit(clarification.projectId, "user", "clarification.answer", JSON.stringify(answers).slice(0, 500));
+      this.appendAudit(
+        clarification.projectId,
+        "user",
+        "clarification.answer",
+        JSON.stringify(
+          updated
+            .filter((question) => question.answer !== null)
+            .map((question) => ({ key: question.logicalKey, answer: question.answer })),
+        ).slice(0, 500),
+      );
+      result = this.getClarification(id)!;
     });
     tx();
-    return this.getClarification(id)!;
+    return result!;
   }
 
   // ── brain ────────────────────────────────────────────────────────────────
@@ -1743,4 +2335,90 @@ function commandCapabilities(command: readonly string[]): string[] {
   if (["node", "npm", "npx", "pnpm"].includes(executable)) return ["shell", "node"];
   if (executable === "swift") return ["shell", "swift"];
   return ["shell"];
+}
+
+function resumeMissionTarget(fromState: MissionState): MissionState {
+  switch (fromState) {
+    case "running":
+    case "assigned":
+    case "retrying":
+      return "ready";
+    case "proposed":
+      return "ready";
+    case "ready":
+      return "ready";
+    case "result_submitted":
+      return "validating";
+    case "validating":
+      return "validating";
+    case "review_required":
+      return "review_required";
+    case "approved":
+      return "approved";
+    case "integrated":
+      return "integrated";
+    case "blocked":
+      return "blocked";
+    default:
+      return "ready";
+  }
+}
+
+function rowToClarification(r: Record<string, unknown>): Clarification {
+  const rawQuestions = JSON.parse(r.questions as string) as unknown[];
+  const questions = rawQuestions.map((raw, index) => normalizeStoredQuestion(raw, index));
+  return ClarificationSchema.parse({
+    id: r.id as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+    projectId: r.project_id as string,
+    objectiveId: r.objective_id as string,
+    status: r.status as Clarification["status"],
+    schemaVersion: (r.schema_version as 1 | undefined) ?? 1,
+    round: (r.round as number | undefined) ?? 1,
+    provenance: (r.provenance as Clarification["provenance"] | undefined) ?? "deterministic_policy",
+    providerId: (r.provider_id as string | null | undefined) ?? null,
+    model: (r.model as string | null | undefined) ?? null,
+    brainRunId: (r.brain_run_id as string | null | undefined) ?? null,
+    questions,
+  });
+}
+
+/** Accept both structured v1 questions and legacy flat {id,question,options,answer}. */
+function normalizeStoredQuestion(raw: unknown, index: number): ClarificationQuestion {
+  const value = raw as Record<string, unknown>;
+  if (typeof value.logicalKey === "string" && typeof value.answerType === "string") {
+    return value as ClarificationQuestion;
+  }
+  const legacyOptions = Array.isArray(value.options)
+    ? (value.options as unknown[]).map((option, optionIndex) =>
+        typeof option === "string"
+          ? { key: `opt-${optionIndex + 1}`, label: option }
+          : (option as { key: string; label: string }),
+      )
+    : [];
+  return {
+    id: String(value.id ?? `legacy-${index}`),
+    logicalKey: String(value.id ?? `q-${index + 1}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+/, "")
+      .slice(0, 64) || `q-${index + 1}`,
+    category: legacyOptions.length > 0 ? "decision" : "other",
+    question: String(value.question ?? ""),
+    reason: "Legacy clarification question retained for compatibility.",
+    answerType: legacyOptions.length >= 2 ? "single_choice" : "text",
+    options: legacyOptions,
+    required: true,
+    acceptanceCriteriaRefs: [],
+    blockedDecisions: [],
+    blockedMissions: [],
+    displayOrder: index,
+    status: value.answer ? "answered" : "pending",
+    answer: (value.answer as string | null | undefined) ?? null,
+    answerValue:
+      typeof value.answer === "string" && value.answer.length > 0
+        ? { type: "text", value: value.answer }
+        : null,
+  };
 }

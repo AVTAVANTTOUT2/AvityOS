@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { MissionState, RunState, type Mission, type MissionDependency } from "@avityos/contracts";
+import { MissionState, ProjectStatus, RunState, type Mission, type MissionDependency } from "@avityos/contracts";
 import {
   MISSION_TERMINAL_STATES,
   MISSION_TRANSITIONS,
+  PROJECT_TERMINAL_STATES,
+  PROJECT_TRANSITIONS,
   RUN_TERMINAL_STATES,
   RUN_TRANSITIONS,
   assertAcyclic,
   assertMissionTransition,
+  assertProjectTransition,
   backoffMs,
   canTransitionMission,
+  canTransitionProject,
   decideCorrection,
   decideFallback,
   DependencyCycleError,
@@ -53,6 +57,7 @@ describe("mission state machine", () => {
   it("covers every state exactly once in the transition table", () => {
     expect(Object.keys(MISSION_TRANSITIONS).sort()).toEqual([...MissionState.options].sort());
     expect(Object.keys(RUN_TRANSITIONS).sort()).toEqual([...RunState.options].sort());
+    expect(Object.keys(PROJECT_TRANSITIONS).sort()).toEqual([...ProjectStatus.options].sort());
   });
 
   it("terminal states have no outgoing transitions", () => {
@@ -60,6 +65,15 @@ describe("mission state machine", () => {
     for (const s of RUN_TERMINAL_STATES) {
       expect(RUN_TRANSITIONS[s]).toEqual([]);
     }
+    for (const s of PROJECT_TERMINAL_STATES) expect(PROJECT_TRANSITIONS[s]).toEqual([]);
+  });
+
+  it("permits atomic project pause and resume transitions", () => {
+    expect(canTransitionProject("active", "paused")).toBe(true);
+    expect(canTransitionProject("planning", "paused")).toBe(true);
+    expect(canTransitionProject("paused", "active")).toBe(true);
+    expect(canTransitionProject("paused", "planning")).toBe(true);
+    expect(() => assertProjectTransition("archived", "paused")).toThrow(IllegalTransitionError);
   });
 
   it("every transition targets a declared state", () => {
