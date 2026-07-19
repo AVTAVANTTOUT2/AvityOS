@@ -38,6 +38,10 @@ describe("git package", () => {
     expect(parseGitHubRemote("https://github.com/acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
     expect(parseGitHubRemote("git@github.com:acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
     expect(parseGitHubRemote("ssh://git@github.com/acme/widget.git")).toEqual({ owner: "acme", name: "widget" });
+    expect(parseGitHubRemote("https://x-access-token:redacted@github.com/acme/widget.git")).toEqual({
+      owner: "acme",
+      name: "widget",
+    });
     expect(parseGitHubRemote("https://github.example/acme/widget")).toBeNull();
   });
   it("derives predictable, safe branch names from missions", () => {

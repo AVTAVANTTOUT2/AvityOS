@@ -408,7 +408,9 @@ export class BrainPipeline {
     for (const group of answered) {
       for (const question of group.questions) {
         if (question.status === "answered" && question.answer) {
-          lines.push(`${question.logicalKey}: ${question.question} → ${question.answer}`);
+          // Keep key→answer only so policy checks do not treat the prior
+          // question text itself as "already present" information.
+          lines.push(`${question.logicalKey} → ${question.answer}`);
         }
       }
     }

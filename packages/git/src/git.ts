@@ -64,6 +64,10 @@ export function parseGitHubRemote(remoteUrl: string): GitHubRepository | null {
   const trimmed = remoteUrl.trim().replace(/\.git$/, "");
   const https = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)$/i.exec(trimmed);
   if (https) return { owner: https[1]!, name: https[2]! };
+  // Credentialed HTTPS (CI/agent insteadOf rewrites). Owner/name only — never
+  // treat the embedded secret as part of the repository identity.
+  const httpsAuth = /^https?:\/\/[^/@]+(?::[^@]*)?@github\.com\/([^/]+)\/([^/]+)$/i.exec(trimmed);
+  if (httpsAuth) return { owner: httpsAuth[1]!, name: httpsAuth[2]! };
   const scp = /^git@github\.com:([^/]+)\/([^/]+)$/i.exec(trimmed);
   if (scp) return { owner: scp[1]!, name: scp[2]! };
   const ssh = /^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+)$/i.exec(trimmed);

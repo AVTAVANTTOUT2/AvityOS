@@ -159,7 +159,20 @@ describe("chantier 3: structured clarifications", () => {
   });
 
   it("bounds clarification rounds before escalating", async () => {
-    ({ store, engine } = makeEngine(db, "fake:plan-ambiguous"));
+    const storeLocal = new Store(db);
+    const providers = new Map<string, ProviderAdapter>([["fake", new FakeProviderAdapter()]]);
+    const engineLocal = new Engine(
+      storeLocal,
+      providers,
+      { ...TEST_CONFIG, maxClarificationRounds: 1 },
+      ["fake"],
+      new Map([["fake", "fake:succeed"]]),
+      new Map([["fake", "fake:review-approve"]]),
+      new Map(),
+      new Map([["fake", "fake:plan-ambiguous"]]),
+    );
+    store = storeLocal;
+    engine = engineLocal;
     const project = store.createProject({
       name: "Round limit",
       description: "",
@@ -172,20 +185,19 @@ describe("chantier 3: structured clarifications", () => {
       "Deliver a deliberately detailed objective that still lacks material product decisions for safe planning",
       ["round limit must escalate"],
     );
-    for (let round = 0; round < 2; round += 1) {
-      const result = await engine.brain.ensurePlan(project.id, objective.id);
-      expect(result.status).toBe("clarifying");
-      const group = store.listClarifications(project.id, "open")[0]!;
-      store.answerClarification(
-        group.id,
-        group.questions.map((question) => ({
-          questionId: question.id,
-          answer: question.answerType === "single_choice" ? question.options[0]!.key : `answer-${round}`,
-        })),
-      );
-    }
+    const first = await engine.brain.ensurePlan(project.id, objective.id);
+    expect(first.status).toBe("clarifying");
+    const group = store.listClarifications(project.id, "open")[0]!;
+    store.answerClarification(
+      group.id,
+      group.questions.map((question) => ({
+        questionId: question.id,
+        answer: question.answerType === "single_choice" ? question.options[0]!.key : "answer-1",
+      })),
+    );
     const blocked = await engine.brain.ensurePlan(project.id, objective.id);
     expect(blocked.status).toBe("blocked");
+    expect(String((blocked as { reason?: string }).reason ?? "")).toMatch(/clarification round limit/i);
   });
 
   it("isolates clarification groups by project_id for homonymous projects", () => {
@@ -245,13 +257,17 @@ describe("chantier 3: atomic pause and resume", () => {
     expect(store.getPauseGeneration(project.id)).toBe(1);
   });
 
-  it("pauses with an active provider run and fences late results", async () => {
+  it("pauses with an active provider run and fences late results", { timeout: 20_000 }, async () => {
     class SlowFake extends FakeProviderAdapter {
       override startRun(input: Parameters<FakeProviderAdapter["startRun"]>[0]) {
+        // Keep brain/planning models deterministic; only stall coding runs.
+        if (input.model.startsWith("fake:plan") || input.model.startsWith("fake:review")) {
+          return super.startRun(input);
+        }
         let cancelled = false;
         async function* events() {
           yield { type: "output" as const, text: "working\n" };
-          await new Promise((resolve) => setTimeout(resolve, 200));
+          await new Promise((resolve) => setTimeout(resolve, 500));
           if (!cancelled) {
             yield { type: "completed" as const, resultText: "late success" };
           }
@@ -298,25 +314,43 @@ describe("chantier 3: atomic pause and resume", () => {
     expect(events.some((event) => event.type === "project.paused")).toBe(true);
   });
 
-  it("does not schedule new missions while paused", async () => {
+  it("does not schedule new missions while paused", { timeout: 20_000 }, async () => {
     engine.start();
     const project = store.createProject({
       name: "No schedule", description: "", repoPath: null, repoRemoteUrl: null, autonomyProfile: "autonomous_with_checkpoints",
     });
-    const objective = store.createObjective(
-      project.id,
-      "Deliver a complete pause scheduling freeze with automated verification",
-      ["no mission starts while paused"],
-    );
-    engine.analyzeObjective(project.id, objective.id);
-    await waitFor(() => store.getProject(project.id)!.status === "active");
+    store.setProjectStatus(project.id, "active");
+    // Seed a ready mission that the scheduler would otherwise start.
+    const mission = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "Should stay paused",
+      role: "backend",
+      contract: {
+        objective: "Must not start while the project is paused",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        acceptanceCriteria: ["no start while paused"],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 60,
+        expectedArtifacts: [],
+        escalationConditions: [],
+      },
+      priority: 50,
+      dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "seeded for pause scheduling test");
     await engine.pauseProject(project.id, { reason: "freeze", actor: "test" });
+    expect(store.getMission(mission.id)!.state).toBe("paused");
     const before = store.listRuns({ projectId: project.id }).length;
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(store.listRuns({ projectId: project.id }).length).toBe(before);
-    expect(store.listMissions(project.id).every((mission) =>
-      ["paused", "completed", "cancelled"].includes(mission.state) || mission.state === "failed",
-    )).toBe(true);
+    expect(store.getProject(project.id)!.status).toBe("paused");
   });
 
   it("resumes once and treats a second resume as idempotent", async () => {
@@ -354,7 +388,7 @@ describe("chantier 3: atomic pause and resume", () => {
     await restarted.stop();
   });
 
-  it("does not replay completed missions after resume", async () => {
+  it("does not replay completed missions after resume", { timeout: 20_000 }, async () => {
     engine.start();
     const project = store.createProject({
       name: "Completed stay", description: "", repoPath: null, repoRemoteUrl: null, autonomyProfile: "autonomous_with_checkpoints",

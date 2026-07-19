@@ -40,13 +40,7 @@ export function validateClarificationProposal(
     });
   }
 
-  const knownText = [
-    context.objectiveText,
-    ...context.acceptanceCriteria,
-    ...context.priorAnswerBodies,
-  ]
-    .join("\n")
-    .toLowerCase();
+  const knownAnswers = context.priorAnswerBodies.map((line) => line.toLowerCase());
 
   for (const [index, question] of proposal.questions.entries()) {
     const base = `questions.${index}`;
@@ -69,15 +63,14 @@ export function validateClarificationProposal(
         message: "questions must not ask the user to execute arbitrary commands",
       });
     }
-    if (OUT_OF_SCOPE.test(blob) || question.answerType === "path_scope" && /(?:^|[\s"])\.\.\//.test(blob)) {
+    if (OUT_OF_SCOPE.test(blob) || (question.answerType === "path_scope" && /(?:^|[\s"])\.\.\//.test(blob))) {
       issues.push({
         path: `${base}.question`,
         message: "questions must not request out-of-repository paths or actions",
       });
     }
-    // Drop questions whose answer is already present verbatim in known text.
-    const normalizedQuestion = question.question.toLowerCase().replace(/\s+/g, " ").trim();
-    if (knownText.includes(normalizedQuestion) && normalizedQuestion.length > 24) {
+    // A question is redundant when a prior answer body already contains its topic key.
+    if (knownAnswers.some((answer) => answer.startsWith(`${question.key.toLowerCase()} →`))) {
       issues.push({
         path: `${base}.question`,
         message: "question restates information already present in the objective or prior answers",

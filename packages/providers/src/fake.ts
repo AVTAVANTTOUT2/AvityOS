@@ -174,9 +174,11 @@ export class FakeProviderAdapter implements ProviderAdapter {
         const target = join(input.cwd, "AVITY.md");
         const firstAttempt = model === "fake:code-defect-once" && !self.defectiveRuns.has(input.cwd);
         if (firstAttempt) self.defectiveRuns.add(input.cwd);
-        const content = firstAttempt
-          ? `# Mission result\n\nDEFECT: intentionally wrong first attempt\n`
-          : `# Mission result\n\n${input.userPrompt}\n`;
+        // Strip trailing whitespace so repository `git diff --check` gates stay green.
+        const body = firstAttempt
+          ? "DEFECT: intentionally wrong first attempt"
+          : input.userPrompt.replace(/[ \t]+$/gm, "").trimEnd();
+        const content = `# Mission result\n\n${body}\n`;
         writeFileSync(target, content);
         yield { type: "output", text: `fake coding agent wrote ${target}\n` };
         yield { type: "artifact", path: target, description: "mission result file" };
@@ -297,12 +299,14 @@ function fakeBrainStepOutput(
         questions: [],
       };
     }
+    const priorAnswerCount = (prompt.match(/→/g) ?? []).length;
+    const suffix = priorAnswerCount > 0 ? `-r${priorAnswerCount + 1}` : "";
     return {
       summary: "Deterministic fixture clarification: material acceptance and scope decisions are missing.",
       needsClarification: true,
       questions: [
         {
-          key: "acceptance-criteria",
+          key: `acceptance-criteria${suffix}`,
           category: "acceptance_criteria",
           question:
             "What are the concrete acceptance criteria? List the observable behaviors that must be true for this objective to be complete.",
@@ -316,7 +320,7 @@ function fakeBrainStepOutput(
           displayOrder: 0,
         },
         {
-          key: "out-of-scope",
+          key: `out-of-scope${suffix}`,
           category: "scope",
           question:
             "What is explicitly out of scope for this objective (platforms, integrations, environments to ignore)?",
@@ -330,7 +334,7 @@ function fakeBrainStepOutput(
           displayOrder: 1,
         },
         {
-          key: "delivery-shape",
+          key: `delivery-shape${suffix}`,
           category: "decision",
           question: "Should delivery prefer a minimal vertical slice or a broader multi-mission plan?",
           reason: "The planning DAG shape depends on this product decision.",
