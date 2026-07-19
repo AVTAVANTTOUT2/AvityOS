@@ -68,7 +68,32 @@ transaction; approval handling also refuses inactive-plan missions. On
 restart, orphan brain runs are failed exactly once and planning resumes without
 duplicating an already-persisted plan.
 
+When analysis reports material ambiguity, a dedicated `clarification` brain
+step proposes a Zod-validated question group through `ProviderAdapter`. The
+control plane alone persists the group, opens one intervention, validates
+answers transactionally and resumes the pipeline exactly once. Deterministic
+policy strips secret/out-of-scope/command requests; round counts are bounded.
+Heuristic/deterministic short-objective gates are labelled
+`deterministic_policy` and never presented as AI clarifications.
+
+## Atomic project pause and resume
+
+Pause is owned by the control plane, not by optimistic UI state. A successful
+`POST /v1/projects/:id/pause` persists the pause request, transitions the
+project to `paused`, cancels active runs, revokes project leases (fencing),
+and appends `project.paused` in one transaction. Scheduling and new runs are
+refused while paused; late worker/provider results for fenced runs are
+rejected. Resume (`POST /v1/projects/:id/resume`) reactivates once, does not
+replay completed missions, and continues interrupted work as a new attempt.
+Restart preserves paused state. Pause does not claim to freeze an external
+provider’s in-memory session — only that no further accepted work can integrate
+after a successful pause.
+
 ## State machines
+
+Project: includes legal transitions into and out of `paused` /
+`clarifying` alongside planning and execution states
+(`packages/orchestration/src/machines.ts`).
 
 Mission: `proposed → ready → assigned → running → result_submitted →
 validating → review_required → approved → integrated → completed`, plus
