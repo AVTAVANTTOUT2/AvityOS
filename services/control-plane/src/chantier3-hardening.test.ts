@@ -300,20 +300,28 @@ describe("chantier 3 hardening: durable clarification resume", () => {
 
 describe("chantier 3 hardening: async workflow fencing", () => {
   it("fences a reviewer that finishes after the project was paused", { timeout: 20_000 }, async () => {
-    class SlowReviewFake extends FakeProviderAdapter {
+    // A controlled gate makes this deterministic regardless of runner speed:
+    // the reviewer blocks until the test releases it, so the pause always
+    // lands before the (late) verdict is produced.
+    let started!: () => void;
+    const reviewStarted = new Promise<void>((resolve) => (started = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    class GatedReviewFake extends FakeProviderAdapter {
       override startRun(input: Parameters<FakeProviderAdapter["startRun"]>[0]) {
         if (!input.model.startsWith("fake:review")) return super.startRun(input);
         let cancelled = false;
         async function* events() {
           yield { type: "output" as const, text: "reviewing\n" };
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          started();
+          await gate;
           if (!cancelled) yield { type: "completed" as const, resultText: "VERDICT: APPROVE" };
         }
         return { events: events(), cancel: async () => { cancelled = true; } };
       }
     }
     const db = openDatabase(":memory:");
-    const { store, engine } = makeEngine(db, new Map([["fake", new SlowReviewFake()]]), "fake:plan");
+    const { store, engine } = makeEngine(db, new Map([["fake", new GatedReviewFake()]]), "fake:plan");
     engine.start();
     const project = store.createProject({
       name: "Review fence", description: "", repoPath: null, repoRemoteUrl: null, autonomyProfile: "autonomous_with_checkpoints",
@@ -324,12 +332,10 @@ describe("chantier 3 hardening: async workflow fencing", () => {
       ["review fencing works"],
     );
     engine.analyzeObjective(project.id, objective.id);
-    await waitFor(
-      () => store.listRuns({ projectId: project.id }).some((r) => (r.model ?? "").startsWith("fake:review") && r.state === "running"),
-      12_000,
-    );
+    await reviewStarted; // reviewer is blocked at the gate
     await engine.pauseProject(project.id, { reason: "pause mid-review", actor: "test" });
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    release(); // let the late verdict arrive; it must be fenced
+    await new Promise((resolve) => setTimeout(resolve, 300));
     // No mission may be approved/integrated/completed by the late verdict.
     const states = store.listMissions(project.id).map((m) => m.state);
     expect(states.every((s) => !["approved", "integrated", "completed"].includes(s))).toBe(true);
