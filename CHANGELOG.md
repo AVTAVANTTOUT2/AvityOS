@@ -24,7 +24,8 @@ sémantique lorsque le processus de release sera établi.
 - Panneau Web de clarification groupée et boutons pause/reprise branchés sur
   l’état durable du control plane.
 - Migration SQLite v6 (`project_pauses`, métadonnées de clarification,
-  `missions.paused_from_state`).
+  `missions.paused_from_state`) puis v7 additive (`clarifications.resume_pending`
+  pour la reprise durable exactement-une-fois).
 
 ### Changed
 
@@ -36,6 +37,27 @@ sémantique lorsque le processus de release sera établi.
 
 ### Fixed
 
+- **Audit concurrence PR #35.** Isolation inter-projets rétablie : la
+  révocation des leases sur pause est strictement bornée au `project_id`
+  (`revokeProjectWorkerLeases`) et ne touche plus les sessions d’un autre
+  projet exécutées sur le même worker (invariant P-ISO).
+- Fenêtre de course sur pause fermée : `lease`, `output`, `exit` et la création
+  de terminaux refusent un projet durablement pausé au moment exact de
+  l’acceptation, avant même la révocation post-commit (invariant P-FENCE) ; un
+  événement `run.fenced` est émis.
+- Fencing des workflows asynchrones (`validateMission`, `reviewMission`,
+  `integrateMission`, checks worker) après chaque `await` : un verdict de
+  reviewer ou un résultat de check arrivant après la pause ne crée plus de
+  checkpoint, n’approuve pas, n’intègre pas et ne reconsomme pas de budget.
+- Reprise après clarification durable et exactement-une-fois : l’intent
+  `resume_pending` est committé avec les réponses et réconcilié au redémarrage,
+  fermant la fenêtre crash-entre-commit-et-reprise (invariant P-RESUME).
+- Durcissement des réponses de clarification : rejet des doublons `multi_choice`,
+  des chemins Windows/UNC/absolus/traversées encodées en `path_scope`, détection
+  de secret plus robuste (sans faux positif sur le simple mot « token ») et
+  clôture des questions facultatives non répondues à la fermeture du groupe.
+- Normalisation des clarifications héritées : une `logicalKey` dégénérée ne rend
+  plus tout le groupe illisible.
 - Lecture des remotes Git via `git config --get remote.*.url` pour éviter de
   persister des URL HTTPS réécrites avec credentials (`url.*.insteadOf`).
 - Les opérations Git automatisées (`@avityos/git`) isolent les commits de

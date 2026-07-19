@@ -24,12 +24,17 @@ reproductible dans `docs/TRACEABILITY.md`.
 3. **✅ Clarifications groupées et pause/reprise atomique.** Clarifications
    structurées via `ProviderAdapter` (schéma Zod versionné, groupe unique par
    tour, réponses transactionnelles/idempotentes, obsolescence à la révision
-   d’objectif, reprise exacte du pipeline cerveau) et pause projet atomique
-   (demande durable, annulation des runs, révocation des leases, fencing des
-   résultats tardifs, reprise idempotente après redémarrage). Web/CLI branchés
-   sur les vraies API. Preuves locales et CI dans `docs/TRACEABILITY.md`
-   (PR #35 : [CI macOS](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29676880912)
-   / [CI Linux](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29676880919)).
+   d’objectif, reprise durable et exactement-une-fois du pipeline cerveau) et
+   pause projet atomique. Audit de concurrence (PR #35) : la révocation des
+   leases est strictement bornée au `project_id` (invariant **P-ISO** :
+   `revokeProjectWorkerLeases` ne touche jamais les sessions d’un autre projet
+   sur le même worker) ; tous les chemins worker/asynchrones fencent l’état
+   pausé durable au moment de l’acceptation du résultat (invariant **P-FENCE** :
+   lease/heartbeat/output/exit et `validate`/`review`/`integrate`/checks) ; la
+   reprise après clarification est durable et idempotente via un intent
+   `resume_pending` réconcilié au redémarrage (invariant **P-RESUME**). Web/CLI
+   branchés sur les vraies API. Preuves locales, tests de concurrence
+   (`chantier3-hardening.test.ts`) et CI dans `docs/TRACEABILITY.md`.
 4. **⚪ Validation E2E avec Codex, Claude Code et Cursor réels.** Scénarios
    reproductibles sur des dépôts fixtures externes et preuves de livraison.
 5. **⚪ Pont distant sécurisé.** Connexion sortante, chiffrement de bout en
