@@ -214,17 +214,15 @@ describe("avity CLI", () => {
   });
 
   it("pauses and resumes a project atomically through the CLI", async () => {
-    const created = await run(
-      "project", "create", "Pause CLI",
-      "--objective", "Deliver a durable pause and resume path with automated verification",
-      "--criterion", "pause freezes scheduling",
-      "--json",
-    );
+    // Create without an objective so the project stays durably in `draft`:
+    // this deterministically exercises the create/pause race (pausing before
+    // the brain leaves `draft`) without depending on the fake pipeline's
+    // speed, which otherwise completed the project before the pause landed.
+    const created = await run("project", "create", "Pause CLI", "--json");
     expect(created.code, created.err || created.out).toBe(0);
     const project = JSON.parse(created.out) as { id: string };
+    expect(store.getProject(project.id)?.status).toBe("draft");
 
-    // Pause must succeed even if the brain has not left `draft` yet — that is
-    // the create/pause race that previously failed CI with exit code 1.
     const paused = await run("project", "pause", project.id, "--reason", "operator break", "--json");
     expect(paused.code, paused.err || paused.out).toBe(0);
     expect(JSON.parse(paused.out)).toMatchObject({ status: "paused", generation: 1 });
