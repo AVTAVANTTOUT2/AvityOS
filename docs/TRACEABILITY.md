@@ -23,9 +23,9 @@ Evidence date: 2026-07-19. Status: ✅ implemented and locally reproduced ·
 | Execution security boundary | ✅ | 7 control-plane security tests, 12 worker tests, environment test, Git-hook test and sandbox read/write tests cover the audited boundary. |
 | Supply-chain gates | ✅ | Local: zero known vulnerabilities, license policy passes 508 installed packages, Gitleaks passes; CI includes blocking audit/license/Gitleaks and SPDX SBOM. |
 | Fake/demo honesty | ✅ | Fake is a deterministic engineering fixture; production backend failure shows `Hors ligne`; fixtures require `VITE_AVITY_DEMO=1`. |
-| Full local TS verification | ✅ | `pnpm verify`: all builds/typechecks and 168 tests pass. |
+| Full local TS verification | ✅ | `pnpm verify`: all builds/typechecks and 217 tests pass. |
 | Browser + Swift verification | ✅ | Current checkout: Playwright 2 passed; `swift test` built the package and passed 1 XCTest. |
-| Green GitHub Actions from corrected checkout | ✅ | PR #32 corrected head: [CI macOS](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29660850182) and [CI Linux](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/29660850199) pass build, 168 tests, typecheck, Playwright, Swift (macOS), audit, 508-package licence policy, Gitleaks (macOS), SPDX SBOM and artifact upload. |
+| Green GitHub Actions from corrected checkout | ✅ | PR #35 merged head: CI Linux and CI macOS pass build, 217 tests, typecheck, Playwright, Swift (macOS), audit, licence policy, Gitleaks, SPDX SBOM and artifact upload. |
 | No autonomous merge | ✅ | The AvityOS engine only marks approved drafts ready and contains no merge operation; repository integration remains an explicit operator action. |
 
 ## Mandatory scenarios

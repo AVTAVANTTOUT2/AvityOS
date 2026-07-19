@@ -219,8 +219,9 @@ Implemented and covered by automated tests:
   withdraw stale interventions in the same transaction;
 - durable objective, structured clarification, planning, mission and
   intervention flows;
-- atomic project pause/resume with run cancellation, lease revocation and
-  late-result fencing;
+- atomic project pause/resume with run cancellation, isolated lease revocation
+  (P-ISO), late-result fencing (P-FENCE) and durable, exactly-once
+  clarification resume (P-RESUME);
 - restart recovery, transactional events and a hash-chained audit trail;
 - concurrent project isolation and ordered per-project execution;
 - real worktree changes, validation commands, commits, correction and
@@ -237,15 +238,10 @@ Known remaining proof or product work:
 - the central AI brain is fully exercised offline through the deterministic
   fixture provider (labelled `fake_fixture`, never real planning evidence);
   a planning run with a live reasoning provider requires operator-owned API
-  credentials and is deliberately part of the live-validation chantier;
-- structured clarifications and atomic project pause/resume (chantier 3),
-  covered by control-plane/API/CLI/Web tests, Playwright `chantier3.spec.ts`,
-  and green CI on the delivery PR;
-- live-provider smoke tests require operator-owned API credentials;
-- autonomous push and draft-PR creation still need a dedicated external
-  fixture repository and GitHub credentials for end-to-end proof;
-- the Figma-derived web application still contains a large component that
-  should be split further and some secondary controls remain presentational;
+  credentials and is deliberately part of the E2E live-validation milestone;
+- live-provider E2E scenarios (Codex, Claude Code, Cursor), autonomous push
+  and draft-PR creation still need a dedicated external fixture repository
+  and GitHub credentials for end-to-end proof — this is the next milestone;
 - signed and notarized macOS packaging and broader native UI tests remain;
 - remote production exposure still requires operator-managed TLS termination,
   and a general encrypted cross-platform provider-key vault is not bundled.
