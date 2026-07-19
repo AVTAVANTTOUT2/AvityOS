@@ -69,10 +69,12 @@ describe("mission state machine", () => {
   });
 
   it("permits atomic project pause and resume transitions", () => {
+    expect(canTransitionProject("draft", "paused")).toBe(true);
     expect(canTransitionProject("active", "paused")).toBe(true);
     expect(canTransitionProject("planning", "paused")).toBe(true);
     expect(canTransitionProject("paused", "active")).toBe(true);
     expect(canTransitionProject("paused", "planning")).toBe(true);
+    expect(canTransitionProject("paused", "draft")).toBe(true);
     expect(() => assertProjectTransition("archived", "paused")).toThrow(IllegalTransitionError);
   });
 

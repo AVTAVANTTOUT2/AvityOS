@@ -220,16 +220,18 @@ describe("avity CLI", () => {
       "--criterion", "pause freezes scheduling",
       "--json",
     );
+    expect(created.code, created.err || created.out).toBe(0);
     const project = JSON.parse(created.out) as { id: string };
-    await waitFor(() => store.getProject(project.id)?.status === "active");
 
+    // Pause must succeed even if the brain has not left `draft` yet — that is
+    // the create/pause race that previously failed CI with exit code 1.
     const paused = await run("project", "pause", project.id, "--reason", "operator break", "--json");
-    expect(paused.code).toBe(0);
+    expect(paused.code, paused.err || paused.out).toBe(0);
     expect(JSON.parse(paused.out)).toMatchObject({ status: "paused", generation: 1 });
     expect(store.getProject(project.id)?.status).toBe("paused");
 
     const resumed = await run("project", "resume", project.id, "--json");
-    expect(resumed.code).toBe(0);
+    expect(resumed.code, resumed.err || resumed.out).toBe(0);
     expect(store.getProject(project.id)?.status).not.toBe("paused");
   });
 

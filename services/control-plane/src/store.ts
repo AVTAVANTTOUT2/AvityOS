@@ -674,7 +674,9 @@ export class Store {
           cancellingRunIds: [],
         },
         alreadyResumed: false,
-        resumePlanning: previous === "planning" || previous === "clarifying",
+        // draft+objective is the create race window; resume must restart analysis.
+        resumePlanning:
+          previous === "planning" || previous === "clarifying" || previous === "draft",
         missionsToResume,
       };
     });

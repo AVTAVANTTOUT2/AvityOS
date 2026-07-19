@@ -53,11 +53,13 @@ export const RUN_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = 
  * an in-memory-only transition.
  */
 export const PROJECT_TRANSITIONS: Readonly<Record<ProjectStatus, readonly ProjectStatus[]>> = {
-  draft: ["clarifying", "planning", "active", "archived"],
+  // draft may be paused before the brain leaves the initial status — otherwise
+  // concurrent create+pause races refuse a legal operator action.
+  draft: ["clarifying", "planning", "active", "paused", "archived"],
   clarifying: ["planning", "clarifying", "paused", "blocked", "draft", "archived"],
   planning: ["active", "clarifying", "paused", "blocked", "archived"],
   active: ["paused", "blocked", "completed", "clarifying", "planning", "archived"],
-  paused: ["active", "planning", "clarifying", "blocked", "archived"],
+  paused: ["active", "planning", "clarifying", "draft", "blocked", "archived"],
   blocked: ["planning", "active", "clarifying", "paused", "archived"],
   completed: ["archived"],
   archived: [],

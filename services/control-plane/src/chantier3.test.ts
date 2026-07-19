@@ -257,6 +257,26 @@ describe("chantier 3: atomic pause and resume", () => {
     expect(store.getPauseGeneration(project.id)).toBe(1);
   });
 
+  it("pauses a freshly created draft project and resumes planning", async () => {
+    const project = store.createProject({
+      name: "Draft pause", description: "", repoPath: null, repoRemoteUrl: null, autonomyProfile: "supervised",
+    });
+    store.createObjective(
+      project.id,
+      "Deliver a durable pause path that works before planning starts",
+      ["pause from draft is accepted"],
+    );
+    expect(store.getProject(project.id)!.status).toBe("draft");
+    const paused = await engine.pauseProject(project.id, { reason: "hold before planning", actor: "test" });
+    expect(paused?.status).toBe("paused");
+    expect(store.getProject(project.id)!.status).toBe("paused");
+    const resumed = await engine.resumeProject(project.id, { actor: "test" });
+    expect(resumed?.status).not.toBe("paused");
+    expect(["draft", "planning", "clarifying", "active", "completed"]).toContain(
+      store.getProject(project.id)!.status,
+    );
+  });
+
   it("pauses with an active provider run and fences late results", { timeout: 20_000 }, async () => {
     class SlowFake extends FakeProviderAdapter {
       override startRun(input: Parameters<FakeProviderAdapter["startRun"]>[0]) {
