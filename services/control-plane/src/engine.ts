@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { Mission, Project } from "@avityos/contracts";
+import { TeamRole, type Mission, type Project } from "@avityos/contracts";
 import {
   decideCorrection,
   decideFallback,
@@ -24,6 +24,12 @@ import {
 import { checkBudget, isCommandAllowed, isPathAllowed, sandboxCommand, type CommandPolicy } from "@avityos/policy";
 import type { ProviderAdapter } from "@avityos/providers";
 import { BrainPipeline } from "./brain.js";
+import {
+  effectiveBrainProviderChain,
+  effectiveProviderChainForRole,
+  selectDistinctReviewerProvider,
+  uniqueProviderChain,
+} from "./provider-routing.js";
 import { StoreConflictError, type Store } from "./store.js";
 
 const execFileAsync = promisify(execFile);
@@ -106,8 +112,11 @@ export class Engine {
   ) {
     // Reasoning does not require workspace edits: providers without editing
     // capability remain valid analysts/planners. The orchestrator role chain
-    // is preferred, then the global chain.
-    const brainChain = [...new Set([...(roleProviderChains.get("orchestrator") ?? []), ...providerChain])];
+    // is preferred, then the global chain (shared helper with the preflight).
+    const brainChain = effectiveBrainProviderChain({
+      providerChain,
+      roleProviderChains,
+    });
     this.brain = new BrainPipeline(store, providers, {
       providerChain: brainChain,
       models: brainModels,
@@ -127,6 +136,26 @@ export class Engine {
   /** Kept for API compatibility: the preferred provider name. */
   get defaultProvider(): string {
     return this.providerChain[0] ?? "fake";
+  }
+
+  /**
+   * Defensive snapshot of provider routing for diagnostics (E2E preflight).
+   * Never exposes mutable internal collections.
+   */
+  getProviderRoutingSnapshot(): {
+    providers: Map<string, ProviderAdapter>;
+    providerChain: readonly string[];
+    roleProviderChains: ReadonlyMap<string, readonly string[]>;
+    missionRoles: readonly string[];
+  } {
+    return {
+      providers: new Map(this.providers),
+      providerChain: [...this.providerChain],
+      roleProviderChains: new Map(
+        [...this.roleProviderChains.entries()].map(([role, chain]) => [role, [...chain]]),
+      ),
+      missionRoles: [...TeamRole.options],
+    };
   }
 
   start(): void {
@@ -552,8 +581,13 @@ export class Engine {
       return;
     }
 
-    const rolePreferred = this.roleProviderChains.get(mission.role) ?? [];
-    const orderedProviderChain = [...new Set([...rolePreferred, ...this.providerChain])];
+    const orderedProviderChain = effectiveProviderChainForRole(
+      {
+        providerChain: this.providerChain,
+        roleProviderChains: this.roleProviderChains,
+      },
+      mission.role,
+    );
     const eligibleProviders = orderedProviderChain.filter((name) => {
       const adapter = this.providers.get(name);
       return adapter && (!worktreePath || adapter.capabilities().workspaceEdits);
@@ -1116,8 +1150,13 @@ export class Engine {
 
     const authorRun = this.store.listRuns({ missionId, states: ["succeeded"] }).at(-1);
     const authorProvider = authorRun?.providerId ?? this.defaultProvider;
-    const reviewerProvider =
-      this.providerChain.find((p) => p !== authorProvider && this.providers.has(p)) ?? authorProvider;
+    // Historical behaviour: reviewer selection uses the global chain only.
+    const reviewChain = uniqueProviderChain(this.providerChain);
+    const reviewerProvider = selectDistinctReviewerProvider(
+      reviewChain,
+      new Set(this.providers.keys()),
+      authorProvider,
+    );
     const adapter = this.providers.get(reviewerProvider);
     if (!adapter) {
       this.store.createApproval(project.id, missionId, "No reviewer available", "Configure a review provider.");
