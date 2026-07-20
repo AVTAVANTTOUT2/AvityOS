@@ -18,6 +18,7 @@ export {
   clearGitHubReadinessCache,
   detectGitHubReadiness,
   getCachedGitHubReadiness,
+  type CommandResult,
   type CommandRunner,
   type GitHubReadiness,
 } from "./github-readiness.js";

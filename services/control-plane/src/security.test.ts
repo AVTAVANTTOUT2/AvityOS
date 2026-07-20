@@ -184,7 +184,10 @@ describe("E2E preflight endpoint", () => {
     // Avoid host `gh`/`git` latency in the HTTP path: seed the TTL cache with a
     // deterministic stub runner so the handler stays non-blocking and offline.
     clearGitHubReadinessCache();
-    await getCachedGitHubReadiness(undefined, () => Date.now(), async () => false);
+    await getCachedGitHubReadiness(undefined, () => Date.now(), async () => ({
+      success: false,
+      stdout: "",
+    }));
   });
 
   afterEach(() => {

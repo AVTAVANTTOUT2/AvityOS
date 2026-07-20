@@ -44,7 +44,9 @@ export interface E2EPreflightInputs {
     ghAvailable: boolean;
     credentialHintAvailable: boolean;
     ghAuthenticated: boolean;
-    repositoryAccessVerified: boolean;
+    repositoryReadable: boolean;
+    repositoryPushVerified: boolean;
+    pullRequestCreationVerified: boolean;
   };
   now?: () => Date;
 }
@@ -261,34 +263,22 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
         ["git"],
       ),
     );
-  } else if (!github.repositoryAccessVerified) {
-    if (!github.ghAuthenticated) {
-      scenarios.push(
-        blocked(
-          "branch_push",
-          "Push a dedicated branch",
-          "blocked_missing_credentials",
-          "git is available but GitHub authentication has not been verified; credential hints alone are not sufficient.",
-          ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"],
-        ),
-      );
-    } else {
-      scenarios.push(
-        blocked(
-          "branch_push",
-          "Push a dedicated branch",
-          "blocked_configuration",
-          "gh is authenticated but repository access has not been verified for a concrete project; pass projectId to check a specific repository.",
-          [],
-        ),
-      );
-    }
+  } else if (!github.repositoryPushVerified) {
+    scenarios.push(
+      blocked(
+        "branch_push",
+        "Push a dedicated branch",
+        "blocked_configuration",
+        "git is available, but a non-interactive dry-run push could not be verified for the concrete repository. Pass projectId to verify push access for a concrete repository.",
+        [],
+      ),
+    );
   } else {
     scenarios.push(
       ready(
         "branch_push",
         "Push a dedicated branch",
-        "git is available and repository access has been verified for a concrete project.",
+        "git is available and a non-interactive dry-run push succeeded for the concrete repository.",
       ),
     );
   }
@@ -319,13 +309,13 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
         ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"],
       ),
     );
-  } else if (!github.repositoryAccessVerified) {
+  } else if (!github.pullRequestCreationVerified) {
     scenarios.push(
       blocked(
         "draft_pull_request",
         "Create a draft pull request",
         "blocked_configuration",
-        "gh is authenticated but repository access has not been verified for a concrete project; pass projectId to check a specific repository.",
+        "gh is authenticated, but the current account does not have WRITE, MAINTAIN or ADMIN permission for the concrete repository.",
         [],
       ),
     );
@@ -334,7 +324,7 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
       ready(
         "draft_pull_request",
         "Create a draft pull request",
-        "git and gh are available, gh authentication succeeds, and repository access has been verified.",
+        "git and gh are available, gh authentication succeeds, and the account has WRITE, MAINTAIN or ADMIN permission for the concrete repository.",
       ),
     );
   }

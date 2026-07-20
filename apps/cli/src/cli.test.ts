@@ -36,7 +36,10 @@ beforeAll(async () => {
   engine = new Engine(store, providers, { ...DEFAULT_ENGINE_CONFIG, tickMs: 30 });
   engine.start();
   clearGitHubReadinessCache();
-  await getCachedGitHubReadiness(undefined, () => Date.now(), async () => false);
+  await getCachedGitHubReadiness(undefined, () => Date.now(), async () => ({
+    success: false,
+    stdout: "",
+  }));
   app = await buildServer({ store, engine, version: "test" });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const address = app.server.address();
@@ -252,7 +255,9 @@ describe("avity CLI", () => {
         ghAvailable: boolean;
         credentialHintAvailable: boolean;
         ghAuthenticated: boolean;
-        repositoryAccessVerified: boolean;
+        repositoryReadable: boolean;
+        repositoryPushVerified: boolean;
+        pullRequestCreationVerified: boolean;
       };
       scenarios: { key: string; status: string }[];
       note: string;
@@ -275,7 +280,10 @@ describe("avity CLI", () => {
     expect(human.code, human.err || human.out).toBe(0);
     expect(human.out).toMatch(/credential hint:/i);
     expect(human.out).toMatch(/gh authenticated:/i);
-    expect(human.out).toMatch(/repository access verified:/i);
+    expect(human.out).toMatch(/repository readable:/i);
+    expect(human.out).toMatch(/repository push verified:/i);
+    expect(human.out).toMatch(/PR creation verified:/i);
+    expect(human.out).not.toMatch(/repository access verified:/i);
     expect(human.out).not.toMatch(/sk-|ghp_|github_pat_/i);
 
     const missing = await run("e2e", "preflight", "--project", "prj_missing", "--json");

@@ -60,7 +60,7 @@ export type E2EProviderSummary = z.infer<typeof E2EProviderSummary>;
 
 /**
  * Non-secret GitHub host readiness. Credential *hints* are informational only;
- * authentication and repository access must be verified separately.
+ * readability, push capability and PR creation are verified separately.
  */
 export const E2EGitHubReadiness = z
   .object({
@@ -77,10 +77,20 @@ export const E2EGitHubReadiness = z
      */
     ghAuthenticated: z.boolean(),
     /**
-     * Whether gh has sufficient permissions to inspect the identity and
-     * information of the current repository.
+     * Le dépôt courant est consultable par gh.
+     * Cette valeur ne prouve aucun droit d’écriture.
      */
-    repositoryAccessVerified: z.boolean(),
+    repositoryReadable: z.boolean(),
+    /**
+     * Un push Git non interactif a été vérifié avec --dry-run.
+     * Cette valeur ne dépend pas de la présence du CLI gh.
+     */
+    repositoryPushVerified: z.boolean(),
+    /**
+     * Les permissions GitHub du compte courant autorisent la création
+     * d’une branche et d’une pull request dans ce dépôt.
+     */
+    pullRequestCreationVerified: z.boolean(),
   })
   .strict();
 export type E2EGitHubReadiness = z.infer<typeof E2EGitHubReadiness>;

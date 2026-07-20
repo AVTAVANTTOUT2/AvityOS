@@ -40,7 +40,9 @@ const GITHUB_NONE = {
   ghAvailable: false,
   credentialHintAvailable: false,
   ghAuthenticated: false,
-  repositoryAccessVerified: false,
+  repositoryReadable: false,
+  repositoryPushVerified: false,
+  pullRequestCreationVerified: false,
 };
 
 function inputs(overrides: Partial<E2EPreflightInputs> = {}): E2EPreflightInputs {
@@ -160,15 +162,17 @@ describe("buildE2EPreflight", () => {
           ghAvailable: true,
           credentialHintAvailable: true,
           ghAuthenticated: false,
-          repositoryAccessVerified: false,
+          repositoryReadable: false,
+          repositoryPushVerified: false,
+          pullRequestCreationVerified: false,
         },
       }),
     );
-    expect(statusOf(report, "branch_push")).toBe("blocked_missing_credentials");
+    expect(statusOf(report, "branch_push")).toBe("blocked_configuration");
     expect(statusOf(report, "draft_pull_request")).toBe("blocked_missing_credentials");
   });
 
-  it("blocks GitHub scenarios as configuration when authenticated but no repository is verified", () => {
+  it("blocks GitHub write scenarios when the repository is only readable", () => {
     const report = buildE2EPreflight(
       inputs({
         github: {
@@ -176,16 +180,56 @@ describe("buildE2EPreflight", () => {
           ghAvailable: true,
           credentialHintAvailable: true,
           ghAuthenticated: true,
-          repositoryAccessVerified: false,
+          repositoryReadable: true,
+          repositoryPushVerified: false,
+          pullRequestCreationVerified: false,
         },
       }),
     );
     expect(statusOf(report, "branch_push")).toBe("blocked_configuration");
     expect(statusOf(report, "draft_pull_request")).toBe("blocked_configuration");
-    expect(report.scenarios.find((s) => s.key === "branch_push")!.detail).toMatch(/concrete project/);
+    expect(report.scenarios.find((s) => s.key === "branch_push")!.detail).toMatch(
+      /dry-run push could not be verified/,
+    );
   });
 
-  it("readies GitHub scenarios from verified auth without requiring credential hints", () => {
+  it("readies branch_push from a verified dry-run push without requiring gh", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        github: {
+          gitAvailable: true,
+          ghAvailable: false,
+          credentialHintAvailable: false,
+          ghAuthenticated: false,
+          repositoryReadable: false,
+          repositoryPushVerified: true,
+          pullRequestCreationVerified: false,
+        },
+      }),
+    );
+    expect(statusOf(report, "branch_push")).toBe("ready");
+    expect(statusOf(report, "draft_pull_request")).toBe("blocked_missing_credentials");
+  });
+
+  it("readies draft_pull_request from WRITE permission even when push fails", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        github: {
+          gitAvailable: true,
+          ghAvailable: true,
+          credentialHintAvailable: true,
+          ghAuthenticated: true,
+          repositoryReadable: true,
+          repositoryPushVerified: false,
+          pullRequestCreationVerified: true,
+        },
+      }),
+    );
+    expect(statusOf(report, "branch_push")).toBe("blocked_configuration");
+    expect(statusOf(report, "draft_pull_request")).toBe("ready");
+  });
+
+  it("readies GitHub scenarios when push and PR permissions are both verified", () => {
     const report = buildE2EPreflight(
       inputs({
         github: {
@@ -193,12 +237,32 @@ describe("buildE2EPreflight", () => {
           ghAvailable: true,
           credentialHintAvailable: false,
           ghAuthenticated: true,
-          repositoryAccessVerified: true,
+          repositoryReadable: true,
+          repositoryPushVerified: true,
+          pullRequestCreationVerified: true,
         },
       }),
     );
     expect(statusOf(report, "branch_push")).toBe("ready");
     expect(statusOf(report, "draft_pull_request")).toBe("ready");
+  });
+
+  it("never readies write scenarios from repositoryReadable alone", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        github: {
+          gitAvailable: true,
+          ghAvailable: true,
+          credentialHintAvailable: false,
+          ghAuthenticated: true,
+          repositoryReadable: true,
+          repositoryPushVerified: false,
+          pullRequestCreationVerified: false,
+        },
+      }),
+    );
+    expect(statusOf(report, "branch_push")).not.toBe("ready");
+    expect(statusOf(report, "draft_pull_request")).not.toBe("ready");
   });
 
   it("treats a text-only real provider as a valid planner but not a mission author", () => {
@@ -239,7 +303,9 @@ describe("buildE2EPreflight", () => {
           ghAvailable: true,
           credentialHintAvailable: false,
           ghAuthenticated: true,
-          repositoryAccessVerified: true,
+          repositoryReadable: true,
+          repositoryPushVerified: true,
+          pullRequestCreationVerified: true,
         },
       }),
     );
@@ -281,7 +347,9 @@ describe("E2EPreflightReport invariants", () => {
     ghAvailable: false,
     credentialHintAvailable: false,
     ghAuthenticated: false,
-    repositoryAccessVerified: false,
+    repositoryReadable: false,
+    repositoryPushVerified: false,
+    pullRequestCreationVerified: false,
   };
 
   function scenario(key: ScenarioKey, status: "ready" | "blocked_configuration" = "ready") {

@@ -8,22 +8,29 @@ export interface GitHubReadiness {
   ghAvailable: boolean;
   credentialHintAvailable: boolean;
   ghAuthenticated: boolean;
-  repositoryAccessVerified: boolean;
+  repositoryReadable: boolean;
+  repositoryPushVerified: boolean;
+  pullRequestCreationVerified: boolean;
+}
+
+export interface CommandResult {
+  success: boolean;
+  stdout: string;
 }
 
 export type CommandRunner = (
   command: string,
   args: readonly string[],
   cwd?: string,
-) => Promise<boolean>;
+) => Promise<CommandResult>;
 
-async function commandSucceeds(
+async function runCommand(
   command: string,
   args: readonly string[],
   cwd?: string,
-): Promise<boolean> {
+): Promise<CommandResult> {
   try {
-    await execFileAsync(command, [...args], {
+    const { stdout } = await execFileAsync(command, [...args], {
       cwd,
       timeout: 5_000,
       env: {
@@ -38,22 +45,32 @@ async function commandSucceeds(
       },
       maxBuffer: 1_024 * 1024,
     });
-    return true;
+
+    return {
+      success: true,
+      stdout: String(stdout ?? ""),
+    };
   } catch {
-    return false;
+    return {
+      success: false,
+      stdout: "",
+    };
   }
 }
 
+const WRITE_PERMISSIONS = new Set(["ADMIN", "MAINTAIN", "WRITE"]);
+
 /**
  * Detect GitHub host readiness without exposing command output, tokens or URLs.
- * When `repoPath` is absent, repository access is never claimed as verified.
+ * When `repoPath` is absent, repository fields stay false and no repo-scoped
+ * commands are executed.
  */
 export async function detectGitHubReadiness(
   repoPath?: string,
-  run: CommandRunner = commandSucceeds,
+  run: CommandRunner = runCommand,
 ): Promise<GitHubReadiness> {
-  const gitAvailable = await run("git", ["--version"]);
-  const ghAvailable = await run("gh", ["--version"]);
+  const gitAvailable = (await run("git", ["--version"])).success;
+  const ghAvailable = (await run("gh", ["--version"])).success;
 
   const credentialHintAvailable = Boolean(
     process.env.GH_TOKEN || process.env.GITHUB_TOKEN || process.env.SSH_AUTH_SOCK,
@@ -61,21 +78,54 @@ export async function detectGitHubReadiness(
 
   const ghAuthenticated =
     ghAvailable &&
-    (await run("gh", ["auth", "status", "--hostname", "github.com"]));
+    (await run("gh", ["auth", "status", "--hostname", "github.com"])).success;
 
-  const repositoryAccessVerified =
+  const repositoryReadable =
     Boolean(repoPath) &&
-    gitAvailable &&
     ghAvailable &&
     ghAuthenticated &&
-    (await run("gh", ["repo", "view", "--json", "nameWithOwner"], repoPath));
+    (await run("gh", ["repo", "view", "--json", "nameWithOwner"], repoPath)).success;
+
+  const repositoryPushVerified =
+    Boolean(repoPath) &&
+    gitAvailable &&
+    (
+      await run(
+        "git",
+        [
+          "push",
+          "--dry-run",
+          "--no-verify",
+          "origin",
+          "HEAD:refs/heads/avity-preflight-permission-check",
+        ],
+        repoPath,
+      )
+    ).success;
+
+  let pullRequestCreationVerified = false;
+
+  if (repoPath && ghAvailable && ghAuthenticated) {
+    const permissionResult = await run(
+      "gh",
+      ["repo", "view", "--json", "viewerPermission", "--jq", ".viewerPermission"],
+      repoPath,
+    );
+
+    const permission = permissionResult.stdout.trim().toUpperCase();
+
+    pullRequestCreationVerified =
+      permissionResult.success && WRITE_PERMISSIONS.has(permission);
+  }
 
   return {
     gitAvailable,
     ghAvailable,
     credentialHintAvailable,
     ghAuthenticated,
-    repositoryAccessVerified,
+    repositoryReadable,
+    repositoryPushVerified,
+    pullRequestCreationVerified,
   };
 }
 
@@ -98,7 +148,7 @@ export function clearGitHubReadinessCache(): void {
 export function getCachedGitHubReadiness(
   repoPath?: string,
   now: () => number = Date.now,
-  run: CommandRunner = commandSucceeds,
+  run: CommandRunner = runCommand,
 ): Promise<GitHubReadiness> {
   const cacheKey = repoPath ?? "<none>";
   const current = now();

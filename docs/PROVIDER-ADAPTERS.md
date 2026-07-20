@@ -84,17 +84,32 @@ asynchronous non-interactive GitHub host checks:
 | `reviewer_distinct_from_author` | the exact reviewer chain used by the engine contains at least two registered real providers |
 | `bounded_correction_after_rejection` | at least one registered real workspace editor is reachable through an effective mission-role chain |
 | `cross_provider_fallback` | at least one effective brain or mission-role chain contains two registered real providers |
-| `branch_push` | git is available and repository access has been verified for a concrete project |
-| `draft_pull_request` | git and gh are available, gh authentication succeeds, and repository access has been verified |
+| `branch_push` | git is available and a non-interactive dry-run push succeeds for the concrete project repository |
+| `draft_pull_request` | git and gh are available, gh authentication succeeds, and the account has `WRITE`, `MAINTAIN` or `ADMIN` permission on the concrete repository |
 | `no_autonomous_merge` | always; the engine has no merge operation |
 
 `GH_TOKEN`, `GITHUB_TOKEN` and `SSH_AUTH_SOCK` are only credential hints.
 Their presence does not prove that authentication or repository permissions
 work. `gh auth status` may succeed via the credential store or the macOS
 Keychain without any environment variable. Pass `--project <id>` (or
-`?projectId=`) so the preflight can verify repository access for a concrete
-checkout; without a project, `branch_push` and `draft_pull_request` stay
-blocked.
+`?projectId=`) so the preflight can verify push and pull-request permissions
+for a concrete checkout; without a project, `branch_push` and
+`draft_pull_request` stay blocked.
+
+Repository readability, Git push capability and pull-request creation
+permission are separate checks.
+
+A successful `gh repo view` proves only that the repository is readable. It
+does not prove that a branch can be pushed or that a pull request can be
+created.
+
+`branch_push` is verified independently through a non-interactive
+`git push --dry-run`, so it can be ready even when the `gh` CLI is not
+installed.
+
+`draft_pull_request` requires a successful `gh auth status` and a repository
+permission of `WRITE`, `MAINTAIN` or `ADMIN`.
+
 
 A fixture-only environment reports `readiness: incomplete` and
 `usesFakeFixtureOnly: true`. The preflight is never a substitute for a real
