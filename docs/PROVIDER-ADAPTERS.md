@@ -62,6 +62,45 @@ The deterministic policy applies wait-for-reset → bounded retry → next model
 next provider → user escalation. An independent reviewer prefers a provider
 different from the author when one is configured.
 
+## Live E2E readiness preflight
+
+`GET /v1/e2e/preflight` (CLI: `avity e2e preflight [--json] [--project <id>]`)
+reports whether the environment can *run* each of the ten mandatory
+chantier-4 live scenarios. It is a deterministic, secret-free diagnostic: it
+never runs a provider and never asserts a scenario passed. Each scenario
+carries one of three statuses — `ready`, `blocked_missing_credentials` or
+`blocked_configuration` — and, when blocked, the names of the env vars or
+tooling it still needs (never their values). The report is validated against
+the versioned `E2EPreflightReport` contract (`packages/contracts/src/e2e.ts`).
+
+Runnability is derived from the providers the control plane actually
+registered, the **same effective provider routing the Engine uses**, and
+asynchronous non-interactive GitHub host checks:
+
+| Scenario | Runnable when |
+| --- | --- |
+| `real_planning` | a registered non-fixture provider is reachable through the effective orchestrator provider chain |
+| `codex_mission` / `claude_code_mission` / `cursor_mission` | the matching adapter is registered, supports workspace edits, and is reachable through at least one effective mission-role chain |
+| `reviewer_distinct_from_author` | the exact reviewer chain used by the engine contains at least two registered real providers |
+| `bounded_correction_after_rejection` | at least one registered real workspace editor is reachable through an effective mission-role chain |
+| `cross_provider_fallback` | at least one effective brain or mission-role chain contains two registered real providers |
+| `branch_push` | git is available and repository access has been verified for a concrete project |
+| `draft_pull_request` | git and gh are available, gh authentication succeeds, and repository access has been verified |
+| `no_autonomous_merge` | always; the engine has no merge operation |
+
+`GH_TOKEN`, `GITHUB_TOKEN` and `SSH_AUTH_SOCK` are only credential hints.
+Their presence does not prove that authentication or repository permissions
+work. `gh auth status` may succeed via the credential store or the macOS
+Keychain without any environment variable. Pass `--project <id>` (or
+`?projectId=`) so the preflight can verify repository access for a concrete
+checkout; without a project, `branch_push` and `draft_pull_request` stay
+blocked.
+
+A fixture-only environment reports `readiness: incomplete` and
+`usesFakeFixtureOnly: true`. The preflight is never a substitute for a real
+live run — it only tells the operator what a live campaign still needs.
+`ready` means the scenario can be attempted, never that it passed.
+
 ## Adding a provider
 
 1. Implement `ProviderAdapter` and declare capabilities conservatively.

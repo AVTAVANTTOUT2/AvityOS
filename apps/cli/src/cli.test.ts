@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG } from "@avityos/control-plane";
+import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG, clearGitHubReadinessCache, getCachedGitHubReadiness } from "@avityos/control-plane";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 
 // Point the CLI at an isolated config before importing it.
@@ -35,6 +35,8 @@ beforeAll(async () => {
   const providers = new Map<string, ProviderAdapter>([["fake", new FakeProviderAdapter()]]);
   engine = new Engine(store, providers, { ...DEFAULT_ENGINE_CONFIG, tickMs: 30 });
   engine.start();
+  clearGitHubReadinessCache();
+  await getCachedGitHubReadiness(undefined, () => Date.now(), async () => false);
   app = await buildServer({ store, engine, version: "test" });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const address = app.server.address();
@@ -235,6 +237,48 @@ describe("avity CLI", () => {
 
   it("surfaces API errors with exit code 1", async () => {
     const missing = await run("project", "show", "prj_does_not_exist");
+    expect(missing.code).toBe(1);
+    expect(missing.err).toContain("not_found");
+  });
+
+  it("reports E2E preflight runnability for a fixture-only control plane", async () => {
+    const result = await run("e2e", "preflight", "--json");
+    expect(result.code, result.err || result.out).toBe(0);
+    const report = JSON.parse(result.out) as {
+      readiness: string;
+      usesFakeFixtureOnly: boolean;
+      github: {
+        gitAvailable: boolean;
+        ghAvailable: boolean;
+        credentialHintAvailable: boolean;
+        ghAuthenticated: boolean;
+        repositoryAccessVerified: boolean;
+      };
+      scenarios: { key: string; status: string }[];
+      note: string;
+    };
+    expect(report.usesFakeFixtureOnly).toBe(true);
+    expect(report.readiness).toBe("incomplete");
+    expect(report.scenarios).toHaveLength(10);
+    const planning = report.scenarios.find((s) => s.key === "real_planning")!;
+    expect(planning.status).toBe("blocked_missing_credentials");
+    const merge = report.scenarios.find((s) => s.key === "no_autonomous_merge")!;
+    expect(merge.status).toBe("ready");
+    for (const scenario of report.scenarios) {
+      expect(["ready", "blocked_missing_credentials", "blocked_configuration"]).toContain(scenario.status);
+    }
+    expect(report.note).toMatch(/never asserts/i);
+  });
+
+  it("builds the E2E preflight request with an encoded project id", async () => {
+    const human = await run("e2e", "preflight");
+    expect(human.code, human.err || human.out).toBe(0);
+    expect(human.out).toMatch(/credential hint:/i);
+    expect(human.out).toMatch(/gh authenticated:/i);
+    expect(human.out).toMatch(/repository access verified:/i);
+    expect(human.out).not.toMatch(/sk-|ghp_|github_pat_/i);
+
+    const missing = await run("e2e", "preflight", "--project", "prj_missing", "--json");
     expect(missing.code).toBe(1);
     expect(missing.err).toContain("not_found");
   });
