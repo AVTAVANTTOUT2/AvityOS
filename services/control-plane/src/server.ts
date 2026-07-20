@@ -813,16 +813,26 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       req.query,
     );
 
-    let repoPath: string | undefined;
+    let repositoryTarget:
+      | {
+          repoPath: string;
+          remoteUrl: string;
+        }
+      | undefined;
     if (query.projectId) {
       const project = store.getProject(query.projectId);
       if (!project) {
         return apiError(reply, 404, "not_found", `project ${query.projectId} not found`);
       }
-      repoPath = project.repoPath ?? undefined;
+      if (project.repoPath && project.repoRemoteUrl) {
+        repositoryTarget = {
+          repoPath: project.repoPath,
+          remoteUrl: project.repoRemoteUrl,
+        };
+      }
     }
 
-    const github = await getCachedGitHubReadiness(repoPath);
+    const github = await getCachedGitHubReadiness(repositoryTarget);
     const routing = engine.getProviderRoutingSnapshot();
     const report = buildE2EPreflight({
       providers: routing.providers,

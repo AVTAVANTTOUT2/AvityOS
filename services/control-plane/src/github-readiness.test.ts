@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { missionBranchName } from "@avityos/git";
 import {
   clearGitHubReadinessCache,
   detectGitHubReadiness,
   getCachedGitHubReadiness,
+  PREFLIGHT_PERMISSION_BRANCH,
   type CommandResult,
   type CommandRunner,
+  type RepositoryReadinessTarget,
 } from "./github-readiness.js";
 
 afterEach(() => {
@@ -34,10 +37,16 @@ function runnerFrom(
   };
 }
 
-const PUSH_KEY =
-  "git push --dry-run --no-verify origin HEAD:refs/heads/avity-preflight-permission-check";
+const DEMO_TARGET: RepositoryReadinessTarget = {
+  repoPath: "/tmp/demo-repo",
+  remoteUrl: "git@github.com:acme/demo.git",
+};
+
+const PREFLIGHT_REF = `HEAD:refs/heads/${PREFLIGHT_PERMISSION_BRANCH}`;
+const PUSH_KEY = `git push --dry-run --no-verify ${DEMO_TARGET.remoteUrl} ${PREFLIGHT_REF}`;
+const VIEW_KEY = "gh repo view --repo acme/demo --json nameWithOwner";
 const PERMISSION_KEY =
-  "gh repo view --json viewerPermission --jq .viewerPermission";
+  "gh repo view --repo acme/demo --json viewerPermission --jq .viewerPermission";
 
 describe("detectGitHubReadiness", () => {
   it("reports gitAvailable false when git --version fails", async () => {
@@ -90,7 +99,7 @@ describe("detectGitHubReadiness", () => {
 
   it("verifies repository push without requiring gh", async () => {
     const readiness = await detectGitHubReadiness(
-      "/tmp/demo-repo",
+      DEMO_TARGET,
       runnerFrom({
         "git --version": {
           success: true,
@@ -113,9 +122,109 @@ describe("detectGitHubReadiness", () => {
     expect(readiness.pullRequestCreationVerified).toBe(false);
   });
 
+  it("verifies push against the configured project remote rather than origin", async () => {
+    const calls: {
+      command: string;
+      args: readonly string[];
+      cwd?: string;
+    }[] = [];
+
+    const target = {
+      repoPath: "/tmp/demo-repo",
+      remoteUrl: "git@github.com:acme/actual-target.git",
+    };
+
+    await detectGitHubReadiness(
+      target,
+      runnerFrom(
+        {
+          "git --version": {
+            success: true,
+            stdout: "git version",
+          },
+          "gh --version": {
+            success: false,
+            stdout: "",
+          },
+          [`git push --dry-run --no-verify ${target.remoteUrl} ${PREFLIGHT_REF}`]: {
+            success: true,
+            stdout: "",
+          },
+        },
+        calls,
+      ),
+    );
+
+    const pushCall = calls.find(
+      (call) => call.command === "git" && call.args[0] === "push",
+    );
+
+    expect(pushCall).toBeDefined();
+    expect(pushCall?.args).toContain("git@github.com:acme/actual-target.git");
+    expect(pushCall?.args).not.toContain("origin");
+    expect(pushCall?.args).toContain(
+      `HEAD:refs/heads/${missionBranchName("preflight-permission-check", "")}`,
+    );
+  });
+
+  it("does not claim push readiness from origin when the configured remote is inaccessible", async () => {
+    const calls: {
+      command: string;
+      args: readonly string[];
+      cwd?: string;
+    }[] = [];
+
+    const readiness = await detectGitHubReadiness(
+      {
+        repoPath: "/tmp/demo-repo",
+        remoteUrl: "git@github.com:acme/inaccessible-target.git",
+      },
+      async (command, args, cwd) => {
+        calls.push({ command, args, cwd });
+
+        if (command === "git" && args[0] === "--version") {
+          return {
+            success: true,
+            stdout: "git version",
+          };
+        }
+
+        if (command === "git" && args.includes("origin")) {
+          return {
+            success: true,
+            stdout: "",
+          };
+        }
+
+        if (
+          command === "git" &&
+          args.includes("git@github.com:acme/inaccessible-target.git")
+        ) {
+          return {
+            success: false,
+            stdout: "",
+          };
+        }
+
+        return {
+          success: false,
+          stdout: "",
+        };
+      },
+    );
+
+    expect(readiness.repositoryPushVerified).toBe(false);
+
+    expect(
+      calls.some(
+        (call) => call.command === "git" && call.args.includes("origin"),
+      ),
+    ).toBe(false);
+  });
+
   it("does not verify PR creation for READ permission", async () => {
     const readiness = await detectGitHubReadiness(
-      "/tmp/demo-repo",
+      DEMO_TARGET,
       runnerFrom({
         "git --version": {
           success: true,
@@ -129,9 +238,9 @@ describe("detectGitHubReadiness", () => {
           success: true,
           stdout: "",
         },
-        "gh repo view --json nameWithOwner": {
+        [VIEW_KEY]: {
           success: true,
-          stdout: "owner/repo",
+          stdout: "acme/demo",
         },
         [PERMISSION_KEY]: {
           success: true,
@@ -152,14 +261,14 @@ describe("detectGitHubReadiness", () => {
     "verifies PR creation for %s permission",
     async (permission) => {
       const readiness = await detectGitHubReadiness(
-        "/tmp/demo-repo",
+        DEMO_TARGET,
         runnerFrom({
           "git --version": { success: true, stdout: "git version" },
           "gh --version": { success: true, stdout: "gh version" },
           "gh auth status --hostname github.com": { success: true, stdout: "" },
-          "gh repo view --json nameWithOwner": {
+          [VIEW_KEY]: {
             success: true,
-            stdout: "owner/repo",
+            stdout: "acme/demo",
           },
           [PERMISSION_KEY]: { success: true, stdout: `${permission}\n` },
           [PUSH_KEY]: { success: true, stdout: "" },
@@ -172,14 +281,14 @@ describe("detectGitHubReadiness", () => {
 
   it("does not verify PR creation for TRIAGE permission", async () => {
     const readiness = await detectGitHubReadiness(
-      "/tmp/demo-repo",
+      DEMO_TARGET,
       runnerFrom({
         "git --version": { success: true, stdout: "git version" },
         "gh --version": { success: true, stdout: "gh version" },
         "gh auth status --hostname github.com": { success: true, stdout: "" },
-        "gh repo view --json nameWithOwner": {
+        [VIEW_KEY]: {
           success: true,
-          stdout: "owner/repo",
+          stdout: "acme/demo",
         },
         [PERMISSION_KEY]: { success: true, stdout: "TRIAGE\n" },
         [PUSH_KEY]: { success: false, stdout: "" },
@@ -191,14 +300,14 @@ describe("detectGitHubReadiness", () => {
 
   it("does not verify PR creation when permission stdout is empty", async () => {
     const readiness = await detectGitHubReadiness(
-      "/tmp/demo-repo",
+      DEMO_TARGET,
       runnerFrom({
         "git --version": { success: true, stdout: "git version" },
         "gh --version": { success: true, stdout: "gh version" },
         "gh auth status --hostname github.com": { success: true, stdout: "" },
-        "gh repo view --json nameWithOwner": {
+        [VIEW_KEY]: {
           success: true,
-          stdout: "owner/repo",
+          stdout: "acme/demo",
         },
         [PERMISSION_KEY]: { success: true, stdout: "" },
         [PUSH_KEY]: { success: false, stdout: "" },
@@ -208,7 +317,76 @@ describe("detectGitHubReadiness", () => {
     expect(readiness.pullRequestCreationVerified).toBe(false);
   });
 
-  it("never calls git push or gh repo view when repoPath is absent", async () => {
+  it("targets gh checks at the configured GitHub repository slug", async () => {
+    const calls: {
+      command: string;
+      args: readonly string[];
+      cwd?: string;
+    }[] = [];
+
+    await detectGitHubReadiness(
+      {
+        repoPath: "/tmp/demo-repo",
+        remoteUrl: "https://github.com/acme/target.git",
+      },
+      runnerFrom(
+        {
+          "git --version": { success: true, stdout: "git version" },
+          "gh --version": { success: true, stdout: "gh version" },
+          "gh auth status --hostname github.com": { success: true, stdout: "" },
+          "gh repo view --repo acme/target --json nameWithOwner": {
+            success: true,
+            stdout: "acme/target",
+          },
+          "gh repo view --repo acme/target --json viewerPermission --jq .viewerPermission":
+            {
+              success: true,
+              stdout: "WRITE\n",
+            },
+          [`git push --dry-run --no-verify https://github.com/acme/target.git ${PREFLIGHT_REF}`]:
+            {
+              success: true,
+              stdout: "",
+            },
+        },
+        calls,
+      ),
+    );
+
+    const viewCalls = calls.filter(
+      (call) => call.command === "gh" && call.args[0] === "repo",
+    );
+    expect(viewCalls.length).toBeGreaterThan(0);
+    for (const call of viewCalls) {
+      expect(call.args).toContain("--repo");
+      expect(call.args).toContain("acme/target");
+    }
+  });
+
+  it("allows git push verification for a non-GitHub remote but blocks gh checks", async () => {
+    const readiness = await detectGitHubReadiness(
+      {
+        repoPath: "/tmp/demo-repo",
+        remoteUrl: "git@gitlab.example:acme/target.git",
+      },
+      runnerFrom({
+        "git --version": { success: true, stdout: "git version" },
+        "gh --version": { success: true, stdout: "gh version" },
+        "gh auth status --hostname github.com": { success: true, stdout: "" },
+        [`git push --dry-run --no-verify git@gitlab.example:acme/target.git ${PREFLIGHT_REF}`]:
+          {
+            success: true,
+            stdout: "",
+          },
+      }),
+    );
+
+    expect(readiness.repositoryPushVerified).toBe(true);
+    expect(readiness.repositoryReadable).toBe(false);
+    expect(readiness.pullRequestCreationVerified).toBe(false);
+  });
+
+  it("never calls git push or gh repo view when the target is incomplete", async () => {
     const calls: {
       command: string;
       args: readonly string[];
@@ -238,16 +416,42 @@ describe("detectGitHubReadiness", () => {
     expect(readiness.pullRequestCreationVerified).toBe(false);
   });
 
+  it("never claims repository readiness when remoteUrl is missing", async () => {
+    const calls: {
+      command: string;
+      args: readonly string[];
+      cwd?: string;
+    }[] = [];
+    const readiness = await detectGitHubReadiness(
+      { repoPath: "/tmp/demo-repo", remoteUrl: "   " },
+      runnerFrom(
+        {
+          "git --version": { success: true, stdout: "git version" },
+          "gh --version": { success: true, stdout: "gh version" },
+          "gh auth status --hostname github.com": { success: true, stdout: "" },
+        },
+        calls,
+      ),
+    );
+
+    expect(calls.some((c) => c.command === "git" && c.args[0] === "push")).toBe(
+      false,
+    );
+    expect(readiness.repositoryPushVerified).toBe(false);
+    expect(readiness.repositoryReadable).toBe(false);
+    expect(readiness.pullRequestCreationVerified).toBe(false);
+  });
+
   it("returns only boolean readiness fields with no command output or secrets", async () => {
     const readiness = await detectGitHubReadiness(
-      "/tmp/demo-repo",
+      DEMO_TARGET,
       runnerFrom({
         "git --version": { success: true, stdout: "git version" },
         "gh --version": { success: true, stdout: "gh version" },
         "gh auth status --hostname github.com": { success: true, stdout: "" },
-        "gh repo view --json nameWithOwner": {
+        [VIEW_KEY]: {
           success: true,
-          stdout: "owner/repo",
+          stdout: "acme/demo",
         },
         [PERMISSION_KEY]: { success: true, stdout: "WRITE\n" },
         [PUSH_KEY]: { success: true, stdout: "" },
@@ -281,10 +485,14 @@ describe("getCachedGitHubReadiness", () => {
   it("re-runs detection after the TTL expires", async () => {
     const run: CommandRunner = async () => ({ success: true, stdout: "" });
     let now = 1_000;
-    const first = getCachedGitHubReadiness("/repo-a", () => now, run);
+    const target = {
+      repoPath: "/repo-a",
+      remoteUrl: "git@github.com:acme/a.git",
+    };
+    const first = getCachedGitHubReadiness(target, () => now, run);
     await first;
     now = 1_000 + 30_001;
-    const second = getCachedGitHubReadiness("/repo-a", () => now, run);
+    const second = getCachedGitHubReadiness(target, () => now, run);
     expect(second).not.toBe(first);
     await second;
   });
@@ -295,8 +503,45 @@ describe("getCachedGitHubReadiness", () => {
       if (command === "gh" && args[0] === "repo") seenCwds.push(cwd);
       return { success: true, stdout: "WRITE" };
     };
-    await getCachedGitHubReadiness("/repo-a", () => 1_000, run);
-    await getCachedGitHubReadiness("/repo-b", () => 1_000, run);
+    await getCachedGitHubReadiness(
+      { repoPath: "/repo-a", remoteUrl: "git@github.com:acme/a.git" },
+      () => 1_000,
+      run,
+    );
+    await getCachedGitHubReadiness(
+      { repoPath: "/repo-b", remoteUrl: "git@github.com:acme/b.git" },
+      () => 1_000,
+      run,
+    );
     expect([...new Set(seenCwds)].sort()).toEqual(["/repo-a", "/repo-b"]);
+  });
+
+  it("uses separate cache entries for the same repo path with different remotes", async () => {
+    const seenRemotes: string[] = [];
+    const run: CommandRunner = async (command, args) => {
+      if (command === "git" && args[0] === "push") {
+        const remote = args.find((arg) => arg.includes("github.com"));
+        if (remote) seenRemotes.push(remote);
+      }
+      return { success: true, stdout: "WRITE" };
+    };
+
+    const targetA = {
+      repoPath: "/tmp/repo",
+      remoteUrl: "git@github.com:acme/a.git",
+    };
+    const targetB = {
+      repoPath: "/tmp/repo",
+      remoteUrl: "git@github.com:acme/b.git",
+    };
+
+    const first = getCachedGitHubReadiness(targetA, () => 1_000, run);
+    const second = getCachedGitHubReadiness(targetB, () => 1_000, run);
+    expect(second).not.toBe(first);
+    await Promise.all([first, second]);
+    expect(seenRemotes.sort()).toEqual([
+      "git@github.com:acme/a.git",
+      "git@github.com:acme/b.git",
+    ]);
   });
 });

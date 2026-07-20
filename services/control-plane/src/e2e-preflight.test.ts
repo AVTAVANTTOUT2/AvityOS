@@ -211,7 +211,7 @@ describe("buildE2EPreflight", () => {
     expect(statusOf(report, "draft_pull_request")).toBe("blocked_missing_credentials");
   });
 
-  it("readies draft_pull_request from WRITE permission even when push fails", () => {
+  it("blocks draft PR readiness when GitHub permission exists but the configured remote cannot be pushed", () => {
     const report = buildE2EPreflight(
       inputs({
         github: {
@@ -226,7 +226,10 @@ describe("buildE2EPreflight", () => {
       }),
     );
     expect(statusOf(report, "branch_push")).toBe("blocked_configuration");
-    expect(statusOf(report, "draft_pull_request")).toBe("ready");
+    expect(statusOf(report, "draft_pull_request")).toBe("blocked_configuration");
+    expect(report.scenarios.find((s) => s.key === "draft_pull_request")!.detail).toMatch(
+      /dry-run push required before creating a pull request/,
+    );
   });
 
   it("readies GitHub scenarios when push and PR permissions are both verified", () => {

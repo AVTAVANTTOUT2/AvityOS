@@ -1,7 +1,15 @@
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { missionBranchName, parseGitHubRemote } from "@avityos/git";
 
 const execFileAsync = promisify(execFile);
+
+/** Concrete repository the live publication workflow will push to. */
+export interface RepositoryReadinessTarget {
+  repoPath: string;
+  remoteUrl: string;
+}
 
 export interface GitHubReadiness {
   gitAvailable: boolean;
@@ -60,13 +68,31 @@ async function runCommand(
 
 const WRITE_PERMISSIONS = new Set(["ADMIN", "MAINTAIN", "WRITE"]);
 
+/** Same mission/* constructor the engine uses, with a fixed non-sensitive id. */
+export const PREFLIGHT_PERMISSION_BRANCH = missionBranchName(
+  "preflight-permission-check",
+  "",
+);
+
+function githubRepositorySlug(remoteUrl: string): string | null {
+  const parsed = parseGitHubRemote(remoteUrl);
+  return parsed ? `${parsed.owner}/${parsed.name}` : null;
+}
+
+function readinessCacheKey(target?: RepositoryReadinessTarget): string {
+  if (!target) return "<none>";
+  return createHash("sha256")
+    .update(`${target.repoPath}\0${target.remoteUrl}`)
+    .digest("hex");
+}
+
 /**
  * Detect GitHub host readiness without exposing command output, tokens or URLs.
- * When `repoPath` is absent, repository fields stay false and no repo-scoped
+ * When the target is incomplete, repository fields stay false and no repo-scoped
  * commands are executed.
  */
 export async function detectGitHubReadiness(
-  repoPath?: string,
+  target?: RepositoryReadinessTarget,
   run: CommandRunner = runCommand,
 ): Promise<GitHubReadiness> {
   const gitAvailable = (await run("git", ["--version"])).success;
@@ -80,14 +106,26 @@ export async function detectGitHubReadiness(
     ghAvailable &&
     (await run("gh", ["auth", "status", "--hostname", "github.com"])).success;
 
-  const repositoryReadable =
-    Boolean(repoPath) &&
-    ghAvailable &&
-    ghAuthenticated &&
-    (await run("gh", ["repo", "view", "--json", "nameWithOwner"], repoPath)).success;
+  const hasConcreteTarget =
+    Boolean(target?.repoPath) && Boolean(target?.remoteUrl?.trim());
 
-  const repositoryPushVerified =
-    Boolean(repoPath) &&
+  let repositoryReadable = false;
+  let repositoryPushVerified = false;
+  let pullRequestCreationVerified = false;
+
+  if (!hasConcreteTarget || !target) {
+    return {
+      gitAvailable,
+      ghAvailable,
+      credentialHintAvailable,
+      ghAuthenticated,
+      repositoryReadable,
+      repositoryPushVerified,
+      pullRequestCreationVerified,
+    };
+  }
+
+  repositoryPushVerified =
     gitAvailable &&
     (
       await run(
@@ -96,24 +134,40 @@ export async function detectGitHubReadiness(
           "push",
           "--dry-run",
           "--no-verify",
-          "origin",
-          "HEAD:refs/heads/avity-preflight-permission-check",
+          target.remoteUrl,
+          `HEAD:refs/heads/${PREFLIGHT_PERMISSION_BRANCH}`,
         ],
-        repoPath,
+        target.repoPath,
       )
     ).success;
 
-  let pullRequestCreationVerified = false;
+  const repoSlug = githubRepositorySlug(target.remoteUrl);
 
-  if (repoPath && ghAvailable && ghAuthenticated) {
+  if (repoSlug && ghAvailable && ghAuthenticated) {
+    repositoryReadable = (
+      await run(
+        "gh",
+        ["repo", "view", "--repo", repoSlug, "--json", "nameWithOwner"],
+        target.repoPath,
+      )
+    ).success;
+
     const permissionResult = await run(
       "gh",
-      ["repo", "view", "--json", "viewerPermission", "--jq", ".viewerPermission"],
-      repoPath,
+      [
+        "repo",
+        "view",
+        "--repo",
+        repoSlug,
+        "--json",
+        "viewerPermission",
+        "--jq",
+        ".viewerPermission",
+      ],
+      target.repoPath,
     );
 
     const permission = permissionResult.stdout.trim().toUpperCase();
-
     pullRequestCreationVerified =
       permissionResult.success && WRITE_PERMISSIONS.has(permission);
   }
@@ -142,15 +196,15 @@ export function clearGitHubReadinessCache(): void {
 }
 
 /**
- * Cached GitHub readiness detection. Indexed by repository path so distinct
- * projects do not share a stale verification result.
+ * Cached GitHub readiness detection. Indexed by a hash of repo path + remote URL
+ * so distinct publication targets never share a stale result.
  */
 export function getCachedGitHubReadiness(
-  repoPath?: string,
+  target?: RepositoryReadinessTarget,
   now: () => number = Date.now,
   run: CommandRunner = runCommand,
 ): Promise<GitHubReadiness> {
-  const cacheKey = repoPath ?? "<none>";
+  const cacheKey = readinessCacheKey(target);
   const current = now();
   const existing = cache.get(cacheKey);
 
@@ -158,7 +212,7 @@ export function getCachedGitHubReadiness(
     return existing.value;
   }
 
-  const value = detectGitHubReadiness(repoPath, run);
+  const value = detectGitHubReadiness(target, run);
   cache.set(cacheKey, {
     value,
     expiresAt: current + CACHE_TTL_MS,

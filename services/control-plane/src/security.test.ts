@@ -213,4 +213,95 @@ describe("E2E preflight endpoint", () => {
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("not_found");
   });
+
+  it("passes the configured project remote into GitHub readiness detection", async () => {
+    clearGitHubReadinessCache();
+    const repo = join(scratch, "remote-repo");
+    await git(scratch, "init", "-b", "main", repo);
+    await initRepo(repo);
+    await writeFile(join(repo, "README.md"), "# remote\n");
+    await commitAll(repo, "chore: init");
+    const remoteUrl = "git@github.com:acme/preflight-target.git";
+    const project = store.createProject({
+      name: "with-remote",
+      description: "",
+      repoPath: repo,
+      repoRemoteUrl: remoteUrl,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+
+    await getCachedGitHubReadiness(
+      { repoPath: repo, remoteUrl },
+      () => Date.now(),
+      async (command, args) => {
+        if (command === "git" && args[0] === "--version") {
+          return { success: true, stdout: "git version" };
+        }
+        if (command === "gh" && args[0] === "--version") {
+          return { success: true, stdout: "gh version" };
+        }
+        if (command === "gh" && args[0] === "auth") {
+          return { success: true, stdout: "" };
+        }
+        if (command === "git" && args[0] === "push") {
+          expect(args).toContain(remoteUrl);
+          expect(args).not.toContain("origin");
+          return { success: true, stdout: "" };
+        }
+        if (command === "gh" && args.includes("--repo") && args.includes("acme/preflight-target")) {
+          if (args.includes("viewerPermission")) {
+            return { success: true, stdout: "WRITE\n" };
+          }
+          return { success: true, stdout: "acme/preflight-target" };
+        }
+        return { success: false, stdout: "" };
+      },
+    );
+
+    const res = await fetch(`${baseUrl}/v1/e2e/preflight?projectId=${encodeURIComponent(project.id)}`, {
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      github: {
+        repositoryPushVerified: boolean;
+        pullRequestCreationVerified: boolean;
+      };
+      scenarios: { key: string; status: string }[];
+    };
+    expect(body.github.repositoryPushVerified).toBe(true);
+    expect(body.github.pullRequestCreationVerified).toBe(true);
+    expect(body.scenarios.find((s) => s.key === "branch_push")?.status).toBe("ready");
+    expect(body.scenarios.find((s) => s.key === "draft_pull_request")?.status).toBe("ready");
+    expect(JSON.stringify(body)).not.toMatch(/acme\/preflight-target\.git|repoRemoteUrl|remoteUrl/i);
+  });
+
+  it("blocks push readiness when the project has a path but no configured remote", async () => {
+    clearGitHubReadinessCache();
+    await getCachedGitHubReadiness(undefined, () => Date.now(), async (command, args) => {
+      if (command === "git" && args[0] === "--version") {
+        return { success: true, stdout: "git version" };
+      }
+      if (command === "gh" && args[0] === "--version") {
+        return { success: true, stdout: "gh version" };
+      }
+      if (command === "gh" && args[0] === "auth") {
+        return { success: true, stdout: "" };
+      }
+      return { success: false, stdout: "" };
+    });
+    const { projectId } = await makeRepoProject();
+
+    const res = await fetch(`${baseUrl}/v1/e2e/preflight?projectId=${encodeURIComponent(projectId)}`, {
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      github: { repositoryPushVerified: boolean; pullRequestCreationVerified: boolean };
+      scenarios: { key: string; status: string }[];
+    };
+    expect(body.github.repositoryPushVerified).toBe(false);
+    expect(body.scenarios.find((s) => s.key === "branch_push")?.status).toBe("blocked_configuration");
+    expect(body.scenarios.find((s) => s.key === "draft_pull_request")?.status).not.toBe("ready");
+  });
 });

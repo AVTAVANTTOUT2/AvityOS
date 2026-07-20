@@ -309,6 +309,16 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
         ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"],
       ),
     );
+  } else if (!github.repositoryPushVerified) {
+    scenarios.push(
+      blocked(
+        "draft_pull_request",
+        "Create a draft pull request",
+        "blocked_configuration",
+        "The account may have GitHub pull-request permissions, but the configured project remote did not pass the non-interactive dry-run push required before creating a pull request.",
+        [],
+      ),
+    );
   } else if (!github.pullRequestCreationVerified) {
     scenarios.push(
       blocked(
@@ -324,7 +334,7 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
       ready(
         "draft_pull_request",
         "Create a draft pull request",
-        "git and gh are available, gh authentication succeeds, and the account has WRITE, MAINTAIN or ADMIN permission for the concrete repository.",
+        "git and gh are available, the configured remote passed a dry-run push, gh authentication succeeds, and the account has WRITE, MAINTAIN or ADMIN permission for the concrete repository.",
       ),
     );
   }

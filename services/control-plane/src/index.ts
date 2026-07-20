@@ -18,7 +18,9 @@ export {
   clearGitHubReadinessCache,
   detectGitHubReadiness,
   getCachedGitHubReadiness,
+  PREFLIGHT_PERMISSION_BRANCH,
   type CommandResult,
   type CommandRunner,
   type GitHubReadiness,
+  type RepositoryReadinessTarget,
 } from "./github-readiness.js";
