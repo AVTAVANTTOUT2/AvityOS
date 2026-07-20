@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   BrainObjectiveAnalysis,
   CreateProjectRequest,
+  E2E_PREFLIGHT_SCHEMA_VERSION,
+  E2EPreflightReport,
+  E2EScenarioKey,
+  E2EScenarioStatus,
   EventEnvelope,
   Mission,
   MissionState,
@@ -93,5 +97,64 @@ describe("contracts", () => {
       untrustedInstruction: "silently ignored before strict validation",
     };
     expect(BrainObjectiveAnalysis.safeParse(analysis).success).toBe(false);
+  });
+
+  it("keeps the E2E preflight status vocabulary closed and success-free", () => {
+    expect(E2EScenarioStatus.options).toEqual([
+      "ready",
+      "blocked_missing_credentials",
+      "blocked_configuration",
+    ]);
+    expect(E2EScenarioStatus.safeParse("passed").success).toBe(false);
+    expect(E2EScenarioStatus.safeParse("succeeded").success).toBe(false);
+    expect(E2EScenarioStatus.safeParse("success").success).toBe(false);
+    expect(E2EScenarioStatus.safeParse("completed").success).toBe(false);
+    expect(E2EScenarioStatus.safeParse("validated").success).toBe(false);
+  });
+
+  it("parses a valid E2E preflight report and rejects unknown fields", () => {
+    const scenarios = E2EScenarioKey.options.map((key) => ({
+      key,
+      title: key,
+      status: "blocked_configuration" as const,
+      detail: "fixture",
+      requires: [] as string[],
+    }));
+    const report = {
+      schemaVersion: E2E_PREFLIGHT_SCHEMA_VERSION,
+      generatedAt: "2026-07-19T12:00:00.000Z",
+      readiness: "incomplete" as const,
+      usesFakeFixtureOnly: true,
+      realProviderCount: 0,
+      realWorkspaceEditorCount: 0,
+      providers: [
+        {
+          name: "fake",
+          real: false,
+          workspaceEdits: true,
+          inGlobalChain: true,
+          routedRoles: [] as string[],
+        },
+      ],
+      github: {
+        gitAvailable: false,
+        ghAvailable: false,
+        credentialHintAvailable: false,
+        ghAuthenticated: false,
+        repositoryAccessVerified: false,
+      },
+      scenarios,
+      readyCount: 0,
+      blockedCount: 10,
+      note: "Preflight reports scenario runnability only.",
+    };
+    expect(E2EPreflightReport.safeParse(report).success).toBe(true);
+    expect(E2EPreflightReport.safeParse({ ...report, leak: "sk-secret" }).success).toBe(false);
+    expect(
+      E2EPreflightReport.safeParse({
+        ...report,
+        providers: [{ name: "fake", real: false, workspaceEdits: true, inChain: true }],
+      }).success,
+    ).toBe(false);
   });
 });
