@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { E2EPreflightReport } from "@avityos/contracts";
 import { commitAll, git, initRepo } from "@avityos/git";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import { openDatabase } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
+import { clearGitHubReadinessCache, getCachedGitHubReadiness } from "./github-readiness.js";
 import { buildServer } from "./server.js";
 import { Store } from "./store.js";
 
@@ -174,5 +176,38 @@ describe("terminal execution boundary", () => {
       body: JSON.stringify({ command: ["ls"] }),
     });
     expect(ok.status).toBe(201);
+  });
+});
+
+describe("E2E preflight endpoint", () => {
+  beforeEach(async () => {
+    // Avoid host `gh`/`git` latency in the HTTP path: seed the TTL cache with a
+    // deterministic stub runner so the handler stays non-blocking and offline.
+    clearGitHubReadinessCache();
+    await getCachedGitHubReadiness(undefined, () => Date.now(), async () => false);
+  });
+
+  afterEach(() => {
+    clearGitHubReadinessCache();
+  });
+
+  it("requires the same bearer auth as other administrative endpoints", async () => {
+    expect((await fetch(`${baseUrl}/v1/e2e/preflight`)).status).toBe(401);
+  });
+
+  it("returns a contract-valid readiness report without secrets", async () => {
+    const res = await fetch(`${baseUrl}/v1/e2e/preflight`, { headers: auth });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(E2EPreflightReport.safeParse(body).success).toBe(true);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toMatch(/sk-|api[_-]?key=|token=|ghp_|github_pat_/i);
+  });
+
+  it("returns 404 for an unknown projectId", async () => {
+    const res = await fetch(`${baseUrl}/v1/e2e/preflight?projectId=missing`, { headers: auth });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("not_found");
   });
 });

@@ -14,3 +14,10 @@ export {
   validateRepositoryConfiguration,
   type RepositoryConfiguration,
 } from "./project-validation.js";
+export {
+  clearGitHubReadinessCache,
+  detectGitHubReadiness,
+  getCachedGitHubReadiness,
+  type CommandRunner,
+  type GitHubReadiness,
+} from "./github-readiness.js";
