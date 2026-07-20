@@ -491,36 +491,6 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
     },
   },
 
-  e2e: {
-    preflight: async (ctx) => {
-      interface Report {
-        readiness: string;
-        usesFakeFixtureOnly: boolean;
-        realProviderCount: number;
-        readyCount: number;
-        blockedCount: number;
-        note: string;
-        scenarios: { key: string; title: string; status: string; detail: string; requires: string[] }[];
-      }
-      const report = await ctx.client.get<Report>("/v1/e2e/preflight");
-      out(ctx, report, (r: Report) => {
-        const rows = r.scenarios.map((s) => ({
-          scenario: s.key,
-          status: s.status,
-          detail: s.requires.length ? `${s.detail} (needs: ${s.requires.join(", ")})` : s.detail,
-        }));
-        return [
-          `readiness: ${r.readiness} (${r.readyCount} ready, ${r.blockedCount} blocked)`,
-          `real providers: ${r.realProviderCount}${r.usesFakeFixtureOnly ? " (fake fixture only)" : ""}`,
-          "",
-          table(rows, ["scenario", "status", "detail"]),
-          "",
-          r.note,
-        ].join("\n");
-      });
-    },
-  },
-
   worker: {
     list: async (ctx) => {
       const { items } = await ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/workers");
@@ -592,7 +562,6 @@ commands:
   run list [--project <id>] | logs <run-id> | pause|resume|cancel <mission-id>
   intervention list | answer <id> [key=answer...|--decision approved|rejected]
   provider list | status
-  e2e preflight                         live E2E readiness (runnability only)
   worker list | enroll <name> | revoke <id>
   pr list [--project <id>] | show <id>
 `;

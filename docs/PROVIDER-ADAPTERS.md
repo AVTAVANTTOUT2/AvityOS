@@ -62,37 +62,6 @@ The deterministic policy applies wait-for-reset → bounded retry → next model
 next provider → user escalation. An independent reviewer prefers a provider
 different from the author when one is configured.
 
-## Live E2E readiness preflight
-
-`GET /v1/e2e/preflight` (CLI: `avity e2e preflight [--json]`) reports whether
-the environment can *run* each of the ten mandatory chantier-4 live scenarios.
-It is a deterministic, secret-free diagnostic: it never runs a provider and
-never asserts a scenario passed. Each scenario carries one of three statuses —
-`ready`, `blocked_missing_credentials` or `blocked_configuration` — and, when
-blocked, the names of the env vars or tooling it still needs (never their
-values). The report is validated against the versioned
-`E2EPreflightReport` contract (`packages/contracts/src/e2e.ts`).
-
-Runnability is derived from the providers the control plane actually
-registered (which only happens when their credentials/binaries are present),
-the active fallback chain, the orchestrator role chain and host GitHub tooling:
-
-| Scenario | Runnable when |
-| --- | --- |
-| `real_planning` | a non-fixture provider is in the brain (orchestrator/global) chain |
-| `codex_mission` / `claude_code_mission` / `cursor_mission` | the matching CLI adapter is registered with workspace-edit capability |
-| `reviewer_distinct_from_author` | at least two real providers are registered |
-| `bounded_correction_after_rejection` | at least one real workspace-editing provider is registered |
-| `cross_provider_fallback` | at least two real providers are in the active chain |
-| `branch_push` | `git` plus a credential channel (`GH_TOKEN`/`GITHUB_TOKEN`/`SSH_AUTH_SOCK`) |
-| `draft_pull_request` | the above plus the `gh` CLI |
-| `no_autonomous_merge` | always: structural guarantee, the engine never merges |
-
-A fixture-only environment reports `readiness: incomplete` and
-`usesFakeFixtureOnly: true`. The preflight is fully offline and never a
-substitute for a real live run — it only tells the operator what a live
-campaign still needs.
-
 ## Adding a provider
 
 1. Implement `ProviderAdapter` and declare capabilities conservatively.

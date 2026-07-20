@@ -238,28 +238,4 @@ describe("avity CLI", () => {
     expect(missing.code).toBe(1);
     expect(missing.err).toContain("not_found");
   });
-
-  it("reports E2E preflight runnability for a fixture-only control plane", async () => {
-    const result = await run("e2e", "preflight", "--json");
-    expect(result.code, result.err || result.out).toBe(0);
-    const report = JSON.parse(result.out) as {
-      readiness: string;
-      usesFakeFixtureOnly: boolean;
-      scenarios: { key: string; status: string }[];
-      note: string;
-    };
-    // Only the deterministic fixture is registered here.
-    expect(report.usesFakeFixtureOnly).toBe(true);
-    expect(report.readiness).toBe("incomplete");
-    expect(report.scenarios).toHaveLength(10);
-    const planning = report.scenarios.find((s) => s.key === "real_planning")!;
-    expect(planning.status).toBe("blocked_missing_credentials");
-    // The structural guarantee holds regardless of credentials.
-    const merge = report.scenarios.find((s) => s.key === "no_autonomous_merge")!;
-    expect(merge.status).toBe("ready");
-    // Never asserts a passed scenario.
-    for (const scenario of report.scenarios) {
-      expect(["ready", "blocked_missing_credentials", "blocked_configuration"]).toContain(scenario.status);
-    }
-  });
 });
