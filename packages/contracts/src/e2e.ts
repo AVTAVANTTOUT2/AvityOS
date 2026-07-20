@@ -60,7 +60,8 @@ export type E2EProviderSummary = z.infer<typeof E2EProviderSummary>;
 
 /**
  * Non-secret GitHub host readiness. Credential *hints* are informational only;
- * readability, push capability and PR creation are verified separately.
+ * readability, push dry-run outcome and observed repository role are separate
+ * non-mutating signals — never proof that a live push or PR will succeed.
  */
 export const E2EGitHubReadiness = z
   .object({
@@ -82,15 +83,23 @@ export const E2EGitHubReadiness = z
      */
     repositoryReadable: z.boolean(),
     /**
-     * Un push Git non interactif a été vérifié avec --dry-run.
-     * Cette valeur ne dépend pas de la présence du CLI gh.
+     * Une tentative de push non mutante vers le remote configuré a réussi.
+     *
+     * Cela confirme que la commande peut être préparée et que certaines erreurs
+     * immédiates d’accès ou de configuration ne sont pas survenues.
+     *
+     * Cela ne prouve pas qu’un véritable push serait accepté par les rulesets,
+     * les hooks distants ou toutes les politiques serveur.
      */
-    repositoryPushVerified: z.boolean(),
+    repositoryPushDryRunSucceeded: z.boolean(),
     /**
-     * Les permissions GitHub du compte courant autorisent la création
-     * d’une branche et d’une pull request dans ce dépôt.
+     * Le rôle GitHub observé pour le compte courant est WRITE, MAINTAIN ou ADMIN.
+     *
+     * Cela indique un rôle de dépôt compatible avec un workflow de Pull Request,
+     * mais ne prouve pas que le credential actif possède toutes les permissions
+     * fines nécessaires, notamment `Pull requests: write`.
      */
-    pullRequestCreationVerified: z.boolean(),
+    repositoryWriteRoleObserved: z.boolean(),
   })
   .strict();
 export type E2EGitHubReadiness = z.infer<typeof E2EGitHubReadiness>;

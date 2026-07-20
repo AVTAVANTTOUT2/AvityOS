@@ -17,8 +17,8 @@ export interface GitHubReadiness {
   credentialHintAvailable: boolean;
   ghAuthenticated: boolean;
   repositoryReadable: boolean;
-  repositoryPushVerified: boolean;
-  pullRequestCreationVerified: boolean;
+  repositoryPushDryRunSucceeded: boolean;
+  repositoryWriteRoleObserved: boolean;
 }
 
 export interface CommandResult {
@@ -110,8 +110,8 @@ export async function detectGitHubReadiness(
     Boolean(target?.repoPath) && Boolean(target?.remoteUrl?.trim());
 
   let repositoryReadable = false;
-  let repositoryPushVerified = false;
-  let pullRequestCreationVerified = false;
+  let repositoryPushDryRunSucceeded = false;
+  let repositoryWriteRoleObserved = false;
 
   if (!hasConcreteTarget || !target) {
     return {
@@ -120,12 +120,12 @@ export async function detectGitHubReadiness(
       credentialHintAvailable,
       ghAuthenticated,
       repositoryReadable,
-      repositoryPushVerified,
-      pullRequestCreationVerified,
+      repositoryPushDryRunSucceeded,
+      repositoryWriteRoleObserved,
     };
   }
 
-  repositoryPushVerified =
+  repositoryPushDryRunSucceeded =
     gitAvailable &&
     (
       await run(
@@ -168,7 +168,7 @@ export async function detectGitHubReadiness(
     );
 
     const permission = permissionResult.stdout.trim().toUpperCase();
-    pullRequestCreationVerified =
+    repositoryWriteRoleObserved =
       permissionResult.success && WRITE_PERMISSIONS.has(permission);
   }
 
@@ -178,8 +178,8 @@ export async function detectGitHubReadiness(
     credentialHintAvailable,
     ghAuthenticated,
     repositoryReadable,
-    repositoryPushVerified,
-    pullRequestCreationVerified,
+    repositoryPushDryRunSucceeded,
+    repositoryWriteRoleObserved,
   };
 }
 

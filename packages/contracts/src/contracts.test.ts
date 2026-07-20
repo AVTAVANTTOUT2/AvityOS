@@ -3,6 +3,7 @@ import {
   BrainObjectiveAnalysis,
   CreateProjectRequest,
   E2E_PREFLIGHT_SCHEMA_VERSION,
+  E2EGitHubReadiness,
   E2EPreflightReport,
   E2EScenarioKey,
   E2EScenarioStatus,
@@ -142,8 +143,8 @@ describe("contracts", () => {
         credentialHintAvailable: false,
         ghAuthenticated: false,
         repositoryReadable: false,
-        repositoryPushVerified: false,
-        pullRequestCreationVerified: false,
+        repositoryPushDryRunSucceeded: false,
+        repositoryWriteRoleObserved: false,
       },
       scenarios,
       readyCount: 0,
@@ -156,6 +157,17 @@ describe("contracts", () => {
       E2EPreflightReport.safeParse({
         ...report,
         providers: [{ name: "fake", real: false, workspaceEdits: true, inChain: true }],
+      }).success,
+    ).toBe(false);
+    expect(
+      E2EGitHubReadiness.safeParse({
+        gitAvailable: true,
+        ghAvailable: true,
+        credentialHintAvailable: true,
+        ghAuthenticated: true,
+        repositoryReadable: true,
+        repositoryPushVerified: true,
+        pullRequestCreationVerified: true,
       }).success,
     ).toBe(false);
   });

@@ -118,8 +118,72 @@ describe("detectGitHubReadiness", () => {
 
     expect(readiness.gitAvailable).toBe(true);
     expect(readiness.ghAvailable).toBe(false);
-    expect(readiness.repositoryPushVerified).toBe(true);
-    expect(readiness.pullRequestCreationVerified).toBe(false);
+    expect(readiness.repositoryPushDryRunSucceeded).toBe(true);
+    expect(readiness.repositoryWriteRoleObserved).toBe(false);
+  });
+
+  it("reports only that the configured push dry-run succeeded", async () => {
+    const readiness = await detectGitHubReadiness(
+      {
+        repoPath: "/tmp/demo-repo",
+        remoteUrl: "git@github.com:acme/repo.git",
+      },
+      runnerFrom({
+        "git --version": {
+          success: true,
+          stdout: "git version",
+        },
+        "gh --version": {
+          success: false,
+          stdout: "",
+        },
+        [`git push --dry-run --no-verify git@github.com:acme/repo.git ${PREFLIGHT_REF}`]: {
+          success: true,
+          stdout: "",
+        },
+      }),
+    );
+
+    expect(readiness.repositoryPushDryRunSucceeded).toBe(true);
+    expect("repositoryPushVerified" in readiness).toBe(false);
+  });
+
+  it("reports an observed write role without claiming PR creation was verified", async () => {
+    const readiness = await detectGitHubReadiness(
+      {
+        repoPath: "/tmp/demo-repo",
+        remoteUrl: "git@github.com:acme/repo.git",
+      },
+      runnerFrom({
+        "git --version": {
+          success: true,
+          stdout: "git version",
+        },
+        "gh --version": {
+          success: true,
+          stdout: "gh version",
+        },
+        "gh auth status --hostname github.com": {
+          success: true,
+          stdout: "",
+        },
+        "gh repo view --repo acme/repo --json nameWithOwner": {
+          success: true,
+          stdout: "acme/repo",
+        },
+        "gh repo view --repo acme/repo --json viewerPermission --jq .viewerPermission": {
+          success: true,
+          stdout: "WRITE\n",
+        },
+        [`git push --dry-run --no-verify git@github.com:acme/repo.git ${PREFLIGHT_REF}`]: {
+          success: true,
+          stdout: "",
+        },
+      }),
+    );
+
+    expect(readiness.repositoryWriteRoleObserved).toBe(true);
+    expect("pullRequestCreationVerified" in readiness).toBe(false);
   });
 
   it("verifies push against the configured project remote rather than origin", async () => {
@@ -213,7 +277,7 @@ describe("detectGitHubReadiness", () => {
       },
     );
 
-    expect(readiness.repositoryPushVerified).toBe(false);
+    expect(readiness.repositoryPushDryRunSucceeded).toBe(false);
 
     expect(
       calls.some(
@@ -254,7 +318,7 @@ describe("detectGitHubReadiness", () => {
     );
 
     expect(readiness.repositoryReadable).toBe(true);
-    expect(readiness.pullRequestCreationVerified).toBe(false);
+    expect(readiness.repositoryWriteRoleObserved).toBe(false);
   });
 
   it.each(["WRITE", "MAINTAIN", "ADMIN"] as const)(
@@ -275,7 +339,7 @@ describe("detectGitHubReadiness", () => {
         }),
       );
 
-      expect(readiness.pullRequestCreationVerified).toBe(true);
+      expect(readiness.repositoryWriteRoleObserved).toBe(true);
     },
   );
 
@@ -295,7 +359,7 @@ describe("detectGitHubReadiness", () => {
       }),
     );
 
-    expect(readiness.pullRequestCreationVerified).toBe(false);
+    expect(readiness.repositoryWriteRoleObserved).toBe(false);
   });
 
   it("does not verify PR creation when permission stdout is empty", async () => {
@@ -314,7 +378,7 @@ describe("detectGitHubReadiness", () => {
       }),
     );
 
-    expect(readiness.pullRequestCreationVerified).toBe(false);
+    expect(readiness.repositoryWriteRoleObserved).toBe(false);
   });
 
   it("targets gh checks at the configured GitHub repository slug", async () => {
@@ -381,9 +445,9 @@ describe("detectGitHubReadiness", () => {
       }),
     );
 
-    expect(readiness.repositoryPushVerified).toBe(true);
+    expect(readiness.repositoryPushDryRunSucceeded).toBe(true);
     expect(readiness.repositoryReadable).toBe(false);
-    expect(readiness.pullRequestCreationVerified).toBe(false);
+    expect(readiness.repositoryWriteRoleObserved).toBe(false);
   });
 
   it("never calls git push or gh repo view when the target is incomplete", async () => {
@@ -412,8 +476,8 @@ describe("detectGitHubReadiness", () => {
       ),
     ).toBe(false);
     expect(readiness.repositoryReadable).toBe(false);
-    expect(readiness.repositoryPushVerified).toBe(false);
-    expect(readiness.pullRequestCreationVerified).toBe(false);
+    expect(readiness.repositoryPushDryRunSucceeded).toBe(false);
+    expect(readiness.repositoryWriteRoleObserved).toBe(false);
   });
 
   it("never claims repository readiness when remoteUrl is missing", async () => {
@@ -437,9 +501,9 @@ describe("detectGitHubReadiness", () => {
     expect(calls.some((c) => c.command === "git" && c.args[0] === "push")).toBe(
       false,
     );
-    expect(readiness.repositoryPushVerified).toBe(false);
+    expect(readiness.repositoryPushDryRunSucceeded).toBe(false);
     expect(readiness.repositoryReadable).toBe(false);
-    expect(readiness.pullRequestCreationVerified).toBe(false);
+    expect(readiness.repositoryWriteRoleObserved).toBe(false);
   });
 
   it("returns only boolean readiness fields with no command output or secrets", async () => {
@@ -462,9 +526,9 @@ describe("detectGitHubReadiness", () => {
       "ghAuthenticated",
       "ghAvailable",
       "gitAvailable",
-      "pullRequestCreationVerified",
-      "repositoryPushVerified",
+      "repositoryPushDryRunSucceeded",
       "repositoryReadable",
+      "repositoryWriteRoleObserved",
     ]);
     expect(JSON.stringify(readiness)).not.toMatch(
       /stdout|stderr|ghp_|github_pat_|sk-/i,

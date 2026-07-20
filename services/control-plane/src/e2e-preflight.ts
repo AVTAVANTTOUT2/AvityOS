@@ -45,8 +45,8 @@ export interface E2EPreflightInputs {
     credentialHintAvailable: boolean;
     ghAuthenticated: boolean;
     repositoryReadable: boolean;
-    repositoryPushVerified: boolean;
-    pullRequestCreationVerified: boolean;
+    repositoryPushDryRunSucceeded: boolean;
+    repositoryWriteRoleObserved: boolean;
   };
   now?: () => Date;
 }
@@ -263,13 +263,13 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
         ["git"],
       ),
     );
-  } else if (!github.repositoryPushVerified) {
+  } else if (!github.repositoryPushDryRunSucceeded) {
     scenarios.push(
       blocked(
         "branch_push",
         "Push a dedicated branch",
         "blocked_configuration",
-        "git is available, but a non-interactive dry-run push could not be verified for the concrete repository. Pass projectId to verify push access for a concrete repository.",
+        "The configured project remote did not pass the non-mutating dry-run push preflight. This may be caused by credentials, connectivity, repository configuration or remote policy. Pass projectId to run a non-mutating dry-run push against the exact remote configured for a concrete project.",
         [],
       ),
     );
@@ -278,7 +278,7 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
       ready(
         "branch_push",
         "Push a dedicated branch",
-        "git is available and a non-interactive dry-run push succeeded for the concrete repository.",
+        "A non-mutating dry-run push succeeded against the exact remote configured for the project. This does not prove that a real remote ref update will pass all server-side rules or hooks.",
       ),
     );
   }
@@ -309,23 +309,23 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
         ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"],
       ),
     );
-  } else if (!github.repositoryPushVerified) {
+  } else if (!github.repositoryPushDryRunSucceeded) {
     scenarios.push(
       blocked(
         "draft_pull_request",
         "Create a draft pull request",
         "blocked_configuration",
-        "The account may have GitHub pull-request permissions, but the configured project remote did not pass the non-interactive dry-run push required before creating a pull request.",
+        "The account may have a compatible GitHub repository role, but the configured remote did not pass the non-mutating dry-run push required before attempting a Pull Request.",
         [],
       ),
     );
-  } else if (!github.pullRequestCreationVerified) {
+  } else if (!github.repositoryWriteRoleObserved) {
     scenarios.push(
       blocked(
         "draft_pull_request",
         "Create a draft pull request",
         "blocked_configuration",
-        "gh is authenticated, but the current account does not have WRITE, MAINTAIN or ADMIN permission for the concrete repository.",
+        "gh is authenticated, but the observed repository role is not WRITE, MAINTAIN or ADMIN.",
         [],
       ),
     );
@@ -334,11 +334,10 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
       ready(
         "draft_pull_request",
         "Create a draft pull request",
-        "git and gh are available, the configured remote passed a dry-run push, gh authentication succeeds, and the account has WRITE, MAINTAIN or ADMIN permission for the concrete repository.",
+        "The configured remote passed the non-mutating push dry-run, gh authentication succeeded, and the account reports a WRITE, MAINTAIN or ADMIN repository role. The preflight does not prove token-specific Pull Requests write permission or final server-side acceptance.",
       ),
     );
   }
-
   // Structural guarantee, not credential-dependent: the engine only marks
   // approved drafts ready and contains no merge operation.
   scenarios.push(
@@ -365,6 +364,6 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
     scenarios,
     readyCount,
     blockedCount,
-    note: "Preflight reports scenario runnability only; it never asserts that a live scenario passed.",
+    note: "Preflight reports whether a live attempt appears runnable from non-mutating checks. It never guarantees that a real push, remote rule evaluation or Pull Request creation will succeed.",
   });
 }

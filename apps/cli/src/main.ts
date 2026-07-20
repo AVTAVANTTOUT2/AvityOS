@@ -506,8 +506,8 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
           credentialHintAvailable: boolean;
           ghAuthenticated: boolean;
           repositoryReadable: boolean;
-          repositoryPushVerified: boolean;
-          pullRequestCreationVerified: boolean;
+          repositoryPushDryRunSucceeded: boolean;
+          repositoryWriteRoleObserved: boolean;
         };
         scenarios: { key: string; title: string; status: string; detail: string; requires: string[] }[];
       }
@@ -530,8 +530,8 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
           `credential hint: ${r.github.credentialHintAvailable}`,
           `gh authenticated: ${r.github.ghAuthenticated}`,
           `repository readable: ${r.github.repositoryReadable}`,
-          `repository push verified: ${r.github.repositoryPushVerified}`,
-          `PR creation verified: ${r.github.pullRequestCreationVerified}`,
+          `repository push dry-run succeeded: ${r.github.repositoryPushDryRunSucceeded}`,
+          `repository write role observed: ${r.github.repositoryWriteRoleObserved}`,
           "",
           table(rows, ["scenario", "status", "detail"]),
           "",

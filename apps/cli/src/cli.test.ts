@@ -256,8 +256,8 @@ describe("avity CLI", () => {
         credentialHintAvailable: boolean;
         ghAuthenticated: boolean;
         repositoryReadable: boolean;
-        repositoryPushVerified: boolean;
-        pullRequestCreationVerified: boolean;
+        repositoryPushDryRunSucceeded: boolean;
+        repositoryWriteRoleObserved: boolean;
       };
       scenarios: { key: string; status: string }[];
       note: string;
@@ -272,7 +272,7 @@ describe("avity CLI", () => {
     for (const scenario of report.scenarios) {
       expect(["ready", "blocked_missing_credentials", "blocked_configuration"]).toContain(scenario.status);
     }
-    expect(report.note).toMatch(/never asserts/i);
+    expect(report.note).toMatch(/never guarantees/i);
   });
 
   it("builds the E2E preflight request with an encoded project id", async () => {
@@ -281,8 +281,10 @@ describe("avity CLI", () => {
     expect(human.out).toMatch(/credential hint:/i);
     expect(human.out).toMatch(/gh authenticated:/i);
     expect(human.out).toMatch(/repository readable:/i);
-    expect(human.out).toMatch(/repository push verified:/i);
-    expect(human.out).toMatch(/PR creation verified:/i);
+    expect(human.out).toMatch(/repository push dry-run succeeded:/i);
+    expect(human.out).toMatch(/repository write role observed:/i);
+    expect(human.out).not.toMatch(/repository push verified:/i);
+    expect(human.out).not.toMatch(/PR creation verified:/i);
     expect(human.out).not.toMatch(/repository access verified:/i);
     expect(human.out).not.toMatch(/sk-|ghp_|github_pat_/i);
 

@@ -204,7 +204,9 @@ describe("E2E preflight endpoint", () => {
     const body = await res.json();
     expect(E2EPreflightReport.safeParse(body).success).toBe(true);
     const serialized = JSON.stringify(body);
-    expect(serialized).not.toMatch(/sk-|api[_-]?key=|token=|ghp_|github_pat_/i);
+    expect(JSON.stringify(body)).not.toMatch(
+      /repositoryPushVerified|pullRequestCreationVerified|stdout|stderr|remoteUrl|repoRemoteUrl|ghp_|github_pat_|sk-|https:\/\/[^ ]+:[^ ]+@/i,
+    );
   });
 
   it("returns 404 for an unknown projectId", async () => {
@@ -264,13 +266,13 @@ describe("E2E preflight endpoint", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       github: {
-        repositoryPushVerified: boolean;
-        pullRequestCreationVerified: boolean;
+        repositoryPushDryRunSucceeded: boolean;
+        repositoryWriteRoleObserved: boolean;
       };
       scenarios: { key: string; status: string }[];
     };
-    expect(body.github.repositoryPushVerified).toBe(true);
-    expect(body.github.pullRequestCreationVerified).toBe(true);
+    expect(body.github.repositoryPushDryRunSucceeded).toBe(true);
+    expect(body.github.repositoryWriteRoleObserved).toBe(true);
     expect(body.scenarios.find((s) => s.key === "branch_push")?.status).toBe("ready");
     expect(body.scenarios.find((s) => s.key === "draft_pull_request")?.status).toBe("ready");
     expect(JSON.stringify(body)).not.toMatch(/acme\/preflight-target\.git|repoRemoteUrl|remoteUrl/i);
@@ -297,10 +299,10 @@ describe("E2E preflight endpoint", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      github: { repositoryPushVerified: boolean; pullRequestCreationVerified: boolean };
+      github: { repositoryPushDryRunSucceeded: boolean; repositoryWriteRoleObserved: boolean };
       scenarios: { key: string; status: string }[];
     };
-    expect(body.github.repositoryPushVerified).toBe(false);
+    expect(body.github.repositoryPushDryRunSucceeded).toBe(false);
     expect(body.scenarios.find((s) => s.key === "branch_push")?.status).toBe("blocked_configuration");
     expect(body.scenarios.find((s) => s.key === "draft_pull_request")?.status).not.toBe("ready");
   });
