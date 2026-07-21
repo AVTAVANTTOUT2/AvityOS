@@ -73,6 +73,14 @@ describe("policy engine", () => {
     expect(isPathAllowed(wt, ["src/**"], [], "/tmp/wt/m1/src/a.ts").effect).toBe("allow");
     expect(isPathAllowed(wt, ["src/**"], [], "/tmp/wt/m1/infra/x.tf").effect).toBe("deny");
   });
+
+  it("path policy denies a sibling worktree sharing a textual prefix and canonicalizes ..", () => {
+    const wt = "/tmp/wt/m1";
+    // Sibling that only shares the prefix "/tmp/wt/m1" must not be treated as inside.
+    expect(isPathAllowed(wt, [], [], "/tmp/wt/m1-evil/secret").effect).toBe("deny");
+    // A lexical `..` escape resolves outside the worktree.
+    expect(isPathAllowed(wt, [], [], "/tmp/wt/m1/../m2/x").effect).toBe("deny");
+  });
 });
 
 describe("secret redaction", () => {

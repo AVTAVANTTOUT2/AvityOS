@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { TeamRole, type Mission, type Project } from "@avityos/contracts";
 import {
@@ -21,7 +21,16 @@ import {
   publishGitHubPullRequest,
   removeWorktree,
 } from "@avityos/git";
-import { checkBudget, isCommandAllowed, isPathAllowed, sandboxCommand, type CommandPolicy } from "@avityos/policy";
+import {
+  checkBudget,
+  ConfinementError,
+  isCommandAllowed,
+  isInsideRoot,
+  isPathAllowed,
+  resolveAndAssertInside,
+  sandboxCommand,
+  type CommandPolicy,
+} from "@avityos/policy";
 import type { ProviderAdapter } from "@avityos/providers";
 import { BrainPipeline } from "./brain.js";
 import {
@@ -504,6 +513,11 @@ export class Engine {
     const branch = mission.branchName ?? missionBranchName(mission.id, mission.title);
     const worktreePath = mission.worktreePath ?? join(project.repoPath, ".avity", "worktrees", mission.id);
 
+    // Confine the worktree location to <repo>/.avity/worktrees on canonical
+    // paths. Rejects a persisted/redirected worktree path that escapes, and a
+    // `.avity/worktrees` whose components symlink outside the repository.
+    assertWorktreeConfined(project.repoPath, worktreePath);
+
     if (!existsSync(worktreePath)) {
       mkdirSync(dirname(worktreePath), { recursive: true });
       const existing = await listWorktrees(project.repoPath);
@@ -865,15 +879,31 @@ export class Engine {
       );
 
       for (const artifact of mission.contract.expectedArtifacts) {
-        const target = join(mission.worktreePath, artifact);
+        // Canonical, fail-closed artifact confinement: relative-only, no `..`,
+        // must exist, and the artifact itself must not be a symlink (nor sit
+        // behind a symlink component that resolves outside the worktree).
+        let confined: string;
+        try {
+          confined = resolveAndAssertInside(mission.worktreePath, artifact, {
+            allowAbsolute: false,
+            allowParentSegments: false,
+            mustExist: true,
+            denySymlinkedFinal: true,
+          }).absolute;
+        } catch (err) {
+          const reason = err instanceof ConfinementError ? err.message : String(err);
+          this.store.appendAudit(project.id, "policy", "mission.artifact_violation", `${missionId}: ${artifact}`);
+          this.failValidation(mission, `expected artifact rejected: ${artifact} (${reason})`, pauseGeneration);
+          return;
+        }
         const verdict = isPathAllowed(
           mission.worktreePath,
           mission.contract.allowedPaths,
           mission.contract.forbiddenPaths,
-          target,
+          confined,
         );
-        if (verdict.effect !== "allow" || !existsSync(target)) {
-          this.failValidation(mission, `expected artifact missing or forbidden: ${artifact}`, pauseGeneration);
+        if (verdict.effect !== "allow") {
+          this.failValidation(mission, `expected artifact forbidden: ${artifact} (${verdict.reason})`, pauseGeneration);
           return;
         }
       }
@@ -1410,6 +1440,27 @@ export class Engine {
       this.store.transitionMission(missionId, "cancelled", "cancelled by user", "user");
     }
     await this.cleanupWorktree(mission);
+  }
+}
+
+/**
+ * Assert a mission worktree lives under <repo>/.avity/worktrees on canonical
+ * paths. Throws {@link ConfinementError} when the worktrees root symlinks out
+ * of the repository or the (possibly persisted) worktree path escapes it.
+ */
+function assertWorktreeConfined(repoPath: string, worktreePath: string): void {
+  const worktreesRoot = join(repoPath, ".avity", "worktrees");
+  mkdirSync(worktreesRoot, { recursive: true });
+  // Canonicalises the worktrees root; a symlinked component escaping the repo
+  // throws here.
+  resolveAndAssertInside(repoPath, relative(repoPath, worktreesRoot), {
+    allowParentSegments: false,
+  });
+  if (!isInsideRoot(worktreesRoot, worktreePath)) {
+    throw new ConfinementError(
+      `worktree path escapes ${worktreesRoot}: ${worktreePath}`,
+      "escapes_root",
+    );
   }
 }
 
