@@ -162,9 +162,12 @@ describe("fallback policy", () => {
     alternateProvidersAllowed: true,
   };
 
-  it("never retries auth or policy errors", () => {
+  it("never retries auth, policy, or sandbox-unavailable errors", () => {
     expect(decideFallback({ ...base, category: "auth" }).action).toBe("escalate_user");
     expect(decideFallback({ ...base, category: "policy_denied" }).action).toBe("escalate_user");
+    expect(decideFallback({ ...base, category: "sandbox_unavailable" }).action).toBe(
+      "escalate_user",
+    );
   });
 
   it("waits for a rate-limit reset within the policy budget", () => {
