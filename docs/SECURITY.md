@@ -35,9 +35,9 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
     **denied by default** and re-granted only by an explicit allowlist:
     - **Readable:** the workspace, the throwaway HOME, the resolved executable
       and its detected runtime (its directory, its safe install root, and the
-      shared-library directories reported by `otool -L` / `ldd` — including the
-      specific package-manager prefix, e.g. `/opt/homebrew`, that backs the
-      binary, never all of `/opt` or `/usr/local`), a minimal set of system
+      shared-library directories reported by bounded `otool -L` / `ldd` scans —
+      exact executable dir, exact package/formula root, and exact library dirs,
+      **never** all of `/opt/homebrew` or `/usr/local`), a minimal set of system
       trees needed to start (see below), device nodes, CA trust, and any paths a
       **trusted policy** declares via `readablePaths`/`runtimePaths`. Path
       arguments are validated (absolute + must exist) and canonicalised, and are
@@ -52,12 +52,24 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
       A secret placed in any of these is unreadable — proven by canary tests
       that assert the **content** is not returned, not merely a non-zero exit.
     - **Writable:** only the workspace and the throwaway HOME (plus `/dev`).
+    - **Reserved env:** `HOME`, `TMPDIR` and `PATH` are owned exclusively by the
+      sandbox; `options.env` and `AVITY_COMMAND_ENV_ALLOWLIST` that name them are
+      rejected before launch.
+    - **Credential staging:** sources are `lstat`'d, must be regular files (no
+      symlinks), must stay under the real HOME, and must match the provider
+      policy path exactly — a symlink trap from `~/.codex/auth.json` to another
+      provider's secret is refused and never copied.
   - **macOS** uses `sandbox-exec` with `(deny default)` + an explicit
     `file-read*` allowlist. Global `file-read-metadata` lets the loader traverse
     path components (to reach a CLI installed under the host HOME) without
     exposing file **contents**. System read roots: `/usr/lib`, `/usr/bin`,
     `/usr/share`, `/usr/libexec`, `/System`, `/Library`, `/private/etc`,
-    `/private/var/db`, `/dev`, and the root node itself.
+    `/private/var/db`, `/dev`, and the root node itself. Mach IPC is **not**
+    `(allow mach-lookup)` wholesale: SecurityServer/securityd/Keychain,
+    pasteboard, WindowServer and AppleEvents are denied first; only a validated
+    allowlist of bootstrap services (logging, OpenDirectory, prefs, DNS) remains.
+    A Keychain canary test asserts the secret value is never returned from inside
+    the sandbox.
   - **Linux** uses Bubblewrap with a **minimal file namespace** (no
     `--ro-bind / /`): only `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, the
     executable's runtime, the workspace (rw) and throwaway HOME (rw) are bound;
@@ -166,9 +178,12 @@ transport.
   wholesale — they hold no user secrets but are not individually minimised; on
   macOS file **metadata** (names/sizes/existence, not contents) remains globally
   observable so the loader can traverse to CLIs installed under the host HOME.
-  Runtime-dependency detection covers `otool`/`ldd`-declared libraries and the
-  backing package-manager prefix; a CLI that `dlopen`s a library from an
+  Runtime-dependency detection covers bounded recursive `otool`/`ldd` scans of
+  declared libraries and exact package/formula roots — never auto-granting
+  `/opt/homebrew` or `/usr/local` wholesale. A CLI that `dlopen`s a library from an
   undeclared location needs that path added to its policy's `readablePaths`.
+  On macOS, Mach lookup is allowlisted after explicit denies of Keychain and
+  other sensitive IPC; residual metadata visibility and system read roots remain.
   Forced termination escalation (`SIGTERM` → delay → `SIGKILL`) is still
   unimplemented. A stronger container/VM boundary is recommended for hostile
   repositories. The `core.hooksPath=/dev/null` neutralisation targets the POSIX

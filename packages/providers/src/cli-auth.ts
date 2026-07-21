@@ -1,7 +1,8 @@
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SandboxCredentialFile } from "@avityos/policy";
+import { RESERVED_SANDBOX_ENV_VARS } from "@avityos/policy";
 
 /**
  * Explicit per-CLI sandbox auth policy.
@@ -94,10 +95,12 @@ export const CLI_PROVIDER_SANDBOX_POLICIES = {
   command: COMMAND_SANDBOX_POLICY,
 } as const;
 
-function isReadableFile(path: string): boolean {
+function isReadableRegularFile(path: string): boolean {
   try {
+    const st = lstatSync(path);
+    if (st.isSymbolicLink() || !st.isFile()) return false;
     accessSync(path, constants.R_OK);
-    return existsSync(path);
+    return true;
   } catch {
     return false;
   }
@@ -131,7 +134,22 @@ export function resolveCliProviderAuth(
     for (const relative of policy.allowedCredentialFiles) {
       const sourcePath = join(realHome, relative);
       if (!existsSync(sourcePath)) continue;
-      if (!isReadableFile(sourcePath)) {
+      try {
+        const st = lstatSync(sourcePath);
+        if (st.isSymbolicLink()) {
+          return {
+            policy,
+            env: {},
+            credentialFiles: [],
+            authenticated: false,
+            reason:
+              `${policy.providerId} credential path is a symlink and cannot be staged: ${relative}`,
+          };
+        }
+      } catch {
+        continue;
+      }
+      if (!isReadableRegularFile(sourcePath)) {
         return {
           policy,
           env: {},
@@ -174,11 +192,20 @@ export function resolveCliProviderAuth(
 /**
  * Build the generic `command` provider policy from operator allowlists.
  */
+const RESERVED_COMMAND_ENV = new Set<string>(RESERVED_SANDBOX_ENV_VARS);
+
 export function resolveCommandProviderAuth(env: NodeJS.ProcessEnv): ResolvedCliAuth {
   const names = (env.AVITY_COMMAND_ENV_ALLOWLIST ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const reserved = names.filter((n) => RESERVED_COMMAND_ENV.has(n));
+  if (reserved.length > 0) {
+    throw new Error(
+      `AVITY_COMMAND_ENV_ALLOWLIST must not include reserved sandbox variables ` +
+        `[${reserved.join(", ")}]; HOME/TMPDIR/PATH are defined exclusively by the sandbox`,
+    );
+  }
   const policy: CliProviderSandboxPolicy = {
     ...COMMAND_SANDBOX_POLICY,
     allowedEnvironment: names,

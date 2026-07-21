@@ -32,14 +32,18 @@ export interface CommandAdapterConfig {
    */
   credentialFiles?: readonly SandboxCredentialFile[];
   /**
+   * Real HOME used to validate credential sources (regular file, no symlink,
+   * exact policy path). Defaults to `os.homedir()` inside `sandboxCommand`.
+   */
+  credentialHome?: string;
+  /**
    * Extra absolute, canonical paths this provider is explicitly allowed to
    * *read* under the fail-closed sandbox (e.g. a runtime or data directory a
    * specific CLI needs). Declared by trusted provider policy only — never
    * derived from the prompt or the untrusted repository. The sandbox validates
    * each entry (absolute + must exist) before launch.
    */
-  readablePaths?: readonly string[];
-  /**
+  readablePaths?: readonly string[];  /**
    * Per-provider network policy. Defaults to false (fail-closed): only agents
    * that genuinely need to reach a model API should opt in.
    */
@@ -136,6 +140,7 @@ export class CommandProviderAdapter implements ProviderAdapter {
         allowNetwork: this.config.allowNetwork ?? false,
         env: this.config.env ? { ...this.config.env } : undefined,
         credentialFiles: this.config.credentialFiles,
+        credentialHome: this.config.credentialHome,
         readablePaths: this.config.readablePaths,
       });
     } catch (err) {

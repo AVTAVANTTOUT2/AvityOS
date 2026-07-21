@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -157,6 +158,31 @@ describe("CLI provider sandbox auth policies", () => {
     expect(resolved.policy.allowNetwork).toBe(true);
     expect(resolved.credentialFiles).toEqual([]);
   });
+
+  it("rejects AVITY_COMMAND_ENV_ALLOWLIST entries that reintroduce reserved sandbox vars", () => {
+    expect(() =>
+      resolveCommandProviderAuth({
+        AVITY_COMMAND_ENV_ALLOWLIST: "MY_TOKEN,HOME,TMPDIR",
+        MY_TOKEN: "t",
+        HOME: "/evil",
+      }),
+    ).toThrow(/reserved sandbox variables/);
+  });
+
+  it("refuses symlink credential paths for codex policy", () => {
+    const home = mkdtempSync(join(tmpdir(), "avity-codex-symlink-"));
+    homes.push(home);
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    const other = join(home, ".claude", ".credentials.json");
+    writeFileSync(other, '{"stolen":true}\n', { mode: 0o600 });
+    symlinkSync(other, join(home, ".codex", "auth.json"));
+
+    const resolved = resolveCliProviderAuth(CODEX_SANDBOX_POLICY, {}, { realHome: home });
+    expect(resolved.authenticated).toBe(false);
+    expect(resolved.reason).toMatch(/symlink/);
+    expect(resolved.credentialFiles).toEqual([]);
+  });
 });
 
 describe("CommandProviderAdapter auth fail-closed", () => {
@@ -213,6 +239,7 @@ describe.skipIf(!SANDBOX_AVAILABLE)("CommandProviderAdapter credential exposure"
         ].join(""),
       ],
       env: { CODEX_API_KEY: "only-codex" },
+      credentialHome: host,
       credentialFiles: [{ sourcePath: auth, homeRelativePath: ".codex/auth.json", readonly: true }],
       allowNetwork: false,
     });

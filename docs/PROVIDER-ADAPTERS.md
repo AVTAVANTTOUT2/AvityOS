@@ -34,18 +34,23 @@ AvityOS OS sandbox** (`sandboxCommand`), whose boundary is **fail-closed**:
   `/Volumes`, `/mnt`, `/media`, and other providers' credentials are **not
   readable** (not merely mounted read-only).
 - **System runtime exposed:** the executable's directory, its safe install root,
-  and its `otool -L`/`ldd`-declared shared-library directories (including the
-  specific package-manager prefix that backs it, never all of `/opt`); plus the
+  and the exact shared-library / package roots discovered by bounded `otool`/
+  `ldd` scans (**never** all of `/opt/homebrew` or `/usr/local`); plus the
   platform system read roots (`/usr`, `/System`, `/Library`, `/etc`, … on macOS;
   `/usr`, `/bin`, `/lib*`, `/etc`, … bound read-only on Linux).
 - **Network:** **denied by default** — a provider must declare
   `allowNetwork: true` to reach its vendor API. When allowed, CA trust (and, on
   Linux, the resolved `/etc/resolv.conf` for DNS) is available.
 - **Credentials:** only the **minimal** files a provider's policy lists, copied
-  read-only into the throwaway HOME. `process.env` is never inherited; each
-  provider receives only its explicit environment allowlist. The generic
-  `command` adapter forwards only the variables named in
-  `AVITY_COMMAND_ENV_ALLOWLIST`.
+  read-only into the throwaway HOME after `lstat` (regular file, no symlink,
+  canonical path under the real HOME, exact policy path). `process.env` is never
+  inherited; each provider receives only its explicit environment allowlist.
+  `HOME`/`TMPDIR`/`PATH` are reserved by the sandbox. The generic `command`
+  adapter forwards only the variables named in `AVITY_COMMAND_ENV_ALLOWLIST`
+  (which may not list those reserved names).
+- **macOS Mach IPC:** sensitive services (SecurityServer/securityd/Keychain,
+  pasteboard, WindowServer, AppleEvents) are denied; a minimal validated
+  allowlist covers logging, OpenDirectory, prefs and DNS only.
 - **Residual limits:** system read roots are granted wholesale (they hold no
   user secrets); on macOS file *metadata* (names/sizes, not contents) stays
   globally observable for loader path traversal; a CLI that `dlopen`s a library
