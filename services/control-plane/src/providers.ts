@@ -4,6 +4,11 @@ import {
   FakeProviderAdapter,
   OpenAICompatibleAdapter,
   OpenAIResponsesAdapter,
+  resolveCliProviderAuth,
+  resolveCommandProviderAuth,
+  CLAUDE_CODE_SANDBOX_POLICY,
+  CODEX_SANDBOX_POLICY,
+  CURSOR_SANDBOX_POLICY,
   type ProviderAdapter,
 } from "@avityos/providers";
 import { TeamRole, type TeamRole as TeamRoleName } from "@avityos/contracts";
@@ -12,9 +17,8 @@ import { fakeProviderAllowed, FIXTURE_PROVIDER_ID, resolveExecutionMode } from "
 /**
  * Runtime provider registration from environment configuration. Only
  * providers with credentials/config present are registered; the fake
- * provider is always available so the platform works offline. Model names
- * and base URLs are configuration (ADR-0005) — nothing here pins a vendor's
- * current alias.
+ * provider is available only in test/demo modes. Model names and base URLs
+ * are configuration (ADR-0005) — nothing here pins a vendor's current alias.
  *
  * Environment:
  *   OPENAI_API_KEY   [+ AVITY_OPENAI_BASE_URL, AVITY_OPENAI_MODELS]
@@ -28,6 +32,12 @@ import { fakeProviderAllowed, FIXTURE_PROVIDER_ID, resolveExecutionMode } from "
  *   AVITY_PROVIDER_CHAIN   ordered fallback chain, e.g. "openai,anthropic,fake"
  *   AVITY_DEFAULT_MODELS   e.g. "openai=gpt-4o,anthropic=claude-sonnet-4-5"
  *   AVITY_REVIEW_MODELS    reviewer models per provider (distinct identity)
+ *
+ * CLI auth (sandboxed — never inherits process.env or the real HOME):
+ *   Codex:        CODEX_API_KEY or readable ~/.codex/auth.json
+ *   Claude Code:  ANTHROPIC_API_KEY or readable ~/.claude/.credentials.json
+ *   Cursor:       CURSOR_API_KEY
+ *   command:      names in AVITY_COMMAND_ENV_ALLOWLIST only
  */
 export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdapter> {
   const providers = new Map<string, ProviderAdapter>();
@@ -74,6 +84,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
   }
 
   if (env.AVITY_CLAUDE_CODE_BIN) {
+    const auth = resolveCliProviderAuth(CLAUDE_CODE_SANDBOX_POLICY, env);
     const claudeModels = models(env.AVITY_CLAUDE_CODE_MODELS);
     providers.set(
       "claude-code",
@@ -88,14 +99,16 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
           "-p", "{prompt}", "--output-format", "text",
         ],
         models: claudeModels,
-        // Reaches the Anthropic API from inside the sandbox: network required.
-        allowNetwork: true,
-        env: env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY } : {},
+        allowNetwork: CLAUDE_CODE_SANDBOX_POLICY.allowNetwork,
+        env: auth.env,
+        credentialFiles: auth.credentialFiles,
+        authError: auth.authenticated ? undefined : auth.reason,
       }),
     );
   }
 
   if (env.AVITY_CODEX_BIN) {
+    const auth = resolveCliProviderAuth(CODEX_SANDBOX_POLICY, env);
     const codexModels = models(env.AVITY_CODEX_MODELS);
     providers.set(
       "codex",
@@ -110,14 +123,16 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
           "{prompt}",
         ],
         models: codexModels,
-        // Reaches the model API from inside the sandbox: network required.
-        allowNetwork: true,
-        env: env.CODEX_API_KEY ? { CODEX_API_KEY: env.CODEX_API_KEY } : {},
+        allowNetwork: CODEX_SANDBOX_POLICY.allowNetwork,
+        env: auth.env,
+        credentialFiles: auth.credentialFiles,
+        authError: auth.authenticated ? undefined : auth.reason,
       }),
     );
   }
 
   if (env.AVITY_CURSOR_BIN) {
+    const auth = resolveCliProviderAuth(CURSOR_SANDBOX_POLICY, env);
     const cursorModels = models(env.AVITY_CURSOR_MODELS);
     providers.set(
       "cursor",
@@ -130,9 +145,10 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
           "-p", "{prompt}",
         ],
         models: cursorModels,
-        // Reaches the model API from inside the sandbox: network required.
-        allowNetwork: true,
-        env: env.CURSOR_API_KEY ? { CURSOR_API_KEY: env.CURSOR_API_KEY } : {},
+        allowNetwork: CURSOR_SANDBOX_POLICY.allowNetwork,
+        env: auth.env,
+        credentialFiles: auth.credentialFiles,
+        authError: auth.authenticated ? undefined : auth.reason,
       }),
     );
   }
@@ -146,6 +162,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
       }
       args = parsed;
     }
+    const auth = resolveCommandProviderAuth(env);
     providers.set(
       "command",
       new CommandProviderAdapter("command", {
@@ -153,33 +170,14 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
         args,
         models: models(env.AVITY_COMMAND_MODELS),
         workspaceEdits: env.AVITY_COMMAND_WORKSPACE_EDITS === "1",
-        // Generic agents stay network-denied unless explicitly opted in.
-        allowNetwork: env.AVITY_COMMAND_ALLOW_NETWORK === "1",
-        env: parseCommandEnvAllowlist(env),
+        allowNetwork: auth.policy.allowNetwork,
+        env: auth.env,
+        credentialFiles: auth.credentialFiles,
       }),
     );
   }
 
   return providers;
-}
-
-/**
- * Explicit secret allowlist for the generic command adapter. Only the names
- * listed in AVITY_COMMAND_ENV_ALLOWLIST (comma-separated) are forwarded, and
- * only when present. Nothing else from the control-plane environment reaches
- * the sandboxed agent.
- */
-function parseCommandEnvAllowlist(env: NodeJS.ProcessEnv): Record<string, string> {
-  const allowlist = (env.AVITY_COMMAND_ENV_ALLOWLIST ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const result: Record<string, string> = {};
-  for (const name of allowlist) {
-    const value = env[name];
-    if (value !== undefined) result[name] = value;
-  }
-  return result;
 }
 
 /** Parse "name=model,name2=model2" pairs into a map. */

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { sandboxCommand } from "@avityos/policy";
+import { sandboxCommand, type SandboxCredentialFile } from "@avityos/policy";
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -28,10 +28,19 @@ export interface CommandAdapterConfig {
    */
   env?: Readonly<Record<string, string>>;
   /**
+   * Minimal credential files staged into the throwaway HOME (never the real HOME).
+   */
+  credentialFiles?: readonly SandboxCredentialFile[];
+  /**
    * Per-provider network policy. Defaults to false (fail-closed): only agents
    * that genuinely need to reach a model API should opt in.
    */
   allowNetwork?: boolean;
+  /**
+   * When set, startRun fails closed with category `auth` before spawn.
+   * Used when the provider policy requires auth material that is missing.
+   */
+  authError?: string;
 }
 
 /**
@@ -39,6 +48,10 @@ export interface CommandAdapterConfig {
  * non-interactive prompt mode (Claude Code `-p`, Cursor CLI, custom tools).
  * Output is streamed line-buffered; the process group is killed on cancel so
  * no orphan children survive.
+ *
+ * Note: cancel currently sends SIGTERM to the process group only. Escalation
+ * SIGTERM → grace period → SIGKILL is intentionally out of scope for the
+ * execution-hardening work and remains a residual risk for stuck CLIs.
  */
 export class CommandProviderAdapter implements ProviderAdapter {
   readonly name: string;
@@ -54,6 +67,11 @@ export class CommandProviderAdapter implements ProviderAdapter {
         `command adapter executable must be a bare program name/path, got ${JSON.stringify(config.executable)}`,
       );
     }
+  }
+
+  /** Test/inspection helper: expose the resolved adapter config. */
+  getConfig(): Readonly<CommandAdapterConfig> {
+    return this.config;
   }
 
   capabilities(): ProviderCapabilities {
@@ -72,10 +90,18 @@ export class CommandProviderAdapter implements ProviderAdapter {
   }
 
   async healthy(): Promise<boolean> {
-    return true;
+    return !this.config.authError;
   }
 
   startRun(input: StartRunInput): RunHandle {
+    if (this.config.authError) {
+      const message = this.config.authError;
+      async function* failedAuth(): AsyncGenerator<RunEvent, void, void> {
+        yield { type: "error", category: "auth", message };
+      }
+      return { events: failedAuth(), cancel: async () => {} };
+    }
+
     const combinedPrompt = [input.systemPrompt.trim(), input.userPrompt.trim()]
       .filter(Boolean)
       .join("\n\n--- MISSION ---\n\n");
@@ -91,16 +117,17 @@ export class CommandProviderAdapter implements ProviderAdapter {
     // Every CLI agent runs inside the AvityOS OS sandbox: an isolated throwaway
     // HOME, the workspace as the only writable/readable project path, the real
     // user HOME hidden, network denied unless this provider opts in, and an
-    // explicit env allowlist. The control plane's process.env (API keys, git
-    // config, unrelated repositories) is never inherited. If the host cannot
-    // provide the sandbox primitive, the run fails closed rather than executing
-    // with ambient authority.
+    // explicit env allowlist. Credential files are staged only when the
+    // provider policy lists them. The control plane's process.env is never
+    // inherited. If the host cannot provide the sandbox primitive, the run
+    // fails closed rather than executing with ambient authority.
     const workspace = input.cwd ?? process.cwd();
     let invocation: ReturnType<typeof sandboxCommand>;
     try {
       invocation = sandboxCommand([this.config.executable, ...argv], workspace, {
         allowNetwork: this.config.allowNetwork ?? false,
         env: this.config.env ? { ...this.config.env } : undefined,
+        credentialFiles: this.config.credentialFiles,
       });
     } catch (err) {
       // Fail closed but stay within the adapter contract: surface a normalized

@@ -25,14 +25,20 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
 - **OS containment** — check processes **and every CLI coding agent**
   (`CommandProviderAdapter`: Claude Code, Cursor, Codex, generic command) run
   through the same `sandboxCommand` primitive. They receive argv (never shell
-  strings), an explicit per-provider environment allowlist (never
-  `process.env`), a throwaway HOME/TMPDIR and, by default, **no network** —
-  each provider must opt into network in its own policy (`allowNetwork`), and
-  the generic command adapter also opts secrets in by name via
-  `AVITY_COMMAND_ENV_ALLOWLIST`. macOS uses `sandbox-exec` with only the
-  worktree writable, host HOME unreadable and network denied; Linux uses
-  Bubblewrap and **fails closed** if unavailable. Process groups and the
-  sandbox temp HOME are torn down on completion, timeout and cancel.
+  strings), an explicit **per-provider** environment allowlist (never
+  `process.env`), a throwaway HOME/TMPDIR, and only the credential files that
+  provider's policy lists (never the full host HOME, never `~/.ssh`, never
+  another provider's secrets). Network is **denied by default**; each provider
+  opts in via `allowNetwork`. Missing required auth material fails closed with
+  category `auth` — there is no fallback to the real HOME. Generic isolation
+  (throwaway HOME, env allowlist, host-HOME denial) is covered by tests using
+  local probes such as `printenv`/`node`; those probes prove the sandbox
+  boundary, **not** that Claude/Codex/Cursor completed an authenticated vendor
+  call. Separate smoke tests may run `--version` when a binary is installed.
+  macOS uses `sandbox-exec`; Linux uses Bubblewrap and **fails closed** if
+  unavailable. Process groups and the sandbox temp HOME are torn down on
+  completion, timeout and cancel. Cancel currently sends `SIGTERM` only;
+  escalation to `SIGKILL` after a grace period is **not** implemented.
 - **Git boundary** — every automated Git command runs through one hardened
   runner that forces `-c core.hooksPath=/dev/null` (plus `commit.gpgsign`,
   `core.fsmonitor`, `core.untrackedCache` off). This neutralises **all**
@@ -56,8 +62,11 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   symlinks in every existing component, treats a sibling sharing only a textual
   prefix (`<wt>-evil`) as outside, and handles not-yet-created paths. Changed
   files, `expectedArtifacts` (fail-closed: must exist and not be a symlink),
-  and the mission worktree location (confined to `<repo>/.avity/worktrees`, a
-  symlinked component escaping the repo is rejected) all flow through it.
+  and the mission worktree location (confined to `<repo>/.avity/worktrees` via
+  `ensureConfinedDirectory`, which inspects every existing component with
+  `lstat` and refuses outbound symlinks **before** creating any missing
+  directory — so a redirected `.avity` cannot materialise paths outside the
+  repo) all flow through it.
   Coding missions require a diff and real command exit evidence; missing checks
   cannot pass.
 - **Brain snapshot boundary** — the AI planning snapshot is built only from
@@ -102,15 +111,19 @@ transport.
   native user token is protected by Keychain.
 - HTTPS termination and certificate lifecycle for a remote control plane are a
   deployment responsibility; the worker enforces HTTPS but mTLS is not bundled.
-- CLI coding agents now run inside the AvityOS OS sandbox (isolated HOME, no
-  network unless the provider opts in, worktree-only writes) in addition to
-  their own documented sandbox/permission modes. The OS sandbox is not an
-  absolute guarantee: it depends on the host primitive (`sandbox-exec` /
-  Bubblewrap) and its policy grants; providers that require network reach their
-  vendor API from inside the sandbox, and a compromised vendor could still act
-  within its granted scope. A stronger container/VM boundary is recommended for
-  hostile repositories. The `core.hooksPath=/dev/null` neutralisation targets
-  the POSIX platforms AvityOS officially supports (macOS, Linux).
+- CLI coding agents run inside the AvityOS OS sandbox (isolated HOME, no network
+  unless the provider opts in, worktree-only writes) in addition to their own
+  documented sandbox/permission modes. **Proven today:** generic isolation and
+  (when installed) non-mutating binary start (`--version`). **Not proven by CI:**
+  vendor authentication, paid model calls, or full missions under sandbox.
+  Claude macOS Keychain / Cursor Keychain login do not transfer into a throwaway
+  HOME; sandboxed runs require the explicit env/file policy for that provider.
+  The OS sandbox is not an absolute guarantee: it depends on the host primitive
+  (`sandbox-exec` / Bubblewrap) and its policy grants. Forced termination
+  escalation (`SIGTERM` → delay → `SIGKILL`) is still unimplemented. A stronger
+  container/VM boundary is recommended for hostile repositories. The
+  `core.hooksPath=/dev/null` neutralisation targets the POSIX platforms AvityOS
+  officially supports (macOS, Linux).
 - The local HttpOnly session cookie is not marked `Secure` over loopback HTTP;
   remote browser deployments must terminate HTTPS and should set/forward a
   secure-cookie deployment policy.

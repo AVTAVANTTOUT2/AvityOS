@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /**
  * Canonical path confinement (ADR-aligned with the sandbox primitive).
@@ -138,4 +138,142 @@ export function resolveAndAssertInside(
   }
 
   return { absolute: canonical, relative: rel.split(sep).join("/") };
+}
+
+/**
+ * True when `target` is the root or nested under it, comparing already-canonical
+ * absolute paths (no further symlink resolution).
+ */
+function isInsideCanonical(canonicalRoot: string, canonicalTarget: string): boolean {
+  if (canonicalTarget === canonicalRoot) return true;
+  const rel = relative(canonicalRoot, canonicalTarget);
+  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Ensure a directory exists under `root` without ever creating, writing, or
+ * following a path that escapes the repository.
+ *
+ * Sequence (fail-closed):
+ * 1. Canonicalise and validate the confinement root.
+ * 2. Walk each existing path component with `lstat` (no follow).
+ * 3. Reject any symlink / redirect whose realpath leaves the root (including
+ *    dangling symlinks).
+ * 4. Create only missing components whose parent is already validated.
+ * 5. Re-validate the final path after creation.
+ *
+ * This deliberately does **not** call `mkdirSync(..., { recursive: true })` on
+ * the full path up front: that would materialise directories through an
+ * outbound symlink before confinement can reject it.
+ */
+export function ensureConfinedDirectory(root: string, relativePath: string): ConfinedPath {
+  if (typeof relativePath !== "string" || relativePath.trim().length === 0) {
+    throw new ConfinementError("empty or non-string path", "empty");
+  }
+  if (isAbsolute(relativePath)) {
+    throw new ConfinementError(`absolute path not allowed: ${relativePath}`, "absolute_not_allowed");
+  }
+  const parts = segments(relativePath);
+  if (parts.includes("..")) {
+    throw new ConfinementError(`parent segment ".." not allowed: ${relativePath}`, "parent_segment");
+  }
+  if (parts.length === 0) {
+    throw new ConfinementError("empty or non-string path", "empty");
+  }
+
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = realpathSync(resolve(root));
+  } catch {
+    throw new ConfinementError(`confinement root does not exist: ${root}`, "root_missing");
+  }
+
+  let current = canonicalRoot;
+  for (const part of parts) {
+    const next = join(current, part);
+    let st: ReturnType<typeof lstatSync> | undefined;
+    try {
+      st = lstatSync(next);
+    } catch {
+      st = undefined;
+    }
+
+    if (st) {
+      if (st.isSymbolicLink()) {
+        let real: string;
+        try {
+          real = realpathSync(next);
+        } catch {
+          throw new ConfinementError(
+            `symlink component is dangling or unresolvable: ${relativePath}`,
+            "escapes_root",
+          );
+        }
+        if (!isInsideCanonical(canonicalRoot, real)) {
+          throw new ConfinementError(
+            `symlink component escapes confinement root: ${relativePath}`,
+            "escapes_root",
+          );
+        }
+        let after: ReturnType<typeof lstatSync>;
+        try {
+          after = lstatSync(real);
+        } catch {
+          throw new ConfinementError(
+            `symlink component target is missing: ${relativePath}`,
+            "escapes_root",
+          );
+        }
+        if (!after.isDirectory()) {
+          throw new ConfinementError(
+            `symlink component does not resolve to a directory: ${relativePath}`,
+            "escapes_root",
+          );
+        }
+        current = real;
+        continue;
+      }
+
+      if (!st.isDirectory()) {
+        throw new ConfinementError(
+          `path component is not a directory: ${relativePath}`,
+          "escapes_root",
+        );
+      }
+
+      const real = realpathSync(next);
+      if (!isInsideCanonical(canonicalRoot, real)) {
+        throw new ConfinementError(
+          `path escapes confinement root: ${relativePath}`,
+          "escapes_root",
+        );
+      }
+      current = real;
+      continue;
+    }
+
+    // Missing component: parent `current` is already canonical and inside root.
+    if (!isInsideCanonical(canonicalRoot, current)) {
+      throw new ConfinementError(
+        `parent escapes confinement root before create: ${relativePath}`,
+        "escapes_root",
+      );
+    }
+    mkdirSync(next, { recursive: false });
+    const created = realpathSync(next);
+    if (!isInsideCanonical(canonicalRoot, created)) {
+      throw new ConfinementError(
+        `created path escapes confinement root: ${relativePath}`,
+        "escapes_root",
+      );
+    }
+    current = created;
+  }
+
+  // Final membership check through the shared primitive. Outbound symlinks were
+  // already rejected during the walk; an inbound symlink leaf is resolved to its
+  // real path and must remain inside the root.
+  return resolveAndAssertInside(root, relativePath, {
+    mustExist: true,
+  });
 }

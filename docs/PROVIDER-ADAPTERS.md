@@ -10,10 +10,10 @@ tool/agent/policy failure, unknown).
 
 | Name | Interface | Workspace edits | Runtime safety |
 | --- | --- | ---: | --- |
-| `codex` | official `codex exec` | yes | OS sandbox + `workspace-write`, no approvals, ephemeral, no inherited shell env; **network allowed** |
-| `claude-code` | `claude -p` | yes | OS sandbox + safe mode, no persistence, explicit tools/permission mode; **network allowed** |
-| `cursor` | `cursor-agent -p` | yes | OS sandbox + built-in sandbox, trusted explicit workspace, setup scripts disabled; **network allowed** |
-| `command` | configured argv template | opt-in only | OS sandbox; reviewer-only unless `AVITY_COMMAND_WORKSPACE_EDITS=1`; **network denied** unless `AVITY_COMMAND_ALLOW_NETWORK=1` |
+| `codex` | official `codex exec` | yes | OS sandbox + `workspace-write`, no approvals, ephemeral, no inherited shell env; **network allowed**; auth: `CODEX_API_KEY` or staged `~/.codex/auth.json` |
+| `claude-code` | `claude -p` | yes | OS sandbox + safe mode, no persistence, explicit tools/permission mode; **network allowed**; auth: `ANTHROPIC_API_KEY` or staged `~/.claude/.credentials.json` |
+| `cursor` | `cursor-agent -p` | yes | OS sandbox + built-in sandbox, trusted explicit workspace, setup scripts disabled; **network allowed**; auth: `CURSOR_API_KEY` only |
+| `command` | configured argv template | opt-in only | OS sandbox; reviewer-only unless `AVITY_COMMAND_WORKSPACE_EDITS=1`; **network denied** unless `AVITY_COMMAND_ALLOW_NETWORK=1`; env names from `AVITY_COMMAND_ENV_ALLOWLIST` only |
 | `openai` | OpenAI Responses API | no | text/review runs; `store:false`; key scoped to HTTP adapter |
 | `anthropic` | Anthropic Messages API | no | text/review runs |
 | `deepseek` | OpenAI-compatible chat API | no | text/review runs |
@@ -27,9 +27,50 @@ writable/readable project path, HOME is a throwaway directory (the host HOME,
 its SSH keys, Git config and unrelated repositories are hidden), and network is
 **denied by default** — a provider must declare `allowNetwork: true` in its
 policy to reach its vendor API. Each provider receives only an explicit
-environment allowlist; `process.env` is never inherited. The generic `command`
-adapter forwards only the variables named in `AVITY_COMMAND_ENV_ALLOWLIST`.
+environment allowlist and, when listed by policy, a **minimal** credential file
+copied read-only into the throwaway HOME. `process.env` is never inherited. The
+generic `command` adapter forwards only the variables named in
+`AVITY_COMMAND_ENV_ALLOWLIST`.
 
+### CLI auth policies (fail-closed)
+
+| Provider | Allowed env | Allowed credential files (relative to real HOME) | Notes |
+| --- | --- | --- | --- |
+| `codex` | `CODEX_API_KEY` | `.codex/auth.json` | Env preferred; file staged only when env absent. Full `~/.codex` is never copied. |
+| `claude-code` | `ANTHROPIC_API_KEY` | `.claude/.credentials.json` | macOS Keychain / `claude.ai` subscription login is **not** treated as sandbox-portable. |
+| `cursor` | `CURSOR_API_KEY` | _(none)_ | Interactive Keychain/`login` tokens are not mounted. |
+| `command` | names in `AVITY_COMMAND_ENV_ALLOWLIST` | _(none)_ | Operator-defined allowlist only. |
+
+Missing required auth → `healthy() === false` and `startRun` emits
+`category: "auth"` with a clear message. Sandbox unavailable → normalized error,
+never ambient execution. There is **no** fallback to the real HOME.
+
+### What tests actually prove
+
+| Claim | Evidence |
+| --- | --- |
+| Generic sandbox isolation (throwaway HOME, env allowlist, host-HOME denial, write confinement, default no network) | Unit tests using local probes (`printenv`, `sh`, `node`) — **not** a vendor CLI |
+| Per-provider auth policy construction / isolation | `cli-auth` + control-plane provider tests |
+| Binary can start under sandbox | Optional smoke: `codex`/`claude`/`cursor-agent`/`node` `--version` when installed; skipped with reason if missing |
+| Vendor authentication / paid API call / full mission | **Not** claimed by CI — requires an authenticated operator environment (see below) |
+
+Do not treat a green `printenv` test as proof that Claude Code, Codex or Cursor
+completed a real authenticated run.
+
+### Authenticated operator checks (manual, not CI)
+
+With real credentials present, an operator may additionally verify:
+
+1. `CODEX_API_KEY` or `~/.codex/auth.json` → `codex login status` inside a
+   throwaway HOME prepared by AvityOS staging (non-mutating).
+2. `ANTHROPIC_API_KEY` → `claude auth status` / a single `-p` probe with
+   `--max-turns 1` (costs money — optional).
+3. `CURSOR_API_KEY` → `cursor-agent status` / `whoami`.
+
+These checks are intentionally outside credential-free CI.
+
+Forced process-group termination still uses `SIGTERM` only; `SIGTERM` → delay →
+`SIGKILL` escalation remains out of scope.
 ### Fixture-provider gating (`fake`)
 
 The `fake` fixture is only available when the execution mode explicitly permits

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -426,6 +426,8 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     ).toBe(true);
     // nothing was written into the redirected external directory
     expect(existsSync(join(external, "AVITY.md"))).toBe(false);
+    // ensureConfinedDirectory must not create any new entries outside the repo
+    expect((await readdir(external)).length).toBe(0);
     await rm(external, { recursive: true, force: true });
   });
 

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { TeamRole, type Mission, type Project } from "@avityos/contracts";
 import {
@@ -24,6 +24,7 @@ import {
 import {
   checkBudget,
   ConfinementError,
+  ensureConfinedDirectory,
   isCommandAllowed,
   isInsideRoot,
   isPathAllowed,
@@ -519,7 +520,8 @@ export class Engine {
     assertWorktreeConfined(project.repoPath, worktreePath);
 
     if (!existsSync(worktreePath)) {
-      mkdirSync(dirname(worktreePath), { recursive: true });
+      // `.avity/worktrees` was created/validated by assertWorktreeConfined; do
+      // not recursively mkdir through unvalidated components.
       const existing = await listWorktrees(project.repoPath);
       if (this.fencePausedWork(project.id, mission.id, "worktree listing", expectedPauseGeneration)) return null;
       const branchExists = (await git(project.repoPath, "branch", "--list", branch)).trim().length > 0;
@@ -1445,20 +1447,16 @@ export class Engine {
 
 /**
  * Assert a mission worktree lives under <repo>/.avity/worktrees on canonical
- * paths. Throws {@link ConfinementError} when the worktrees root symlinks out
- * of the repository or the (possibly persisted) worktree path escapes it.
+ * paths. Creates missing `.avity` / `worktrees` components only after every
+ * existing component has been inspected with `lstat` and validated — never
+ * via a recursive mkdir that could materialise directories through an
+ * outbound symlink. Throws {@link ConfinementError} when a component escapes.
  */
 function assertWorktreeConfined(repoPath: string, worktreePath: string): void {
-  const worktreesRoot = join(repoPath, ".avity", "worktrees");
-  mkdirSync(worktreesRoot, { recursive: true });
-  // Canonicalises the worktrees root; a symlinked component escaping the repo
-  // throws here.
-  resolveAndAssertInside(repoPath, relative(repoPath, worktreesRoot), {
-    allowParentSegments: false,
-  });
-  if (!isInsideRoot(worktreesRoot, worktreePath)) {
+  const confined = ensureConfinedDirectory(repoPath, join(".avity", "worktrees"));
+  if (!isInsideRoot(confined.absolute, worktreePath)) {
     throw new ConfinementError(
-      `worktree path escapes ${worktreesRoot}: ${worktreePath}`,
+      `worktree path escapes ${confined.absolute}: ${worktreePath}`,
       "escapes_root",
     );
   }
