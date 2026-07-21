@@ -1079,6 +1079,18 @@ export class Engine {
     let invocation: ReturnType<typeof sandboxCommand> | null = null;
     try {
       invocation = sandboxCommand(argv, cwd, readablePaths.length ? { readablePaths } : {});
+    } catch (err) {
+      // Fail closed with an identifiable detail: never pretend a missing OS
+      // sandbox was a non-zero exit from the check command itself.
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        exitCode: null,
+        detail: `sandbox_unavailable: ${message}`,
+      };
+    }
+
+    try {
       const { stdout, stderr } = await execFileAsync(invocation.executable, invocation.args, {
         cwd,
         timeout: this.config.checkTimeoutMs,
@@ -1094,7 +1106,7 @@ export class Engine {
         detail: `${e.stdout ?? ""}${e.stderr ?? ""}`.slice(-500),
       };
     } finally {
-      invocation?.cleanup();
+      invocation.cleanup();
     }
   }
 
