@@ -171,4 +171,106 @@ describe("contracts", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("rejects an E2E preflight report whose provider counts disagree with the provider list", () => {
+    const scenarios = E2EScenarioKey.options.map((key) => ({
+      key,
+      title: key,
+      status: "ready" as const,
+      detail: "fixture",
+      requires: [] as string[],
+    }));
+    const base = {
+      schemaVersion: E2E_PREFLIGHT_SCHEMA_VERSION,
+      generatedAt: "2026-07-19T12:00:00.000Z",
+      readiness: "ready" as const,
+      usesFakeFixtureOnly: false,
+      realProviderCount: 1,
+      realWorkspaceEditorCount: 1,
+      providers: [
+        {
+          name: "codex",
+          real: true,
+          workspaceEdits: true,
+          inGlobalChain: true,
+          routedRoles: [] as string[],
+        },
+        {
+          name: "fake",
+          real: false,
+          workspaceEdits: true,
+          inGlobalChain: false,
+          routedRoles: [] as string[],
+        },
+      ],
+      github: {
+        gitAvailable: true,
+        ghAvailable: true,
+        credentialHintAvailable: true,
+        ghAuthenticated: true,
+        repositoryReadable: true,
+        repositoryPushDryRunSucceeded: true,
+        repositoryWriteRoleObserved: true,
+      },
+      scenarios,
+      readyCount: 10,
+      blockedCount: 0,
+      note: "Preflight reports scenario runnability only.",
+    };
+
+    // Honest baseline: one real provider, one real workspace editor.
+    expect(E2EPreflightReport.safeParse(base).success).toBe(true);
+
+    // realProviderCount must equal providers.filter((p) => p.real).length.
+    expect(
+      E2EPreflightReport.safeParse({ ...base, realProviderCount: 2 }).success,
+    ).toBe(false);
+
+    // realWorkspaceEditorCount must count only real workspace editors, so a
+    // non-real editor (the fake fixture) must never inflate it.
+    expect(
+      E2EPreflightReport.safeParse({ ...base, realWorkspaceEditorCount: 2 })
+        .success,
+    ).toBe(false);
+  });
+
+  it("rejects an E2E preflight report with duplicate provider names", () => {
+    const scenarios = E2EScenarioKey.options.map((key) => ({
+      key,
+      title: key,
+      status: "blocked_configuration" as const,
+      detail: "fixture",
+      requires: [] as string[],
+    }));
+    const duplicated = {
+      name: "codex",
+      real: true,
+      workspaceEdits: true,
+      inGlobalChain: true,
+      routedRoles: [] as string[],
+    };
+    const report = {
+      schemaVersion: E2E_PREFLIGHT_SCHEMA_VERSION,
+      generatedAt: "2026-07-19T12:00:00.000Z",
+      readiness: "incomplete" as const,
+      usesFakeFixtureOnly: false,
+      realProviderCount: 2,
+      realWorkspaceEditorCount: 2,
+      providers: [duplicated, { ...duplicated }],
+      github: {
+        gitAvailable: false,
+        ghAvailable: false,
+        credentialHintAvailable: false,
+        ghAuthenticated: false,
+        repositoryReadable: false,
+        repositoryPushDryRunSucceeded: false,
+        repositoryWriteRoleObserved: false,
+      },
+      scenarios,
+      readyCount: 0,
+      blockedCount: 10,
+      note: "Preflight reports scenario runnability only.",
+    };
+    expect(E2EPreflightReport.safeParse(report).success).toBe(false);
+  });
 });
