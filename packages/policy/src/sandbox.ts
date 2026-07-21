@@ -354,19 +354,24 @@ function sandboxInvocation(
     // tmpfs hides host /tmp, and a private /proc (from --unshare-all's PID
     // namespace) plus a minimal /dev avoid leaking host process/device state.
     const systemRoots = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc"];
-    const roBinds: string[] = [];
-    for (const root of systemRoots) roBinds.push("--ro-bind-try", root, root);
+    const systemBinds: string[] = [];
+    for (const root of systemRoots) systemBinds.push("--ro-bind-try", root, root);
+
     // `extraReadRoots` already includes the executable's directory, its safe
     // install root and detected shared-object dirs (see detectRuntimeReadRoots).
-    const runtimeRoots = new Set<string>(extraReadRoots);
-    for (const root of runtimeRoots) roBinds.push("--ro-bind-try", root, root);
+    // These, the workspace and HOME may live under /tmp, so they must be bound
+    // *after* `--tmpfs /tmp` below — otherwise the tmpfs shadows them (ENOENT).
+    const runtimeBinds: string[] = [];
+    for (const root of new Set<string>(extraReadRoots)) {
+      runtimeBinds.push("--ro-bind-try", root, root);
+    }
     // DNS: `/etc/resolv.conf` is often a symlink into `/run` (systemd-resolved),
     // which we deliberately do not expose. When network is allowed, bind just
     // the resolved target file so name resolution works without mounting /run.
     if (allowNetwork) {
       try {
         const resolv = realpathSync("/etc/resolv.conf");
-        roBinds.push("--ro-bind-try", resolv, resolv);
+        runtimeBinds.push("--ro-bind-try", resolv, resolv);
       } catch {
         // no resolv.conf on this host → nothing to bind
       }
@@ -377,10 +382,12 @@ function sandboxInvocation(
         "--die-with-parent",
         "--unshare-all",
         ...(allowNetwork ? ["--share-net"] : []),
-        ...roBinds,
+        ...systemBinds,
         "--proc", "/proc",
         "--dev", "/dev",
         "--tmpfs", "/tmp",
+        // Bound after the tmpfs so entries under /tmp survive it.
+        ...runtimeBinds,
         "--bind", cwd, cwd,
         "--bind", home, home,
         "--chdir", cwd,

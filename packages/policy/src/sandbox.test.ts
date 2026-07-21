@@ -153,10 +153,17 @@ describe.skipIf(!SANDBOX_AVAILABLE)("sandbox read boundary", () => {
 
   it("denies network by default and allows it only when opted in", () => {
     const workspace = ws();
+    // Probe *external* reachability, not a local loopback bind: Linux
+    // `--unshare-all` gives an isolated netns with a working loopback, so a
+    // 127.0.0.1 bind succeeds even when external network is denied. A connect to
+    // a public IP fails immediately (ENETUNREACH/EPERM) when denied and
+    // connects when allowed (CI runners have outbound internet).
     const probe =
-      "const net=require('net');const s=net.createServer();" +
-      "s.on('error',e=>{process.stdout.write('NETERR:'+e.code);process.exit(0)});" +
-      "s.listen(0,'127.0.0.1',()=>{process.stdout.write('NETOK');s.close();process.exit(0)});";
+      "const net=require('net');const s=net.connect({host:'1.1.1.1',port:443});" +
+      "s.setTimeout(9000);" +
+      "s.on('connect',()=>{process.stdout.write('NETOK');s.destroy();process.exit(0)});" +
+      "s.on('timeout',()=>{process.stdout.write('NETERR:timeout');s.destroy();process.exit(0)});" +
+      "s.on('error',e=>{process.stdout.write('NETERR:'+e.code);process.exit(0)});";
     const denied = runInSandbox(probe, workspace, { allowNetwork: false });
     expect(denied.out).toContain("NETERR");
     const allowed = runInSandbox(probe, workspace, { allowNetwork: true });
