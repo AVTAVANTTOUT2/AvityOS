@@ -317,6 +317,9 @@ importers:
       '@avityos/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@avityos/policy':
+        specifier: workspace:*
+        version: link:../policy
     devDependencies:
       '@types/node':
         specifier: 22.13.1

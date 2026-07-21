@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   AnthropicAdapter,
@@ -14,6 +17,20 @@ async function drain(events: AsyncGenerator<RunEvent>): Promise<RunEvent[]> {
   const out: RunEvent[] = [];
   for await (const ev of events) out.push(ev);
   return out;
+}
+
+/** The OS sandbox primitive AvityOS requires to run any CLI agent. */
+const SANDBOX_AVAILABLE =
+  (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) ||
+  (process.platform === "linux" && ["/usr/bin/bwrap", "/usr/local/bin/bwrap"].some(existsSync));
+
+async function runText(config: ConstructorParameters<typeof CommandProviderAdapter>[1], cwd?: string): Promise<{ events: RunEvent[]; text: string }> {
+  const adapter = new CommandProviderAdapter("sbx", config);
+  const events = await drain(
+    adapter.startRun({ runId: "r", model: "default", systemPrompt: "", userPrompt: "", ...(cwd ? { cwd } : {}) }).events,
+  );
+  const completed = events.find((e) => e.type === "completed") as { resultText: string } | undefined;
+  return { events, text: completed?.resultText ?? "" };
 }
 
 describe("fake provider", () => {
@@ -214,6 +231,89 @@ describe("anthropic adapter", () => {
     );
     expect(events.at(-1)).toMatchObject({ type: "completed", resultText: "claude says hi" });
     expect(events).toContainEqual({ type: "usage", inputTokens: 7, outputTokens: 3, costUsd: 0 });
+  });
+});
+
+describe.skipIf(!SANDBOX_AVAILABLE)("command adapter sandbox isolation", () => {
+  it("runs the agent with a throwaway HOME, never the real one", async () => {
+    const { text } = await runText({ executable: "printenv", args: ["HOME"] });
+    const home = text.trim();
+    expect(home).not.toBe(homedir());
+    expect(home).toContain("avity-sandbox-home-");
+  });
+
+  it("cannot read a file placed in the real HOME", async () => {
+    const canaryDir = mkdtempSync(join(homedir(), ".avity-sbx-canary-"));
+    const canary = join(canaryDir, "secret.txt");
+    const secret = "top-secret-real-home-value";
+    writeFileSync(canary, `${secret}\n`);
+    try {
+      const { text } = await runText({
+        executable: "sh",
+        args: ["-c", `cat '${canary}' 2>/dev/null; echo DONE`],
+      });
+      expect(text).toContain("DONE");
+      expect(text).not.toContain(secret);
+    } finally {
+      rmSync(canaryDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes only explicitly allowlisted environment variables", async () => {
+    process.env.AVITY_SBX_UNAUTHORIZED = "should-not-leak";
+    try {
+      const { text } = await runText({ executable: "printenv", args: [], env: { AGENT_SCOPED: "yes" } });
+      expect(text).toContain("AGENT_SCOPED=yes");
+      expect(text).toContain("HOME=");
+      expect(text).not.toContain("AVITY_SBX_UNAUTHORIZED");
+      expect(text).not.toContain("should-not-leak");
+    } finally {
+      delete process.env.AVITY_SBX_UNAUTHORIZED;
+    }
+  });
+
+  it("runs inside the provided workspace directory", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "avity-sbx-ws-"));
+    try {
+      const { text } = await runText({ executable: "pwd", args: [] }, workspace);
+      // realpath collapses macOS /var → /private/var; compare the basename.
+      expect(text.trim().endsWith(workspace.split("/").pop()!)).toBe(true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses writes outside the workspace and throwaway HOME", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "avity-sbx-ws-"));
+    const external = mkdtempSync(join(tmpdir(), "avity-sbx-ext-"));
+    const forbidden = join(external, "pwned");
+    try {
+      await runText(
+        { executable: "sh", args: ["-c", `echo pwned > '${forbidden}' 2>/dev/null; echo DONE`] },
+        workspace,
+      );
+      expect(existsSync(forbidden)).toBe(false);
+      // A write *inside* the workspace is allowed.
+      const inside = join(workspace, "ok.txt");
+      await runText({ executable: "sh", args: ["-c", `echo ok > '${inside}'; echo DONE`] }, workspace);
+      expect(existsSync(inside)).toBe(true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(external, { recursive: true, force: true });
+    }
+  });
+
+  it("denies network access unless the provider opts in", async () => {
+    const script =
+      "const s=require('net').connect(443,'1.1.1.1');" +
+      "s.on('connect',()=>{s.destroy();process.exit(0)});" +
+      "s.on('error',()=>process.exit(7));" +
+      "setTimeout(()=>process.exit(7),2500);";
+    const { events } = await runText({ executable: "node", args: ["-e", script], allowNetwork: false });
+    // Network denied → the connection cannot succeed → non-zero exit surfaces
+    // as a normalized agent error, never a "completed".
+    expect(events.some((e) => e.type === "completed")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "error" });
   });
 });
 

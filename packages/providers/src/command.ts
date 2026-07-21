@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { sandboxCommand } from "@avityos/policy";
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -20,8 +21,17 @@ export interface CommandAdapterConfig {
   models?: readonly string[];
   /** Whether this command is trusted/capable to make repository edits. */
   workspaceEdits?: boolean;
-  /** Extra environment variables (e.g. non-interactive flags). */
+  /**
+   * Explicit environment allowlist for this provider. These are the *only*
+   * non-baseline variables the sandboxed agent receives (on top of PATH and a
+   * throwaway HOME/TMPDIR). The control plane's process.env is never inherited.
+   */
   env?: Readonly<Record<string, string>>;
+  /**
+   * Per-provider network policy. Defaults to false (fail-closed): only agents
+   * that genuinely need to reach a model API should opt in.
+   */
+  allowNetwork?: boolean;
 }
 
 /**
@@ -78,16 +88,40 @@ export class CommandProviderAdapter implements ProviderAdapter {
         .replaceAll("{model}", input.model),
     );
 
-    // Scoped environment only: the control plane's process.env (API keys,
-    // tokens) is never inherited by CLI agents. Adapter config supplies
-    // exactly what the agent needs.
-    const child = spawn(this.config.executable, argv, {
-      cwd: input.cwd,
-      env: {
-        PATH: process.env.PATH ?? "",
-        HOME: process.env.HOME ?? "",
-        ...this.config.env,
-      },
+    // Every CLI agent runs inside the AvityOS OS sandbox: an isolated throwaway
+    // HOME, the workspace as the only writable/readable project path, the real
+    // user HOME hidden, network denied unless this provider opts in, and an
+    // explicit env allowlist. The control plane's process.env (API keys, git
+    // config, unrelated repositories) is never inherited. If the host cannot
+    // provide the sandbox primitive, the run fails closed rather than executing
+    // with ambient authority.
+    const workspace = input.cwd ?? process.cwd();
+    let invocation: ReturnType<typeof sandboxCommand>;
+    try {
+      invocation = sandboxCommand([this.config.executable, ...argv], workspace, {
+        allowNetwork: this.config.allowNetwork ?? false,
+        env: this.config.env ? { ...this.config.env } : undefined,
+      });
+    } catch (err) {
+      // Fail closed but stay within the adapter contract: surface a normalized
+      // error event instead of throwing out of startRun, so the engine treats
+      // it as a provider failure rather than crashing the mission loop.
+      const message = err instanceof Error ? err.message : String(err);
+      async function* failed(): AsyncGenerator<RunEvent, void, void> {
+        yield { type: "error", category: "unknown", message: `sandbox unavailable: ${message}` };
+      }
+      return { events: failed(), cancel: async () => {} };
+    }
+    let cleanedUp = false;
+    const cleanupSandbox = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      invocation.cleanup();
+    };
+
+    const child = spawn(invocation.executable, invocation.args, {
+      cwd: workspace,
+      env: invocation.env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true, // own process group → clean group kill on cancel
     });
@@ -112,12 +146,14 @@ export class CommandProviderAdapter implements ProviderAdapter {
     child.stderr.on("data", onChunk);
 
     child.on("error", (err) => {
+      cleanupSandbox();
       push({ type: "error", category: "agent_crash", message: `spawn failed: ${err.message}` });
       done = true;
       notify?.();
     });
 
     child.on("close", (code, signal) => {
+      cleanupSandbox();
       if (cancelled) {
         done = true;
         notify?.();
@@ -140,6 +176,7 @@ export class CommandProviderAdapter implements ProviderAdapter {
       ? setTimeout(() => {
           push({ type: "error", category: "unknown", message: `run timed out after ${input.timeoutMs}ms` });
           killGroup(child.pid);
+          cleanupSandbox();
           cancelled = true;
         }, input.timeoutMs)
       : null;
@@ -164,6 +201,7 @@ export class CommandProviderAdapter implements ProviderAdapter {
       cancel: async () => {
         cancelled = true;
         killGroup(child.pid);
+        cleanupSandbox();
         done = true;
         notify?.();
       },
