@@ -217,5 +217,17 @@ export function getCachedGitHubReadiness(
     value,
     expiresAt: current + CACHE_TTL_MS,
   });
+
+  // Never let a rejected detection stick in the cache for the whole TTL: a
+  // transient failure (e.g. an injected runner that throws) would otherwise be
+  // replayed as a rejection on every caller until it expired. Evict the entry
+  // if it rejects, but only when it is still the exact promise we stored so a
+  // newer detection is never clobbered.
+  value.catch(() => {
+    if (cache.get(cacheKey)?.value === value) {
+      cache.delete(cacheKey);
+    }
+  });
+
   return value;
 }
