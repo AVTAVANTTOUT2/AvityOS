@@ -32,8 +32,8 @@ export type E2EScenarioKey = z.infer<typeof E2EScenarioKey>;
  *     channel is absent (buildProviders only registers providers whose
  *     credentials/config are present).
  *   - `blocked_configuration`: providers exist but the configuration cannot
- *     satisfy the scenario (e.g. only one real provider, so no distinct
- *     reviewer and no cross-provider fallback).
+ *     satisfy the scenario (e.g. a registered adapter is not reachable through
+ *     the effective reviewer or mission-role chain).
  */
 export const E2EScenarioStatus = z.enum([
   "ready",
@@ -42,7 +42,7 @@ export const E2EScenarioStatus = z.enum([
 ]);
 export type E2EScenarioStatus = z.infer<typeof E2EScenarioStatus>;
 
-/** Secret-free summary of one registered provider. */
+/** Secret-free summary of one registered provider, including effective routing. */
 export const E2EProviderSummary = z
   .object({
     name: z.string().min(1),
@@ -50,11 +50,59 @@ export const E2EProviderSummary = z
     real: z.boolean(),
     /** Whether the adapter can author repository changes (workspace edits). */
     workspaceEdits: z.boolean(),
-    /** Whether the provider appears in the active fallback chain. */
-    inChain: z.boolean(),
+    /** Present in AVITY_PROVIDER_CHAIN / providerChain global. */
+    inGlobalChain: z.boolean(),
+    /** Roles for which the provider appears in an effective chain. */
+    routedRoles: z.array(z.string().min(1)).default([]),
   })
   .strict();
 export type E2EProviderSummary = z.infer<typeof E2EProviderSummary>;
+
+/**
+ * Non-secret GitHub host readiness. Credential *hints* are informational only;
+ * readability, push dry-run outcome and observed repository role are separate
+ * non-mutating signals — never proof that a live push or PR will succeed.
+ */
+export const E2EGitHubReadiness = z
+  .object({
+    gitAvailable: z.boolean(),
+    ghAvailable: z.boolean(),
+    /**
+     * Indicates that a potential credential channel exists.
+     * This is not proof of valid authentication.
+     */
+    credentialHintAvailable: z.boolean(),
+    /**
+     * Result of a non-interactive `gh auth status` check.
+     * false means gh is absent or not authenticated.
+     */
+    ghAuthenticated: z.boolean(),
+    /**
+     * Le dépôt courant est consultable par gh.
+     * Cette valeur ne prouve aucun droit d’écriture.
+     */
+    repositoryReadable: z.boolean(),
+    /**
+     * Une tentative de push non mutante vers le remote configuré a réussi.
+     *
+     * Cela confirme que la commande peut être préparée et que certaines erreurs
+     * immédiates d’accès ou de configuration ne sont pas survenues.
+     *
+     * Cela ne prouve pas qu’un véritable push serait accepté par les rulesets,
+     * les hooks distants ou toutes les politiques serveur.
+     */
+    repositoryPushDryRunSucceeded: z.boolean(),
+    /**
+     * Le rôle GitHub observé pour le compte courant est WRITE, MAINTAIN ou ADMIN.
+     *
+     * Cela indique un rôle de dépôt compatible avec un workflow de Pull Request,
+     * mais ne prouve pas que le credential actif possède toutes les permissions
+     * fines nécessaires, notamment `Pull requests: write`.
+     */
+    repositoryWriteRoleObserved: z.boolean(),
+  })
+  .strict();
+export type E2EGitHubReadiness = z.infer<typeof E2EGitHubReadiness>;
 
 export const E2EScenarioReport = z
   .object({
@@ -82,11 +130,76 @@ export const E2EPreflightReport = z
     realProviderCount: z.number().int().min(0),
     realWorkspaceEditorCount: z.number().int().min(0),
     providers: z.array(E2EProviderSummary),
+    github: E2EGitHubReadiness,
     scenarios: z.array(E2EScenarioReport),
     readyCount: z.number().int().min(0),
     blockedCount: z.number().int().min(0),
     /** Explicit honesty guard printed with every report. */
     note: z.string().min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((report, ctx) => {
+    const expectedKeys = new Set(E2EScenarioKey.options);
+    const actualKeys = report.scenarios.map((scenario) => scenario.key);
+    const uniqueKeys = new Set(actualKeys);
+
+    if (report.scenarios.length !== E2EScenarioKey.options.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scenarios"],
+        message: `expected exactly ${E2EScenarioKey.options.length} scenarios`,
+      });
+    }
+
+    if (uniqueKeys.size !== actualKeys.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scenarios"],
+        message: "scenario keys must be unique",
+      });
+    }
+
+    for (const key of expectedKeys) {
+      if (!uniqueKeys.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["scenarios"],
+          message: `missing mandatory scenario: ${key}`,
+        });
+      }
+    }
+
+    const actualReadyCount = report.scenarios.filter(
+      (scenario) => scenario.status === "ready",
+    ).length;
+
+    const actualBlockedCount = report.scenarios.length - actualReadyCount;
+
+    if (report.readyCount !== actualReadyCount) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["readyCount"],
+        message: "readyCount does not match scenarios",
+      });
+    }
+
+    if (report.blockedCount !== actualBlockedCount) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["blockedCount"],
+        message: "blockedCount does not match scenarios",
+      });
+    }
+
+    const expectedReadiness =
+      actualBlockedCount === 0 ? "ready" : "incomplete";
+
+    if (report.readiness !== expectedReadiness) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["readiness"],
+        message: "readiness does not match scenario statuses",
+      });
+    }
+  });
 export type E2EPreflightReport = z.infer<typeof E2EPreflightReport>;

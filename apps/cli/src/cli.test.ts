@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG } from "@avityos/control-plane";
+import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG, clearGitHubReadinessCache, getCachedGitHubReadiness } from "@avityos/control-plane";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 
 // Point the CLI at an isolated config before importing it.
@@ -35,6 +35,11 @@ beforeAll(async () => {
   const providers = new Map<string, ProviderAdapter>([["fake", new FakeProviderAdapter()]]);
   engine = new Engine(store, providers, { ...DEFAULT_ENGINE_CONFIG, tickMs: 30 });
   engine.start();
+  clearGitHubReadinessCache();
+  await getCachedGitHubReadiness(undefined, () => Date.now(), async () => ({
+    success: false,
+    stdout: "",
+  }));
   app = await buildServer({ store, engine, version: "test" });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const address = app.server.address();
@@ -245,21 +250,46 @@ describe("avity CLI", () => {
     const report = JSON.parse(result.out) as {
       readiness: string;
       usesFakeFixtureOnly: boolean;
+      github: {
+        gitAvailable: boolean;
+        ghAvailable: boolean;
+        credentialHintAvailable: boolean;
+        ghAuthenticated: boolean;
+        repositoryReadable: boolean;
+        repositoryPushDryRunSucceeded: boolean;
+        repositoryWriteRoleObserved: boolean;
+      };
       scenarios: { key: string; status: string }[];
       note: string;
     };
-    // Only the deterministic fixture is registered here.
     expect(report.usesFakeFixtureOnly).toBe(true);
     expect(report.readiness).toBe("incomplete");
     expect(report.scenarios).toHaveLength(10);
     const planning = report.scenarios.find((s) => s.key === "real_planning")!;
     expect(planning.status).toBe("blocked_missing_credentials");
-    // The structural guarantee holds regardless of credentials.
     const merge = report.scenarios.find((s) => s.key === "no_autonomous_merge")!;
     expect(merge.status).toBe("ready");
-    // Never asserts a passed scenario.
     for (const scenario of report.scenarios) {
       expect(["ready", "blocked_missing_credentials", "blocked_configuration"]).toContain(scenario.status);
     }
+    expect(report.note).toMatch(/never guarantees/i);
+  });
+
+  it("builds the E2E preflight request with an encoded project id", async () => {
+    const human = await run("e2e", "preflight");
+    expect(human.code, human.err || human.out).toBe(0);
+    expect(human.out).toMatch(/credential hint:/i);
+    expect(human.out).toMatch(/gh authenticated:/i);
+    expect(human.out).toMatch(/repository readable:/i);
+    expect(human.out).toMatch(/repository push dry-run succeeded:/i);
+    expect(human.out).toMatch(/repository write role observed:/i);
+    expect(human.out).not.toMatch(/repository push verified:/i);
+    expect(human.out).not.toMatch(/PR creation verified:/i);
+    expect(human.out).not.toMatch(/repository access verified:/i);
+    expect(human.out).not.toMatch(/sk-|ghp_|github_pat_/i);
+
+    const missing = await run("e2e", "preflight", "--project", "prj_missing", "--json");
+    expect(missing.code).toBe(1);
+    expect(missing.err).toContain("not_found");
   });
 });

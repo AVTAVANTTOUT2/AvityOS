@@ -64,34 +64,74 @@ different from the author when one is configured.
 
 ## Live E2E readiness preflight
 
-`GET /v1/e2e/preflight` (CLI: `avity e2e preflight [--json]`) reports whether
-the environment can *run* each of the ten mandatory chantier-4 live scenarios.
-It is a deterministic, secret-free diagnostic: it never runs a provider and
-never asserts a scenario passed. Each scenario carries one of three statuses —
-`ready`, `blocked_missing_credentials` or `blocked_configuration` — and, when
-blocked, the names of the env vars or tooling it still needs (never their
-values). The report is validated against the versioned
-`E2EPreflightReport` contract (`packages/contracts/src/e2e.ts`).
+`GET /v1/e2e/preflight` (CLI: `avity e2e preflight [--json] [--project <id>]`)
+reports whether the environment can *run* each of the ten mandatory
+chantier-4 live scenarios. It is a deterministic, secret-free diagnostic: it
+never runs a provider and never asserts a scenario passed. Each scenario
+carries one of three statuses — `ready`, `blocked_missing_credentials` or
+`blocked_configuration` — and, when blocked, the names of the env vars or
+tooling it still needs (never their values). The report is validated against
+the versioned `E2EPreflightReport` contract (`packages/contracts/src/e2e.ts`).
 
 Runnability is derived from the providers the control plane actually
-registered (which only happens when their credentials/binaries are present),
-the active fallback chain, the orchestrator role chain and host GitHub tooling:
+registered, the **same effective provider routing the Engine uses**, and
+asynchronous non-interactive GitHub host checks:
 
 | Scenario | Runnable when |
 | --- | --- |
-| `real_planning` | a non-fixture provider is in the brain (orchestrator/global) chain |
-| `codex_mission` / `claude_code_mission` / `cursor_mission` | the matching CLI adapter is registered with workspace-edit capability |
-| `reviewer_distinct_from_author` | at least two real providers are registered |
-| `bounded_correction_after_rejection` | at least one real workspace-editing provider is registered |
-| `cross_provider_fallback` | at least two real providers are in the active chain |
-| `branch_push` | `git` plus a credential channel (`GH_TOKEN`/`GITHUB_TOKEN`/`SSH_AUTH_SOCK`) |
-| `draft_pull_request` | the above plus the `gh` CLI |
-| `no_autonomous_merge` | always: structural guarantee, the engine never merges |
+| `real_planning` | a registered non-fixture provider is reachable through the effective orchestrator provider chain |
+| `codex_mission` / `claude_code_mission` / `cursor_mission` | the matching adapter is registered, supports workspace edits, and is reachable through at least one effective mission-role chain |
+| `reviewer_distinct_from_author` | the exact reviewer chain used by the engine contains at least two registered real providers |
+| `bounded_correction_after_rejection` | at least one registered real workspace editor is reachable through an effective mission-role chain |
+| `cross_provider_fallback` | at least one effective brain or mission-role chain contains two registered real providers |
+| `branch_push` | git is available and a non-mutating dry-run push succeeds against the exact remote configured for the project, using the same mission branch naming convention as the real publication workflow |
+| `draft_pull_request` | the configured remote passes the non-mutating push dry-run, git and gh are available, gh authentication succeeds, and the observed repository role is `WRITE`, `MAINTAIN` or `ADMIN` |
+| `no_autonomous_merge` | always; the engine has no merge operation |
+
+`GH_TOKEN`, `GITHUB_TOKEN` and `SSH_AUTH_SOCK` are only credential hints.
+Their presence does not prove that authentication or repository permissions
+work. `gh auth status` may succeed via the credential store or the macOS
+Keychain without any environment variable. Pass `--project <id>` (or
+`?projectId=`) so the preflight can run non-mutating checks against the
+exact remote configured for a concrete checkout; without a project,
+`branch_push` and `draft_pull_request` stay blocked.
+
+### Limits of the read-only GitHub preflight
+
+The preflight is intentionally non-mutating.
+
+A successful `git push --dry-run` confirms that the push command can be
+prepared against the configured remote and that some immediate connectivity,
+authentication or configuration failures were not encountered.
+
+It does not perform a real remote ref update and therefore does not prove
+that every server-side hook, ruleset, branch-creation restriction or
+repository policy will accept the real push.
+
+The `viewerPermission` value returned by GitHub describes the observed
+repository role of the authenticated account. A role of `WRITE`, `MAINTAIN`
+or `ADMIN` is compatible with attempting the AvityOS Pull Request workflow,
+but it does not prove that the active credential has every fine-grained API
+permission required to create a Pull Request.
+
+Accordingly, `ready` means that the live scenario appears runnable and may
+be attempted. It never guarantees that the remote operation will succeed.
+
+The preflight does not assume that the Git remote named `origin` is the
+publication target. It checks the exact remote URL configured on the project.
+
+Pull-request attempt readiness also requires a successful push dry-run
+because AvityOS pushes the mission branch before invoking `gh pr create`.
+
+The preflight branch uses the same `mission/*` naming convention as the real
+publication workflow so matching repository rules and branch protections are
+evaluated consistently.
+
 
 A fixture-only environment reports `readiness: incomplete` and
-`usesFakeFixtureOnly: true`. The preflight is fully offline and never a
-substitute for a real live run — it only tells the operator what a live
-campaign still needs.
+`usesFakeFixtureOnly: true`. The preflight is never a substitute for a real
+live run — it only tells the operator what a live campaign still needs.
+`ready` means the scenario can be attempted, never that it passed.
 
 ## Adding a provider
 

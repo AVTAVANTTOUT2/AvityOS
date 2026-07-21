@@ -3,7 +3,9 @@ import {
   BrainObjectiveAnalysis,
   CreateProjectRequest,
   E2E_PREFLIGHT_SCHEMA_VERSION,
+  E2EGitHubReadiness,
   E2EPreflightReport,
+  E2EScenarioKey,
   E2EScenarioStatus,
   EventEnvelope,
   Mission,
@@ -104,12 +106,21 @@ describe("contracts", () => {
       "blocked_missing_credentials",
       "blocked_configuration",
     ]);
-    // No status may express a passed/succeeded verdict.
     expect(E2EScenarioStatus.safeParse("passed").success).toBe(false);
     expect(E2EScenarioStatus.safeParse("succeeded").success).toBe(false);
+    expect(E2EScenarioStatus.safeParse("success").success).toBe(false);
+    expect(E2EScenarioStatus.safeParse("completed").success).toBe(false);
+    expect(E2EScenarioStatus.safeParse("validated").success).toBe(false);
   });
 
   it("parses a valid E2E preflight report and rejects unknown fields", () => {
+    const scenarios = E2EScenarioKey.options.map((key) => ({
+      key,
+      title: key,
+      status: "blocked_configuration" as const,
+      detail: "fixture",
+      requires: [] as string[],
+    }));
     const report = {
       schemaVersion: E2E_PREFLIGHT_SCHEMA_VERSION,
       generatedAt: "2026-07-19T12:00:00.000Z",
@@ -117,21 +128,47 @@ describe("contracts", () => {
       usesFakeFixtureOnly: true,
       realProviderCount: 0,
       realWorkspaceEditorCount: 0,
-      providers: [{ name: "fake", real: false, workspaceEdits: true, inChain: true }],
-      scenarios: [
+      providers: [
         {
-          key: "no_autonomous_merge" as const,
-          title: "No autonomous merge",
-          status: "ready" as const,
-          detail: "Guaranteed by design.",
-          requires: [],
+          name: "fake",
+          real: false,
+          workspaceEdits: true,
+          inGlobalChain: true,
+          routedRoles: [] as string[],
         },
       ],
-      readyCount: 1,
-      blockedCount: 0,
+      github: {
+        gitAvailable: false,
+        ghAvailable: false,
+        credentialHintAvailable: false,
+        ghAuthenticated: false,
+        repositoryReadable: false,
+        repositoryPushDryRunSucceeded: false,
+        repositoryWriteRoleObserved: false,
+      },
+      scenarios,
+      readyCount: 0,
+      blockedCount: 10,
       note: "Preflight reports scenario runnability only.",
     };
     expect(E2EPreflightReport.safeParse(report).success).toBe(true);
     expect(E2EPreflightReport.safeParse({ ...report, leak: "sk-secret" }).success).toBe(false);
+    expect(
+      E2EPreflightReport.safeParse({
+        ...report,
+        providers: [{ name: "fake", real: false, workspaceEdits: true, inChain: true }],
+      }).success,
+    ).toBe(false);
+    expect(
+      E2EGitHubReadiness.safeParse({
+        gitAvailable: true,
+        ghAvailable: true,
+        credentialHintAvailable: true,
+        ghAuthenticated: true,
+        repositoryReadable: true,
+        repositoryPushVerified: true,
+        pullRequestCreationVerified: true,
+      }).success,
+    ).toBe(false);
   });
 });

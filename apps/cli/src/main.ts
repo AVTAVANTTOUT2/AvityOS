@@ -500,9 +500,22 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
         readyCount: number;
         blockedCount: number;
         note: string;
+        github: {
+          gitAvailable: boolean;
+          ghAvailable: boolean;
+          credentialHintAvailable: boolean;
+          ghAuthenticated: boolean;
+          repositoryReadable: boolean;
+          repositoryPushDryRunSucceeded: boolean;
+          repositoryWriteRoleObserved: boolean;
+        };
         scenarios: { key: string; title: string; status: string; detail: string; requires: string[] }[];
       }
-      const report = await ctx.client.get<Report>("/v1/e2e/preflight");
+      const projectId = flag(ctx, "project");
+      const path = projectId
+        ? `/v1/e2e/preflight?projectId=${encodeURIComponent(projectId)}`
+        : "/v1/e2e/preflight";
+      const report = await ctx.client.get<Report>(path);
       out(ctx, report, (r: Report) => {
         const rows = r.scenarios.map((s) => ({
           scenario: s.key,
@@ -512,6 +525,13 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
         return [
           `readiness: ${r.readiness} (${r.readyCount} ready, ${r.blockedCount} blocked)`,
           `real providers: ${r.realProviderCount}${r.usesFakeFixtureOnly ? " (fake fixture only)" : ""}`,
+          `Git available: ${r.github.gitAvailable}`,
+          `gh available: ${r.github.ghAvailable}`,
+          `credential hint: ${r.github.credentialHintAvailable}`,
+          `gh authenticated: ${r.github.ghAuthenticated}`,
+          `repository readable: ${r.github.repositoryReadable}`,
+          `repository push dry-run succeeded: ${r.github.repositoryPushDryRunSucceeded}`,
+          `repository write role observed: ${r.github.repositoryWriteRoleObserved}`,
           "",
           table(rows, ["scenario", "status", "detail"]),
           "",
@@ -592,7 +612,7 @@ commands:
   run list [--project <id>] | logs <run-id> | pause|resume|cancel <mission-id>
   intervention list | answer <id> [key=answer...|--decision approved|rejected]
   provider list | status
-  e2e preflight                         live E2E readiness (runnability only)
+  e2e preflight [--project <id>]        live E2E readiness (runnability only)
   worker list | enroll <name> | revoke <id>
   pr list [--project <id>] | show <id>
 `;

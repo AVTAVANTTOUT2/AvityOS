@@ -5,6 +5,7 @@ import {
   AnswerClarificationRequest,
   CreateMissionRequest,
   CreateProjectRequest,
+  E2EPreflightReport,
   EnrollWorkerRequest,
   EventStreamQuery,
   PauseProjectRequest,
@@ -19,10 +20,10 @@ import {
 import { IllegalTransitionError } from "@avityos/orchestration";
 import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { buildE2EPreflight } from "./e2e-preflight.js";
 import type { Engine } from "./engine.js";
+import { getCachedGitHubReadiness } from "./github-readiness.js";
 import { ProjectValidationError, validateRepositoryConfiguration } from "./project-validation.js";
 import { newId, now, StoreConflictError, type Store } from "./store.js";
 
@@ -804,25 +805,43 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   // Secret-free readiness preflight for the chantier-4 live E2E campaign.
   // Reports runnability only; never runs a provider and never leaks credentials.
-  app.get("/v1/e2e/preflight", async () => {
-    const hasBinary = (name: string): boolean => {
-      try {
-        execFileSync(name, ["--version"], { stdio: "ignore", timeout: 5000 });
-        return true;
-      } catch {
-        return false;
+  app.get("/v1/e2e/preflight", async (req, reply) => {
+    const query = parse(
+      z.object({
+        projectId: z.string().min(1).optional(),
+      }),
+      req.query,
+    );
+
+    let repositoryTarget:
+      | {
+          repoPath: string;
+          remoteUrl: string;
+        }
+      | undefined;
+    if (query.projectId) {
+      const project = store.getProject(query.projectId);
+      if (!project) {
+        return apiError(reply, 404, "not_found", `project ${query.projectId} not found`);
       }
-    };
-    return buildE2EPreflight({
-      providers: engine.providers,
-      providerChain: engine.providerChain,
-      roleProviderChains: engine.roleProviderChains,
-      git: hasBinary("git"),
-      gh: hasBinary("gh"),
-      githubCredential: Boolean(
-        process.env.GH_TOKEN || process.env.GITHUB_TOKEN || process.env.SSH_AUTH_SOCK,
-      ),
+      if (project.repoPath && project.repoRemoteUrl) {
+        repositoryTarget = {
+          repoPath: project.repoPath,
+          remoteUrl: project.repoRemoteUrl,
+        };
+      }
+    }
+
+    const github = await getCachedGitHubReadiness(repositoryTarget);
+    const routing = engine.getProviderRoutingSnapshot();
+    const report = buildE2EPreflight({
+      providers: routing.providers,
+      providerChain: [...routing.providerChain],
+      roleProviderChains: routing.roleProviderChains,
+      missionRoles: routing.missionRoles,
+      github,
     });
+    return E2EPreflightReport.parse(report);
   });
 
   // ── pull requests ────────────────────────────────────────────────────────

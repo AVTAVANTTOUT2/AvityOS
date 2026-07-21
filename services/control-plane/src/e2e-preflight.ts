@@ -1,17 +1,25 @@
-import type {
+import {
   E2EPreflightReport,
-  E2EProviderSummary,
-  E2EScenarioReport,
-  E2EScenarioStatus,
+  E2E_PREFLIGHT_SCHEMA_VERSION,
+  type E2EProviderSummary,
+  type E2EScenarioReport,
+  type E2EScenarioStatus,
 } from "@avityos/contracts";
-import { E2E_PREFLIGHT_SCHEMA_VERSION } from "@avityos/contracts";
 import type { ProviderAdapter } from "@avityos/providers";
+import {
+  effectiveBrainProviderChain,
+  effectiveProviderChainForRole,
+  providersRoutableForRoles,
+  uniqueProviderChain,
+  type ProviderRoutingInput,
+} from "./provider-routing.js";
 
 /**
  * Deterministic, secret-free readiness preflight for the chantier-4 live E2E
  * campaign. Given the providers the control plane actually registered (which
- * only happens when their credentials/binaries are present) plus the active
- * routing, it reports whether each mandatory scenario is *runnable*.
+ * only happens when their credentials/binaries are present) plus the same
+ * effective routing the Engine uses, it reports whether each mandatory
+ * scenario is *runnable*.
  *
  * It never runs a provider and never asserts a scenario passed: statuses are
  * limited to `ready` / `blocked_missing_credentials` / `blocked_configuration`.
@@ -24,11 +32,22 @@ export interface E2EPreflightInputs {
   providerChain: string[];
   /** Team-role routing; the orchestrator entry seeds the brain chain. */
   roleProviderChains: ReadonlyMap<string, readonly string[]>;
-  /** GitHub tooling and credential channels detected at the host boundary. */
-  git: boolean;
-  gh: boolean;
-  /** True when at least one of GH_TOKEN / GITHUB_TOKEN / SSH_AUTH_SOCK is set. */
-  githubCredential: boolean;
+  /**
+   * Mission roles used to evaluate effective mission-role chains.
+   * Must come from the shared TeamRole contract / Engine snapshot — never
+   * inferred from registered providers alone.
+   */
+  missionRoles: readonly string[];
+  /** Non-secret GitHub host readiness (async detection happens at the boundary). */
+  github: {
+    gitAvailable: boolean;
+    ghAvailable: boolean;
+    credentialHintAvailable: boolean;
+    ghAuthenticated: boolean;
+    repositoryReadable: boolean;
+    repositoryPushDryRunSucceeded: boolean;
+    repositoryWriteRoleObserved: boolean;
+  };
   now?: () => Date;
 }
 
@@ -55,28 +74,37 @@ function ready(
 
 export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightReport {
   const now = inputs.now ?? (() => new Date());
-  const chainSet = new Set(inputs.providerChain);
+  const routingInput: ProviderRoutingInput = {
+    providerChain: inputs.providerChain,
+    roleProviderChains: inputs.roleProviderChains,
+  };
+  const routableMissionProviders = providersRoutableForRoles(
+    routingInput,
+    inputs.missionRoles,
+  );
+  const brainChain = effectiveBrainProviderChain(routingInput);
+  // Engine independent review inspects the global chain only.
+  const reviewChain = uniqueProviderChain(inputs.providerChain);
 
   const providers: E2EProviderSummary[] = [...inputs.providers.entries()]
-    .map(([name, adapter]) => ({
-      name,
-      real: name !== FIXTURE_PROVIDER,
-      workspaceEdits: adapter.capabilities().workspaceEdits,
-      inChain: chainSet.has(name),
-    }))
+    .map(([name, adapter]) => {
+      const inGlobalChain = inputs.providerChain.includes(name);
+      const routedRoles = inputs.missionRoles.filter((role) =>
+        effectiveProviderChainForRole(routingInput, role).includes(name),
+      );
+      return {
+        name,
+        real: name !== FIXTURE_PROVIDER,
+        workspaceEdits: adapter.capabilities().workspaceEdits,
+        inGlobalChain,
+        routedRoles,
+      };
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const realProviders = providers.filter((p) => p.real);
   const realEditors = realProviders.filter((p) => p.workspaceEdits);
-  const realInChain = realProviders.filter((p) => p.inChain);
-
-  // The brain prefers the orchestrator role chain, then the global chain; a
-  // real analyst/planner does not need workspace-edit capability.
-  const brainChain = new Set<string>([
-    ...(inputs.roleProviderChains.get("orchestrator") ?? []),
-    ...inputs.providerChain,
-  ]);
-  const hasRealBrainProvider = realProviders.some((p) => brainChain.has(p.name));
+  const hasRealBrainProvider = realProviders.some((p) => brainChain.includes(p.name));
 
   const hasProvider = (name: string): boolean => inputs.providers.has(name);
 
@@ -87,7 +115,7 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
       ? ready(
           "real_planning",
           "Planning by a real reasoning provider",
-          "A real provider is present in the brain (orchestrator/global) chain.",
+          "A real provider is present in the effective brain (orchestrator) chain.",
         )
       : blocked(
           "real_planning",
@@ -113,99 +141,203 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
       scenarios.push(
         blocked(key, title, "blocked_configuration", `The ${name} adapter cannot author workspace edits.`),
       );
+    } else if (!routableMissionProviders.has(name)) {
+      scenarios.push(
+        blocked(
+          key,
+          title,
+          "blocked_configuration",
+          `The ${name} adapter is registered and can edit workspaces, but it is not reachable through any effective mission-role provider chain.`,
+          ["AVITY_PROVIDER_CHAIN", "AVITY_ROLE_PROVIDERS"],
+        ),
+      );
     } else {
-      scenarios.push(ready(key, title, `The ${name} adapter is registered with workspace-edit capability.`));
+      scenarios.push(
+        ready(
+          key,
+          title,
+          `The ${name} adapter is registered, can edit workspaces, and is reachable through an effective mission-role chain.`,
+        ),
+      );
     }
   }
 
+  const availableRealReviewProviders = reviewChain.filter(
+    (provider) => provider !== FIXTURE_PROVIDER && inputs.providers.has(provider),
+  );
+  const canSelectDistinctReviewer = new Set(availableRealReviewProviders).size >= 2;
+
   scenarios.push(
-    realProviders.length >= 2
+    canSelectDistinctReviewer
       ? ready(
           "reviewer_distinct_from_author",
           "Reviewer distinct from author",
-          "At least two real providers are registered, so an independent reviewer can differ from the author.",
+          "The engine reviewer chain contains at least two registered real providers.",
         )
-      : realProviders.length === 1
+      : availableRealReviewProviders.length === 1
         ? blocked(
             "reviewer_distinct_from_author",
             "Reviewer distinct from author",
             "blocked_configuration",
-            "Only one real provider is registered; a distinct reviewer requires a second real provider.",
+            "The engine reviewer chain contains only one registered real provider; a distinct reviewer requires a second real provider in that chain.",
             ["AVITY_PROVIDER_CHAIN", "AVITY_REVIEW_MODELS"],
           )
+        : realProviders.length >= 1
+          ? blocked(
+              "reviewer_distinct_from_author",
+              "Reviewer distinct from author",
+              "blocked_configuration",
+              "Real providers are registered but fewer than two appear in the engine reviewer chain.",
+              ["AVITY_PROVIDER_CHAIN", "AVITY_REVIEW_MODELS"],
+            )
+          : blocked(
+              "reviewer_distinct_from_author",
+              "Reviewer distinct from author",
+              "blocked_missing_credentials",
+              "No real provider is registered.",
+              ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AVITY_CODEX_BIN", "AVITY_CLAUDE_CODE_BIN", "AVITY_CURSOR_BIN"],
+            ),
+  );
+
+  const routableRealEditors = realEditors.filter((p) => routableMissionProviders.has(p.name));
+  scenarios.push(
+    routableRealEditors.length >= 1
+      ? ready(
+          "bounded_correction_after_rejection",
+          "Bounded correction after rejection",
+          "A real workspace-editing provider is reachable through an effective mission-role chain for bounded correction.",
+        )
+      : realEditors.length >= 1
+        ? blocked(
+            "bounded_correction_after_rejection",
+            "Bounded correction after rejection",
+            "blocked_configuration",
+            "Real workspace-editing providers are registered but none are reachable through an effective mission-role chain.",
+            ["AVITY_PROVIDER_CHAIN", "AVITY_ROLE_PROVIDERS"],
+          )
         : blocked(
-            "reviewer_distinct_from_author",
-            "Reviewer distinct from author",
+            "bounded_correction_after_rejection",
+            "Bounded correction after rejection",
             "blocked_missing_credentials",
-            "No real provider is registered.",
-            ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AVITY_CODEX_BIN", "AVITY_CLAUDE_CODE_BIN", "AVITY_CURSOR_BIN"],
+            "No real workspace-editing provider is registered to author a correction.",
+            ["AVITY_CODEX_BIN", "AVITY_CLAUDE_CODE_BIN", "AVITY_CURSOR_BIN"],
           ),
   );
 
-  scenarios.push(
-    realEditors.length >= 1
-      ? ready(
-          "bounded_correction_after_rejection",
-          "Bounded correction after rejection",
-          "A real workspace-editing provider can re-run a rejected mission for bounded correction.",
-        )
-      : blocked(
-          "bounded_correction_after_rejection",
-          "Bounded correction after rejection",
-          "blocked_missing_credentials",
-          "No real workspace-editing provider is registered to author a correction.",
-          ["AVITY_CODEX_BIN", "AVITY_CLAUDE_CODE_BIN", "AVITY_CURSOR_BIN"],
-        ),
-  );
+  const effectiveChains = [
+    brainChain,
+    ...inputs.missionRoles.map((role) => effectiveProviderChainForRole(routingInput, role)),
+  ];
+  const hasCrossProviderFallback = effectiveChains.some((chain) => {
+    const realAvailable = chain.filter(
+      (provider) => provider !== FIXTURE_PROVIDER && inputs.providers.has(provider),
+    );
+    return new Set(realAvailable).size >= 2;
+  });
 
   scenarios.push(
-    realInChain.length >= 2
+    hasCrossProviderFallback
       ? ready(
           "cross_provider_fallback",
           "Real cross-provider fallback",
-          "The fallback chain contains at least two real providers, so a real fallback can occur.",
+          "At least one effective brain or mission-role chain contains two registered real providers.",
         )
       : blocked(
           "cross_provider_fallback",
           "Real cross-provider fallback",
           "blocked_configuration",
-          "Fewer than two real providers are in the active chain; a real cross-provider fallback cannot occur.",
-          ["AVITY_PROVIDER_CHAIN"],
+          "No effective brain or mission-role chain contains two registered real providers.",
+          ["AVITY_PROVIDER_CHAIN", "AVITY_ROLE_PROVIDERS"],
         ),
   );
 
-  const gitStatus: E2EScenarioStatus = inputs.git && inputs.githubCredential ? "ready" : "blocked_missing_credentials";
-  const gitDetail = inputs.git
-    ? inputs.githubCredential
-      ? "git and a GitHub credential channel are available for pushing a branch."
-      : "git is available but no GitHub credential channel (GH_TOKEN / GITHUB_TOKEN / SSH_AUTH_SOCK) is set."
-    : "git is not available on the host.";
-  const gitRequires = [
-    ...(inputs.git ? [] : ["git"]),
-    ...(inputs.githubCredential ? [] : ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"]),
-  ];
-  scenarios.push(
-    gitStatus === "ready"
-      ? ready("branch_push", "Push a dedicated branch", gitDetail)
-      : blocked("branch_push", "Push a dedicated branch", gitStatus, gitDetail, gitRequires),
-  );
+  const { github } = inputs;
 
-  const prReady = inputs.git && inputs.gh && inputs.githubCredential;
-  const prDetail = prReady
-    ? "git, the gh CLI and a GitHub credential channel are available to open a draft PR."
-    : !inputs.gh
-      ? "the gh CLI is not available on the host."
-      : gitDetail;
-  const prRequires = [
-    ...(inputs.gh ? [] : ["gh"]),
-    ...gitRequires,
-  ];
-  scenarios.push(
-    prReady
-      ? ready("draft_pull_request", "Create a draft pull request", prDetail)
-      : blocked("draft_pull_request", "Create a draft pull request", "blocked_missing_credentials", prDetail, prRequires),
-  );
+  if (!github.gitAvailable) {
+    scenarios.push(
+      blocked(
+        "branch_push",
+        "Push a dedicated branch",
+        "blocked_missing_credentials",
+        "git is not available on the host.",
+        ["git"],
+      ),
+    );
+  } else if (!github.repositoryPushDryRunSucceeded) {
+    scenarios.push(
+      blocked(
+        "branch_push",
+        "Push a dedicated branch",
+        "blocked_configuration",
+        "The configured project remote did not pass the non-mutating dry-run push preflight. This may be caused by credentials, connectivity, repository configuration or remote policy. Pass projectId to run a non-mutating dry-run push against the exact remote configured for a concrete project.",
+        [],
+      ),
+    );
+  } else {
+    scenarios.push(
+      ready(
+        "branch_push",
+        "Push a dedicated branch",
+        "A non-mutating dry-run push succeeded against the exact remote configured for the project. This does not prove that a real remote ref update will pass all server-side rules or hooks.",
+      ),
+    );
+  }
 
+  if (!github.gitAvailable || !github.ghAvailable) {
+    const missing = [
+      ...(github.gitAvailable ? [] : ["git"]),
+      ...(github.ghAvailable ? [] : ["gh"]),
+    ];
+    scenarios.push(
+      blocked(
+        "draft_pull_request",
+        "Create a draft pull request",
+        "blocked_missing_credentials",
+        !github.ghAvailable
+          ? "the gh CLI is not available on the host."
+          : "git is not available on the host.",
+        missing,
+      ),
+    );
+  } else if (!github.ghAuthenticated) {
+    scenarios.push(
+      blocked(
+        "draft_pull_request",
+        "Create a draft pull request",
+        "blocked_missing_credentials",
+        "git and gh are available but GitHub authentication has not been verified; credential hints alone are not sufficient.",
+        ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"],
+      ),
+    );
+  } else if (!github.repositoryPushDryRunSucceeded) {
+    scenarios.push(
+      blocked(
+        "draft_pull_request",
+        "Create a draft pull request",
+        "blocked_configuration",
+        "The account may have a compatible GitHub repository role, but the configured remote did not pass the non-mutating dry-run push required before attempting a Pull Request.",
+        [],
+      ),
+    );
+  } else if (!github.repositoryWriteRoleObserved) {
+    scenarios.push(
+      blocked(
+        "draft_pull_request",
+        "Create a draft pull request",
+        "blocked_configuration",
+        "gh is authenticated, but the observed repository role is not WRITE, MAINTAIN or ADMIN.",
+        [],
+      ),
+    );
+  } else {
+    scenarios.push(
+      ready(
+        "draft_pull_request",
+        "Create a draft pull request",
+        "The configured remote passed the non-mutating push dry-run, gh authentication succeeded, and the account reports a WRITE, MAINTAIN or ADMIN repository role. The preflight does not prove token-specific Pull Requests write permission or final server-side acceptance.",
+      ),
+    );
+  }
   // Structural guarantee, not credential-dependent: the engine only marks
   // approved drafts ready and contains no merge operation.
   scenarios.push(
@@ -218,18 +350,20 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
 
   const readyCount = scenarios.filter((s) => s.status === "ready").length;
   const blockedCount = scenarios.length - readyCount;
+  const readiness = blockedCount === 0 ? "ready" : "incomplete";
 
-  return {
+  return E2EPreflightReport.parse({
     schemaVersion: E2E_PREFLIGHT_SCHEMA_VERSION,
     generatedAt: now().toISOString(),
-    readiness: blockedCount === 0 ? "ready" : "incomplete",
+    readiness,
     usesFakeFixtureOnly: realProviders.length === 0,
     realProviderCount: realProviders.length,
     realWorkspaceEditorCount: realEditors.length,
     providers,
+    github: inputs.github,
     scenarios,
     readyCount,
     blockedCount,
-    note: "Preflight reports scenario runnability only; it never asserts that a live scenario passed.",
-  };
+    note: "Preflight reports whether a live attempt appears runnable from non-mutating checks. It never guarantees that a real push, remote rule evaluation or Pull Request creation will succeed.",
+  });
 }
