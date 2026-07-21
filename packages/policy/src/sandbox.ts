@@ -350,9 +350,12 @@ function sandboxInvocation(
     // below. Replaces the previous `--ro-bind / /`, which exposed the entire
     // host filesystem read-only (other repos, /srv, /opt, /var, /mnt, /media,
     // /tmp, host /proc & /run). Only system runtime trees, the executable's
-    // runtime, the workspace and the throwaway HOME are mounted; a fresh
-    // tmpfs hides host /tmp, and a private /proc (from --unshare-all's PID
-    // namespace) plus a minimal /dev avoid leaking host process/device state.
+    // runtime, the workspace and the throwaway HOME are mounted; a private
+    // /proc (from --unshare-all's PID namespace) plus a minimal /dev avoid
+    // leaking host process/device state. The namespace root (a bwrap tmpfs) is
+    // remounted read-only last, so — as on macOS — only the workspace, the
+    // throwaway HOME and /dev are writable; a stray write elsewhere fails
+    // (EROFS) instead of silently succeeding into the ephemeral root tmpfs.
     const systemRoots = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc"];
     const systemBinds: string[] = [];
     for (const root of systemRoots) systemBinds.push("--ro-bind-try", root, root);
@@ -360,7 +363,8 @@ function sandboxInvocation(
     // `extraReadRoots` already includes the executable's directory, its safe
     // install root and detected shared-object dirs (see detectRuntimeReadRoots).
     // These, the workspace and HOME may live under /tmp, so they must be bound
-    // *after* `--tmpfs /tmp` below — otherwise the tmpfs shadows them (ENOENT).
+    // *after* the `--dir /tmp` placeholder below — otherwise a later mount could
+    // shadow them.
     const runtimeBinds: string[] = [];
     for (const root of new Set<string>(extraReadRoots)) {
       runtimeBinds.push("--ro-bind-try", root, root);
@@ -385,11 +389,15 @@ function sandboxInvocation(
         ...systemBinds,
         "--proc", "/proc",
         "--dev", "/dev",
-        "--tmpfs", "/tmp",
-        // Bound after the tmpfs so entries under /tmp survive it.
+        // Ensure /tmp exists (read-only after the root remount) so tools that
+        // probe for it don't fail; real temp writes go to TMPDIR=HOME.
+        "--dir", "/tmp",
         ...runtimeBinds,
         "--bind", cwd, cwd,
         "--bind", home, home,
+        // Freeze the root tmpfs read-only *after* every mountpoint exists; the
+        // workspace/HOME/dev binds are separate mounts and keep their rw flag.
+        "--remount-ro", "/",
         "--chdir", cwd,
         "--setenv", "HOME", home,
         "--setenv", "TMPDIR", home,
