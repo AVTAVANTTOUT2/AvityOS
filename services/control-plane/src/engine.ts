@@ -1066,9 +1066,19 @@ export class Engine {
       return { ok: false, exitCode: null, detail: "check timed out waiting for worker" };
     }
 
+    // Checks run in a mission worktree (`<repo>/.avity/worktrees/<name>`) whose
+    // linked `.git` file points at the main repository's git common dir. Under
+    // the fail-closed sandbox that directory is outside the workspace, so git
+    // would report "not a git repository". Grant read on the *server-validated*
+    // project repo path (never the worktree's own `.git`, which the untrusted
+    // repository controls and could redirect elsewhere).
+    const readablePaths: string[] = [];
+    const repoPath = this.store.getProject(projectId)?.repoPath;
+    if (repoPath && existsSync(repoPath)) readablePaths.push(repoPath);
+
     let invocation: ReturnType<typeof sandboxCommand> | null = null;
     try {
-      invocation = sandboxCommand(argv, cwd);
+      invocation = sandboxCommand(argv, cwd, readablePaths.length ? { readablePaths } : {});
       const { stdout, stderr } = await execFileAsync(invocation.executable, invocation.args, {
         cwd,
         timeout: this.config.checkTimeoutMs,

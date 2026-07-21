@@ -30,15 +30,50 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   provider's policy lists (never the full host HOME, never `~/.ssh`, never
   another provider's secrets). Network is **denied by default**; each provider
   opts in via `allowNetwork`. Missing required auth material fails closed with
-  category `auth` — there is no fallback to the real HOME. Generic isolation
-  (throwaway HOME, env allowlist, host-HOME denial) is covered by tests using
-  local probes such as `printenv`/`node`; those probes prove the sandbox
+  category `auth` — there is no fallback to the real HOME.
+  - **Read boundary is fail-closed** (not merely "read-only"). Reads are
+    **denied by default** and re-granted only by an explicit allowlist:
+    - **Readable:** the workspace, the throwaway HOME, the resolved executable
+      and its detected runtime (its directory, its safe install root, and the
+      shared-library directories reported by `otool -L` / `ldd` — including the
+      specific package-manager prefix, e.g. `/opt/homebrew`, that backs the
+      binary, never all of `/opt` or `/usr/local`), a minimal set of system
+      trees needed to start (see below), device nodes, CA trust, and any paths a
+      **trusted policy** declares via `readablePaths`/`runtimePaths`. Path
+      arguments are validated (absolute + must exist) and canonicalised, and are
+      supplied by control-plane code only — they cannot be widened from the
+      prompt or the untrusted repository. Deterministic checks additionally get
+      read on the **server-validated project repo path** so `git` in a worktree
+      can reach the main git common dir (the worktree's own `.git` file, which
+      the untrusted repo controls, is never parsed to decide grants).
+    - **Not readable:** the real host HOME, another repository, `/tmp` (and its
+      canonical `/private/tmp` / per-user temp), `/opt`, `/Applications`,
+      `/Volumes`, `/mnt`, `/media`, `/srv`, and other providers' credentials.
+      A secret placed in any of these is unreadable — proven by canary tests
+      that assert the **content** is not returned, not merely a non-zero exit.
+    - **Writable:** only the workspace and the throwaway HOME (plus `/dev`).
+  - **macOS** uses `sandbox-exec` with `(deny default)` + an explicit
+    `file-read*` allowlist. Global `file-read-metadata` lets the loader traverse
+    path components (to reach a CLI installed under the host HOME) without
+    exposing file **contents**. System read roots: `/usr/lib`, `/usr/bin`,
+    `/usr/share`, `/usr/libexec`, `/System`, `/Library`, `/private/etc`,
+    `/private/var/db`, `/dev`, and the root node itself.
+  - **Linux** uses Bubblewrap with a **minimal file namespace** (no
+    `--ro-bind / /`): only `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, the
+    executable's runtime, the workspace (rw) and throwaway HOME (rw) are bound;
+    a fresh `tmpfs` hides host `/tmp`, a private `/proc` (from the `--unshare-all`
+    PID namespace) and a minimal `--dev /dev` avoid leaking host process/device
+    state, and `/run`, `/sys`, `/srv`, `/opt`, `/mnt`, `/media` are not mounted.
+    When network is allowed, the resolved `/etc/resolv.conf` target is bound for
+    DNS. **Fails closed** if Bubblewrap is unavailable.
+
+  Generic isolation and the read boundary are covered by tests using local
+  probes such as `printenv`/`node`/`git`; those probes prove the sandbox
   boundary, **not** that Claude/Codex/Cursor completed an authenticated vendor
   call. Separate smoke tests may run `--version` when a binary is installed.
-  macOS uses `sandbox-exec`; Linux uses Bubblewrap and **fails closed** if
-  unavailable. Process groups and the sandbox temp HOME are torn down on
-  completion, timeout and cancel. Cancel currently sends `SIGTERM` only;
-  escalation to `SIGKILL` after a grace period is **not** implemented.
+  Process groups and the sandbox temp HOME are torn down on completion, timeout
+  and cancel. Cancel currently sends `SIGTERM` only; escalation to `SIGKILL`
+  after a grace period is **not** implemented.
 - **Git boundary** — every automated Git command runs through one hardened
   runner that forces `-c core.hooksPath=/dev/null` (plus `commit.gpgsign`,
   `core.fsmonitor`, `core.untrackedCache` off). This neutralises **all**
@@ -97,7 +132,11 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
 Security tests cover malicious origins, missing auth, SSE query-token denial,
 client cwd injection, symlink escape (including symlinked artifacts, worktree
 redirection and canonical `..`/prefix confinement), interpreter bypass,
-environment leakage, host-home secret reads, writes outside the worktree,
+environment leakage, writes outside the worktree, the fail-closed sandbox read
+boundary (workspace/HOME reads allowed with content verified; real-HOME, `/tmp`,
+second-repository, external-file and cross-provider-credential reads all denied
+by asserting the secret content is not returned; declared `readablePaths`
+granted while an adjacent undeclared sibling stays denied),
 sandboxed CLI-provider isolation and network denial, Git hooks (`pre-commit`,
 `post-checkout` on worktree add, `pre-push`, and repository-configured
 `core.hooksPath`), fixture-provider gating per execution mode, incompatible or
@@ -112,18 +151,28 @@ transport.
 - HTTPS termination and certificate lifecycle for a remote control plane are a
   deployment responsibility; the worker enforces HTTPS but mTLS is not bundled.
 - CLI coding agents run inside the AvityOS OS sandbox (isolated HOME, no network
-  unless the provider opts in, worktree-only writes) in addition to their own
-  documented sandbox/permission modes. **Proven today:** generic isolation and
-  (when installed) non-mutating binary start (`--version`). **Not proven by CI:**
+  unless the provider opts in, worktree-only writes, and a **fail-closed read
+  boundary** — no general host-filesystem read access) in addition to their own
+  documented sandbox/permission modes. **Proven today:** generic isolation, the
+  read boundary (real-HOME/`/tmp`/second-repo/external-file/cross-provider-cred
+  reads denied by content on both `sandbox-exec` and Bubblewrap) and (when
+  installed) non-mutating binary start (`--version`). **Not proven by CI:**
   vendor authentication, paid model calls, or full missions under sandbox.
   Claude macOS Keychain / Cursor Keychain login do not transfer into a throwaway
   HOME; sandboxed runs require the explicit env/file policy for that provider.
   The OS sandbox is not an absolute guarantee: it depends on the host primitive
-  (`sandbox-exec` / Bubblewrap) and its policy grants. Forced termination
-  escalation (`SIGTERM` → delay → `SIGKILL`) is still unimplemented. A stronger
-  container/VM boundary is recommended for hostile repositories. The
-  `core.hooksPath=/dev/null` neutralisation targets the POSIX platforms AvityOS
-  officially supports (macOS, Linux).
+  (`sandbox-exec` / Bubblewrap) and its policy grants. **Residual read exposure:**
+  the system read roots (`/usr`, `/System`, `/Library`, `/etc`, …) are granted
+  wholesale — they hold no user secrets but are not individually minimised; on
+  macOS file **metadata** (names/sizes/existence, not contents) remains globally
+  observable so the loader can traverse to CLIs installed under the host HOME.
+  Runtime-dependency detection covers `otool`/`ldd`-declared libraries and the
+  backing package-manager prefix; a CLI that `dlopen`s a library from an
+  undeclared location needs that path added to its policy's `readablePaths`.
+  Forced termination escalation (`SIGTERM` → delay → `SIGKILL`) is still
+  unimplemented. A stronger container/VM boundary is recommended for hostile
+  repositories. The `core.hooksPath=/dev/null` neutralisation targets the POSIX
+  platforms AvityOS officially supports (macOS, Linux).
 - The local HttpOnly session cookie is not marked `Secure` over loopback HTTP;
   remote browser deployments must terminate HTTPS and should set/forward a
   secure-cookie deployment policy.

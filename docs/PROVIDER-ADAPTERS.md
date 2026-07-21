@@ -22,15 +22,34 @@ tool/agent/policy failure, unknown).
 HTTP adapters intentionally advertise `workspaceEdits:false`: returning text is
 not equivalent to editing a repository. CLI adapters combine the architecture
 system prompt and mission prompt, and **every CLI adapter is launched inside the
-AvityOS OS sandbox** (`sandboxCommand`): the persisted worktree is the only
-writable/readable project path, HOME is a throwaway directory (the host HOME,
-its SSH keys, Git config and unrelated repositories are hidden), and network is
-**denied by default** — a provider must declare `allowNetwork: true` in its
-policy to reach its vendor API. Each provider receives only an explicit
-environment allowlist and, when listed by policy, a **minimal** credential file
-copied read-only into the throwaway HOME. `process.env` is never inherited. The
-generic `command` adapter forwards only the variables named in
-`AVITY_COMMAND_ENV_ALLOWLIST`.
+AvityOS OS sandbox** (`sandboxCommand`), whose boundary is **fail-closed**:
+
+- **Writable paths:** the persisted worktree and the throwaway HOME only (plus
+  `/dev`). Nothing else on the host can be written.
+- **Readable paths:** the worktree, the throwaway HOME, the resolved executable
+  and its detected runtime, a minimal set of system trees needed to start, CA
+  trust, device nodes, and any extra paths a provider policy declares via
+  `readablePaths`. **Reads are denied by default** — the real host HOME, its SSH
+  keys and Git config, unrelated repositories, `/tmp`, `/opt`, `/Applications`,
+  `/Volumes`, `/mnt`, `/media`, and other providers' credentials are **not
+  readable** (not merely mounted read-only).
+- **System runtime exposed:** the executable's directory, its safe install root,
+  and its `otool -L`/`ldd`-declared shared-library directories (including the
+  specific package-manager prefix that backs it, never all of `/opt`); plus the
+  platform system read roots (`/usr`, `/System`, `/Library`, `/etc`, … on macOS;
+  `/usr`, `/bin`, `/lib*`, `/etc`, … bound read-only on Linux).
+- **Network:** **denied by default** — a provider must declare
+  `allowNetwork: true` to reach its vendor API. When allowed, CA trust (and, on
+  Linux, the resolved `/etc/resolv.conf` for DNS) is available.
+- **Credentials:** only the **minimal** files a provider's policy lists, copied
+  read-only into the throwaway HOME. `process.env` is never inherited; each
+  provider receives only its explicit environment allowlist. The generic
+  `command` adapter forwards only the variables named in
+  `AVITY_COMMAND_ENV_ALLOWLIST`.
+- **Residual limits:** system read roots are granted wholesale (they hold no
+  user secrets); on macOS file *metadata* (names/sizes, not contents) stays
+  globally observable for loader path traversal; a CLI that `dlopen`s a library
+  from an undeclared path must add it to its policy's `readablePaths`.
 
 ### CLI auth policies (fail-closed)
 
@@ -49,7 +68,8 @@ never ambient execution. There is **no** fallback to the real HOME.
 
 | Claim | Evidence |
 | --- | --- |
-| Generic sandbox isolation (throwaway HOME, env allowlist, host-HOME denial, write confinement, default no network) | Unit tests using local probes (`printenv`, `sh`, `node`) — **not** a vendor CLI |
+| Generic sandbox isolation (throwaway HOME, env allowlist, write confinement, default no network) | Unit tests using local probes (`printenv`, `sh`, `node`) — **not** a vendor CLI |
+| Fail-closed read boundary (real-HOME/`/tmp`/second-repo/external-file/cross-provider-cred reads denied by **content**; workspace + HOME reads allowed; declared `readablePaths` granted, adjacent sibling still denied) | `packages/policy` sandbox tests on `sandbox-exec` (macOS) and Bubblewrap (Linux) |
 | Per-provider auth policy construction / isolation | `cli-auth` + control-plane provider tests |
 | Binary can start under sandbox | Optional smoke: `codex`/`claude`/`cursor-agent`/`node` `--version` when installed; skipped with reason if missing |
 | Vendor authentication / paid API call / full mission | **Not** claimed by CI — requires an authenticated operator environment (see below) |
