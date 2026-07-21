@@ -1,5 +1,13 @@
-import { spawn } from "node:child_process";
-import { sandboxCommand, type SandboxCredentialFile } from "@avityos/policy";
+import {
+  spawn as defaultSpawn,
+  type ChildProcess,
+  type SpawnOptions,
+} from "node:child_process";
+import {
+  sandboxCommand as defaultSandboxCommand,
+  type SandboxCommandOptions,
+  type SandboxedCommand,
+} from "@avityos/policy";
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -8,6 +16,34 @@ import type {
   StartRunInput,
 } from "./types.js";
 import { ADAPTER_CONTRACT_VERSION, ProviderConfigError } from "./types.js";
+
+/**
+ * Builds a fail-closed OS-sandboxed invocation. Production always uses
+ * `sandboxCommand` from `@avityos/policy`. Tests may inject a hermetic double
+ * that never bypasses production; injection is test-only wiring.
+ */
+export type SandboxLauncher = (
+  argv: readonly string[],
+  cwd: string,
+  options?: SandboxCommandOptions,
+) => SandboxedCommand;
+
+/** Process spawner used after the sandbox invocation is built. */
+export type ProcessSpawner = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ChildProcess;
+
+/**
+ * Optional runtime hooks for hermetic unit tests. Omitting them (the default)
+ * keeps the production fail-closed path: real `sandboxCommand` + real `spawn`.
+ * There is no production path that skips the OS sandbox.
+ */
+export interface CommandAdapterRuntime {
+  sandbox?: SandboxLauncher;
+  spawn?: ProcessSpawner;
+}
 
 export interface CommandAdapterConfig {
   /** Executable to run, e.g. "claude" or "cursor-agent". Never a shell string. */
@@ -30,7 +66,7 @@ export interface CommandAdapterConfig {
   /**
    * Minimal credential files staged into the throwaway HOME (never the real HOME).
    */
-  credentialFiles?: readonly SandboxCredentialFile[];
+  credentialFiles?: SandboxCommandOptions["credentialFiles"];
   /**
    * Real HOME used to validate credential sources (regular file, no symlink,
    * exact policy path). Defaults to `os.homedir()` inside `sandboxCommand`.
@@ -43,7 +79,8 @@ export interface CommandAdapterConfig {
    * derived from the prompt or the untrusted repository. The sandbox validates
    * each entry (absolute + must exist) before launch.
    */
-  readablePaths?: readonly string[];  /**
+  readablePaths?: readonly string[];
+  /**
    * Per-provider network policy. Defaults to false (fail-closed): only agents
    * that genuinely need to reach a model API should opt in.
    */
@@ -68,12 +105,17 @@ export interface CommandAdapterConfig {
 export class CommandProviderAdapter implements ProviderAdapter {
   readonly name: string;
   readonly contractVersion = ADAPTER_CONTRACT_VERSION;
+  private readonly sandbox: SandboxLauncher;
+  private readonly spawnProcess: ProcessSpawner;
 
   constructor(
     name: string,
     private readonly config: CommandAdapterConfig,
+    runtime: CommandAdapterRuntime = {},
   ) {
     this.name = name;
+    this.sandbox = runtime.sandbox ?? defaultSandboxCommand;
+    this.spawnProcess = runtime.spawn ?? defaultSpawn;
     if (!config.executable || config.executable.includes(" ")) {
       throw new ProviderConfigError(
         `command adapter executable must be a bare program name/path, got ${JSON.stringify(config.executable)}`,
@@ -134,9 +176,9 @@ export class CommandProviderAdapter implements ProviderAdapter {
     // inherited. If the host cannot provide the sandbox primitive, the run
     // fails closed rather than executing with ambient authority.
     const workspace = input.cwd ?? process.cwd();
-    let invocation: ReturnType<typeof sandboxCommand>;
+    let invocation: SandboxedCommand;
     try {
-      invocation = sandboxCommand([this.config.executable, ...argv], workspace, {
+      invocation = this.sandbox([this.config.executable, ...argv], workspace, {
         allowNetwork: this.config.allowNetwork ?? false,
         env: this.config.env ? { ...this.config.env } : undefined,
         credentialFiles: this.config.credentialFiles,
@@ -147,9 +189,15 @@ export class CommandProviderAdapter implements ProviderAdapter {
       // Fail closed but stay within the adapter contract: surface a normalized
       // error event instead of throwing out of startRun, so the engine treats
       // it as a provider failure rather than crashing the mission loop.
+      // Category is sandbox_unavailable (not unknown): the cause is identifiable
+      // and must not be retried as a transient agent crash.
       const message = err instanceof Error ? err.message : String(err);
       async function* failed(): AsyncGenerator<RunEvent, void, void> {
-        yield { type: "error", category: "unknown", message: `sandbox unavailable: ${message}` };
+        yield {
+          type: "error",
+          category: "sandbox_unavailable",
+          message: `sandbox unavailable: ${message}`,
+        };
       }
       return { events: failed(), cancel: async () => {} };
     }
@@ -160,7 +208,7 @@ export class CommandProviderAdapter implements ProviderAdapter {
       invocation.cleanup();
     };
 
-    const child = spawn(invocation.executable, invocation.args, {
+    const child = this.spawnProcess(invocation.executable, invocation.args, {
       cwd: workspace,
       env: invocation.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -183,8 +231,8 @@ export class CommandProviderAdapter implements ProviderAdapter {
       collected.push(text);
       push({ type: "output", text });
     };
-    child.stdout.on("data", onChunk);
-    child.stderr.on("data", onChunk);
+    child.stdout?.on("data", onChunk);
+    child.stderr?.on("data", onChunk);
 
     child.on("error", (err) => {
       cleanupSandbox();
@@ -215,7 +263,11 @@ export class CommandProviderAdapter implements ProviderAdapter {
 
     const timeout = input.timeoutMs
       ? setTimeout(() => {
-          push({ type: "error", category: "unknown", message: `run timed out after ${input.timeoutMs}ms` });
+          push({
+            type: "error",
+            category: "unknown",
+            message: `run timed out after ${input.timeoutMs}ms`,
+          });
           killGroup(child.pid);
           cleanupSandbox();
           cancelled = true;
