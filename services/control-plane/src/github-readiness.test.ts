@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { missionBranchName } from "@avityos/git";
+import { hardenedGitArgs, missionBranchName } from "@avityos/git";
 import {
   clearGitHubReadinessCache,
   detectGitHubReadiness,
@@ -43,7 +43,12 @@ const DEMO_TARGET: RepositoryReadinessTarget = {
 };
 
 const PREFLIGHT_REF = `HEAD:refs/heads/${PREFLIGHT_PERMISSION_BRANCH}`;
-const PUSH_KEY = `git push --dry-run --no-verify ${DEMO_TARGET.remoteUrl} ${PREFLIGHT_REF}`;
+// The preflight push must carry the same hook-neutralising hardening flags the
+// rest of AvityOS forces onto automated git. Building the mock key through the
+// shared primitive keeps this assertion honest if the hardening set changes.
+const pushKey = (remoteUrl: string): string =>
+  `git ${hardenedGitArgs("push", "--dry-run", "--no-verify", remoteUrl, PREFLIGHT_REF).join(" ")}`;
+const PUSH_KEY = pushKey(DEMO_TARGET.remoteUrl);
 const VIEW_KEY = "gh repo view --repo acme/demo --json nameWithOwner";
 const PERMISSION_KEY =
   "gh repo view --repo acme/demo --json viewerPermission --jq .viewerPermission";
@@ -137,7 +142,7 @@ describe("detectGitHubReadiness", () => {
           success: false,
           stdout: "",
         },
-        [`git push --dry-run --no-verify git@github.com:acme/repo.git ${PREFLIGHT_REF}`]: {
+        [pushKey("git@github.com:acme/repo.git")]: {
           success: true,
           stdout: "",
         },
@@ -175,7 +180,7 @@ describe("detectGitHubReadiness", () => {
           success: true,
           stdout: "WRITE\n",
         },
-        [`git push --dry-run --no-verify git@github.com:acme/repo.git ${PREFLIGHT_REF}`]: {
+        [pushKey("git@github.com:acme/repo.git")]: {
           success: true,
           stdout: "",
         },
@@ -210,7 +215,7 @@ describe("detectGitHubReadiness", () => {
             success: false,
             stdout: "",
           },
-          [`git push --dry-run --no-verify ${target.remoteUrl} ${PREFLIGHT_REF}`]: {
+          [pushKey(target.remoteUrl)]: {
             success: true,
             stdout: "",
           },
@@ -220,7 +225,7 @@ describe("detectGitHubReadiness", () => {
     );
 
     const pushCall = calls.find(
-      (call) => call.command === "git" && call.args[0] === "push",
+      (call) => call.command === "git" && call.args.includes("push"),
     );
 
     expect(pushCall).toBeDefined();
@@ -407,7 +412,7 @@ describe("detectGitHubReadiness", () => {
               success: true,
               stdout: "WRITE\n",
             },
-          [`git push --dry-run --no-verify https://github.com/acme/target.git ${PREFLIGHT_REF}`]:
+          [pushKey("https://github.com/acme/target.git")]:
             {
               success: true,
               stdout: "",
@@ -437,7 +442,7 @@ describe("detectGitHubReadiness", () => {
         "git --version": { success: true, stdout: "git version" },
         "gh --version": { success: true, stdout: "gh version" },
         "gh auth status --hostname github.com": { success: true, stdout: "" },
-        [`git push --dry-run --no-verify git@gitlab.example:acme/target.git ${PREFLIGHT_REF}`]:
+        [pushKey("git@gitlab.example:acme/target.git")]:
           {
             success: true,
             stdout: "",
@@ -471,7 +476,7 @@ describe("detectGitHubReadiness", () => {
     expect(
       calls.some(
         (c) =>
-          (c.command === "git" && c.args[0] === "push") ||
+          (c.command === "git" && c.args.includes("push")) ||
           (c.command === "gh" && c.args[0] === "repo"),
       ),
     ).toBe(false);
@@ -498,7 +503,7 @@ describe("detectGitHubReadiness", () => {
       ),
     );
 
-    expect(calls.some((c) => c.command === "git" && c.args[0] === "push")).toBe(
+    expect(calls.some((c) => c.command === "git" && c.args.includes("push"))).toBe(
       false,
     );
     expect(readiness.repositoryPushDryRunSucceeded).toBe(false);
@@ -583,7 +588,7 @@ describe("getCachedGitHubReadiness", () => {
   it("uses separate cache entries for the same repo path with different remotes", async () => {
     const seenRemotes: string[] = [];
     const run: CommandRunner = async (command, args) => {
-      if (command === "git" && args[0] === "push") {
+      if (command === "git" && args.includes("push")) {
         const remote = args.find((arg) => arg.includes("github.com"));
         if (remote) seenRemotes.push(remote);
       }

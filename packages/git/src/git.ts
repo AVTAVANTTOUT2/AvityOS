@@ -3,6 +3,47 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * A hooks directory that can never contain an executable hook. Git resolves a
+ * hook as `${core.hooksPath}/<name>`; because `/dev/null` is not a directory,
+ * every lookup fails and no repository-controlled hook program is ever run.
+ * Repositories AvityOS operates on are untrusted, so hooks — which are
+ * arbitrary executables committed into or configured on the repo — must never
+ * execute with control-plane authority.
+ */
+const NULL_HOOKS_PATH = "/dev/null";
+
+/**
+ * Configuration flags forced onto *every* automated git invocation. `-c`
+ * overrides win over inherited local/global/system config and any dangerous
+ * value an untrusted repository (or the ambient user config) might set:
+ *
+ *   core.hooksPath        → /dev/null so no pre-commit/post-checkout/pre-push/…
+ *                           hook can run (defends worktree add, commit, push).
+ *   commit.gpgsign        → off so an attacker-controlled signing program is
+ *                           never spawned as a side effect of committing.
+ *   core.fsmonitor        → off so no fsmonitor hook program is launched.
+ *   core.untrackedCache   → off for deterministic, side-effect-free status.
+ *
+ * Centralising the list here means a future git call added through {@link git}
+ * inherits the hardening automatically and cannot silently forget it.
+ */
+export const GIT_HARDENING_FLAGS: readonly string[] = [
+  "-c", `core.hooksPath=${NULL_HOOKS_PATH}`,
+  "-c", "commit.gpgsign=false",
+  "-c", "core.fsmonitor=false",
+  "-c", "core.untrackedCache=false",
+];
+
+/**
+ * Prefix an argv for a git subcommand with the mandatory hardening flags.
+ * Callers that must invoke `git` through their own process runner (rather than
+ * {@link git}) use this so they share the exact same neutralisation guarantees.
+ */
+export function hardenedGitArgs(...args: string[]): string[] {
+  return [...GIT_HARDENING_FLAGS, ...args];
+}
+
 function scopedGitEnvironment(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "",
@@ -47,12 +88,7 @@ export class GitError extends Error {
  * repository directory.
  */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
-  const gitArgs = [
-    "-c", "commit.gpgsign=false",
-    "-c", "core.fsmonitor=false",
-    "-c", "core.untrackedCache=false",
-    ...args,
-  ];
+  const gitArgs = [...GIT_HARDENING_FLAGS, ...args];
   try {
     const { stdout } = await execFileAsync("git", gitArgs, {
       cwd,
@@ -101,7 +137,10 @@ export async function publishGitHubPullRequest(input: {
   if (!repository) throw new Error(`unsupported GitHub remote URL: ${input.remoteUrl}`);
   const repo = `${repository.owner}/${repository.name}`;
 
-  await git(input.repoPath, "push", input.remoteUrl, `${input.branch}:${input.branch}`);
+  // `--no-verify` skips pre-push/pre-receive on top of the neutralised
+  // core.hooksPath: defence in depth for the one command that reaches out to a
+  // remote and would otherwise run a repository-controlled pre-push hook.
+  await git(input.repoPath, "push", "--no-verify", input.remoteUrl, `${input.branch}:${input.branch}`);
   const listed = JSON.parse(
     await gh("pr", "list", "--repo", repo, "--head", input.branch, "--state", "all", "--limit", "1", "--json", "number,url,state,isDraft"),
   ) as { number: number; url: string; state: string; isDraft: boolean }[];

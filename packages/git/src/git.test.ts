@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -81,6 +81,50 @@ describe("git package", () => {
     await writeFile(join(repo, "signed.txt"), "validated\n");
 
     await commitAll(repo, "test: safe unsigned automated commit");
+
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never executes repository post-checkout hooks when adding a worktree", async () => {
+    const marker = join(scratch, "post-checkout-ran");
+    const hook = join(repo, ".git", "hooks", "post-checkout");
+    await writeFile(hook, `#!/bin/sh\nprintf compromised > '${marker}'\n`);
+    await chmod(hook, 0o755);
+
+    const wt = join(scratch, "wt-hooked");
+    await addMissionWorktree(repo, wt, missionBranchName("m-hook", "demo"), "main");
+
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never executes repository pre-push hooks on automated pushes (independent of --no-verify)", async () => {
+    const remote = join(scratch, "remote.git");
+    await git(scratch, "init", "--bare", "-b", "main", remote);
+    await git(repo, "remote", "add", "origin", remote);
+
+    const marker = join(scratch, "pre-push-ran");
+    const hook = join(repo, ".git", "hooks", "pre-push");
+    await writeFile(hook, `#!/bin/sh\nprintf compromised > '${marker}'\nexit 1\n`);
+    await chmod(hook, 0o755);
+
+    // No --no-verify here: the neutralised core.hooksPath alone must stop the
+    // hook, proving the guarantee does not rely on --no-verify.
+    await git(repo, "push", "origin", "main");
+
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("overrides a repository-configured core.hooksPath pointing at malicious hooks", async () => {
+    const marker = join(scratch, "custom-hooks-ran");
+    const hooksDir = join(scratch, "evil-hooks");
+    await git(repo, "config", "core.hooksPath", hooksDir);
+    await mkdir(hooksDir, { recursive: true });
+    const preCommit = join(hooksDir, "pre-commit");
+    await writeFile(preCommit, `#!/bin/sh\nprintf compromised > '${marker}'\nexit 1\n`);
+    await chmod(preCommit, 0o755);
+
+    await writeFile(join(repo, "safe2.txt"), "validated\n");
+    await commitAll(repo, "test: commit despite malicious repo hooksPath");
 
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
