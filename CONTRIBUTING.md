@@ -46,9 +46,12 @@ corepack enable
 ### Linux
 
 - Stack TypeScript (control plane, worker, web, CLI, packages)
-- **Bubblewrap** (`bwrap`) pour le confinement OS des checks exécutés par le worker ;
-  sans Bubblewrap, le sandbox Linux échoue de façon fermée. Bubblewrap n’est **pas**
-  requis sur macOS.
+- **Bubblewrap** (`bwrap`) pour le confinement OS des checks exécutés par le worker
+  et par le control plane en local ; sans Bubblewrap, le sandbox Linux échoue de
+  façon fermée (`sandbox_unavailable`). Les tests unitaires hermétiques du
+  command adapter (`@avityos/providers`) n’exigent pas Bubblewrap ; la suite
+  complète `pnpm -r test` (y compris les E2E fixture control-plane) l’exige sur
+  Linux, comme la CI (`ci-linux.yml`). Bubblewrap n’est **pas** requis sur macOS.
 
 ### Optionnels
 
