@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { TeamRole, type Mission, type Project } from "@avityos/contracts";
 import {
@@ -21,7 +21,17 @@ import {
   publishGitHubPullRequest,
   removeWorktree,
 } from "@avityos/git";
-import { checkBudget, isCommandAllowed, isPathAllowed, sandboxCommand, type CommandPolicy } from "@avityos/policy";
+import {
+  checkBudget,
+  ConfinementError,
+  ensureConfinedDirectory,
+  isCommandAllowed,
+  isInsideRoot,
+  isPathAllowed,
+  resolveAndAssertInside,
+  sandboxCommand,
+  type CommandPolicy,
+} from "@avityos/policy";
 import type { ProviderAdapter } from "@avityos/providers";
 import { BrainPipeline } from "./brain.js";
 import {
@@ -504,8 +514,14 @@ export class Engine {
     const branch = mission.branchName ?? missionBranchName(mission.id, mission.title);
     const worktreePath = mission.worktreePath ?? join(project.repoPath, ".avity", "worktrees", mission.id);
 
+    // Confine the worktree location to <repo>/.avity/worktrees on canonical
+    // paths. Rejects a persisted/redirected worktree path that escapes, and a
+    // `.avity/worktrees` whose components symlink outside the repository.
+    assertWorktreeConfined(project.repoPath, worktreePath);
+
     if (!existsSync(worktreePath)) {
-      mkdirSync(dirname(worktreePath), { recursive: true });
+      // `.avity/worktrees` was created/validated by assertWorktreeConfined; do
+      // not recursively mkdir through unvalidated components.
       const existing = await listWorktrees(project.repoPath);
       if (this.fencePausedWork(project.id, mission.id, "worktree listing", expectedPauseGeneration)) return null;
       const branchExists = (await git(project.repoPath, "branch", "--list", branch)).trim().length > 0;
@@ -865,15 +881,31 @@ export class Engine {
       );
 
       for (const artifact of mission.contract.expectedArtifacts) {
-        const target = join(mission.worktreePath, artifact);
+        // Canonical, fail-closed artifact confinement: relative-only, no `..`,
+        // must exist, and the artifact itself must not be a symlink (nor sit
+        // behind a symlink component that resolves outside the worktree).
+        let confined: string;
+        try {
+          confined = resolveAndAssertInside(mission.worktreePath, artifact, {
+            allowAbsolute: false,
+            allowParentSegments: false,
+            mustExist: true,
+            denySymlinkedFinal: true,
+          }).absolute;
+        } catch (err) {
+          const reason = err instanceof ConfinementError ? err.message : String(err);
+          this.store.appendAudit(project.id, "policy", "mission.artifact_violation", `${missionId}: ${artifact}`);
+          this.failValidation(mission, `expected artifact rejected: ${artifact} (${reason})`, pauseGeneration);
+          return;
+        }
         const verdict = isPathAllowed(
           mission.worktreePath,
           mission.contract.allowedPaths,
           mission.contract.forbiddenPaths,
-          target,
+          confined,
         );
-        if (verdict.effect !== "allow" || !existsSync(target)) {
-          this.failValidation(mission, `expected artifact missing or forbidden: ${artifact}`, pauseGeneration);
+        if (verdict.effect !== "allow") {
+          this.failValidation(mission, `expected artifact forbidden: ${artifact} (${verdict.reason})`, pauseGeneration);
           return;
         }
       }
@@ -1034,9 +1066,19 @@ export class Engine {
       return { ok: false, exitCode: null, detail: "check timed out waiting for worker" };
     }
 
+    // Checks run in a mission worktree (`<repo>/.avity/worktrees/<name>`) whose
+    // linked `.git` file points at the main repository's git common dir. Under
+    // the fail-closed sandbox that directory is outside the workspace, so git
+    // would report "not a git repository". Grant read on the *server-validated*
+    // project repo path (never the worktree's own `.git`, which the untrusted
+    // repository controls and could redirect elsewhere).
+    const readablePaths: string[] = [];
+    const repoPath = this.store.getProject(projectId)?.repoPath;
+    if (repoPath && existsSync(repoPath)) readablePaths.push(repoPath);
+
     let invocation: ReturnType<typeof sandboxCommand> | null = null;
     try {
-      invocation = sandboxCommand(argv, cwd);
+      invocation = sandboxCommand(argv, cwd, readablePaths.length ? { readablePaths } : {});
       const { stdout, stderr } = await execFileAsync(invocation.executable, invocation.args, {
         cwd,
         timeout: this.config.checkTimeoutMs,
@@ -1410,6 +1452,23 @@ export class Engine {
       this.store.transitionMission(missionId, "cancelled", "cancelled by user", "user");
     }
     await this.cleanupWorktree(mission);
+  }
+}
+
+/**
+ * Assert a mission worktree lives under <repo>/.avity/worktrees on canonical
+ * paths. Creates missing `.avity` / `worktrees` components only after every
+ * existing component has been inspected with `lstat` and validated — never
+ * via a recursive mkdir that could materialise directories through an
+ * outbound symlink. Throws {@link ConfinementError} when a component escapes.
+ */
+function assertWorktreeConfined(repoPath: string, worktreePath: string): void {
+  const confined = ensureConfinedDirectory(repoPath, join(".avity", "worktrees"));
+  if (!isInsideRoot(confined.absolute, worktreePath)) {
+    throw new ConfinementError(
+      `worktree path escapes ${confined.absolute}: ${worktreePath}`,
+      "escapes_root",
+    );
   }
 }
 

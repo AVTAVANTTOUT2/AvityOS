@@ -1,5 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -393,6 +393,97 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     expect(existsSync(done.worktreePath!)).toBe(false);
     expect((await listWorktrees(repo)).some((w) => w.branch === done.branchName)).toBe(false);
     expect(store.verifyAuditChain()).toBe(true);
+  });
+
+  it("blocks a mission whose .avity/worktrees is redirected outside the repo via a symlink", async () => {
+    ({ store, engine } = makeEngine(db, "fake:code"));
+    // Redirect <repo>/.avity/worktrees to an external directory before any run.
+    const external = await mkdtemp(join(tmpdir(), "avity-evil-wt-"));
+    await mkdir(join(repo, ".avity"), { recursive: true });
+    await symlink(external, join(repo, ".avity", "worktrees"));
+
+    const project = store.createProject({
+      name: "WtConfine", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Redirected worktree", role: "backend",
+      contract: repoMissionContract("Create AVITY.md"),
+      priority: 50, dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+    await waitFor(() => store.getMission(mission.id)!.state === "blocked", 10_000);
+
+    const done = store.getMission(mission.id)!;
+    expect(done.state).toBe("blocked");
+    const events = store.eventsAfter(0, project.id);
+    expect(
+      events.some((e) => JSON.stringify(e).includes("worktree creation failed")),
+    ).toBe(true);
+    // nothing was written into the redirected external directory
+    expect(existsSync(join(external, "AVITY.md"))).toBe(false);
+    // ensureConfinedDirectory must not create any new entries outside the repo
+    expect((await readdir(external)).length).toBe(0);
+    await rm(external, { recursive: true, force: true });
+  });
+
+  it("rejects an expected artifact that is a symlink escaping the worktree", async () => {
+    ({ store, engine } = makeEngine(db, "fake:code"));
+    const project = store.createProject({
+      name: "ArtifactConfine", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    // The plan declares an artifact name that the provider will realise as a
+    // symlink pointing at a secret outside the worktree.
+    const secret = await mkdtemp(join(tmpdir(), "avity-secret-"));
+    await writeFile(join(secret, "leak.txt"), "top secret\n");
+
+    const contract = {
+      ...repoMissionContract("Create AVITY.md and a leak artifact"),
+      expectedArtifacts: ["AVITY.md", "leak.txt"],
+      requiredChecks: [] as const,
+      checkCommands: {},
+    };
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Symlinked artifact", role: "backend",
+      contract, priority: 50, dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+
+    // Plant the malicious symlink inside the worktree once it exists, before
+    // validation reads the expected artifacts.
+    const plant = setInterval(() => {
+      const wt = store.getMission(mission.id)?.worktreePath;
+      if (wt && existsSync(wt) && !existsSync(join(wt, "leak.txt"))) {
+        try {
+          symlinkSync(join(secret, "leak.txt"), join(wt, "leak.txt"));
+        } catch {
+          /* already planted or racing cleanup */
+        }
+      }
+    }, 15);
+
+    try {
+      await engine.executeMission(mission.id);
+      await waitFor(() => {
+        const s = store.getMission(mission.id)!.state;
+        return s === "blocked" || s === "failed" || s === "completed";
+      }, 12_000);
+    } finally {
+      clearInterval(plant);
+    }
+
+    const done = store.getMission(mission.id)!;
+    // The mission must never complete with an escaping symlinked artifact.
+    expect(done.state).not.toBe("completed");
+    await rm(secret, { recursive: true, force: true });
   });
 
   it("review rejection sends the mission through a corrective loop, then approves", async () => {

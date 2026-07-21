@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { missionBranchName, parseGitHubRemote } from "@avityos/git";
+import { hardenedGitArgs, missionBranchName, parseGitHubRemote } from "@avityos/git";
 
 const execFileAsync = promisify(execFile);
 
@@ -130,13 +130,13 @@ export async function detectGitHubReadiness(
     (
       await run(
         "git",
-        [
+        hardenedGitArgs(
           "push",
           "--dry-run",
           "--no-verify",
           target.remoteUrl,
           `HEAD:refs/heads/${PREFLIGHT_PERMISSION_BRANCH}`,
-        ],
+        ),
         target.repoPath,
       )
     ).success;

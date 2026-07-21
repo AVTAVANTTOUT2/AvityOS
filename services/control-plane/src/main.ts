@@ -3,9 +3,15 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
+import { type ProviderAdapter } from "@avityos/providers";
 import { openDatabase } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
+import {
+  assertProviderChainAllowed,
+  fakeProviderAllowed,
+  FIXTURE_PROVIDER_ID,
+  resolveExecutionMode,
+} from "./provider-policy.js";
 import { buildProviders, parseModelMap, parseRoleProviderMap } from "./providers.js";
 import { buildServer, DEFAULT_ALLOWED_ORIGINS } from "./server.js";
 import { Store } from "./store.js";
@@ -38,21 +44,34 @@ async function main(): Promise<void> {
   const db = openDatabase(dbPath);
   const store = new Store(db);
 
+  const executionMode = resolveExecutionMode(process.env);
   const providers: Map<string, ProviderAdapter> = buildProviders(process.env);
-  if (!providers.has("fake")) providers.set("fake", new FakeProviderAdapter());
 
-  const providerChain = process.env.AVITY_PROVIDER_CHAIN
-    ? process.env.AVITY_PROVIDER_CHAIN.split(",").map((s) => s.trim()).filter((name) => providers.has(name))
-    : ["codex", "claude-code", "cursor", "command", "openai", "anthropic", "deepseek", "fake"].filter((name) =>
-        providers.has(name),
-      );
+  // Explicit chains are validated fail-closed: naming `fake` in production is a
+  // hard error, never a silent drop. The implicit default only offers the
+  // fixture as an offline fallback when the mode already permits it.
+  const allowFixture = fakeProviderAllowed(executionMode);
+  const defaultChainOrder = [
+    "codex", "claude-code", "cursor", "command", "openai", "anthropic", "deepseek",
+    ...(allowFixture ? [FIXTURE_PROVIDER_ID] : []),
+  ];
+  let providerChain: string[];
+  if (process.env.AVITY_PROVIDER_CHAIN) {
+    const requested = process.env.AVITY_PROVIDER_CHAIN.split(",").map((s) => s.trim()).filter(Boolean);
+    assertProviderChainAllowed(executionMode, requested);
+    providerChain = requested.filter((name) => providers.has(name));
+  } else {
+    providerChain = defaultChainOrder.filter((name) => providers.has(name));
+  }
 
   const defaultModels = parseModelMap(process.env.AVITY_DEFAULT_MODELS);
-  if (!defaultModels.has("fake")) defaultModels.set("fake", "fake:code");
   const reviewModels = parseModelMap(process.env.AVITY_REVIEW_MODELS);
-  if (!reviewModels.has("fake")) reviewModels.set("fake", "fake:review-approve");
   const brainModels = parseModelMap(process.env.AVITY_BRAIN_MODELS);
-  if (!brainModels.has("fake")) brainModels.set("fake", "fake:plan");
+  if (allowFixture) {
+    if (!defaultModels.has(FIXTURE_PROVIDER_ID)) defaultModels.set(FIXTURE_PROVIDER_ID, "fake:code");
+    if (!reviewModels.has(FIXTURE_PROVIDER_ID)) reviewModels.set(FIXTURE_PROVIDER_ID, "fake:review-approve");
+    if (!brainModels.has(FIXTURE_PROVIDER_ID)) brainModels.set(FIXTURE_PROVIDER_ID, "fake:plan");
+  }
 
   const engine = new Engine(
     store,
@@ -64,7 +83,9 @@ async function main(): Promise<void> {
         process.env.AVITY_MAX_CONCURRENT_RUNS_PER_PROJECT ?? DEFAULT_ENGINE_CONFIG.maxConcurrentRunsPerProject,
       ),
     },
-    providerChain.length ? providerChain : ["fake"],
+    // No implicit `fake` fallback in production: an empty chain stays empty so
+    // missions block on "no provider" instead of silently running fixtures.
+    providerChain.length ? providerChain : allowFixture ? [FIXTURE_PROVIDER_ID] : [],
     defaultModels,
     reviewModels,
     parseRoleProviderMap(process.env.AVITY_ROLE_PROVIDERS),

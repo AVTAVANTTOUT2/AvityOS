@@ -245,7 +245,9 @@ describe("E2E preflight endpoint", () => {
         if (command === "gh" && args[0] === "auth") {
           return { success: true, stdout: "" };
         }
-        if (command === "git" && args[0] === "push") {
+        if (command === "git" && args.includes("push")) {
+          // Automated push must carry the hook-neutralising hardening flags.
+          expect(args).toContain("core.hooksPath=/dev/null");
           expect(args).toContain(remoteUrl);
           expect(args).not.toContain("origin");
           return { success: true, stdout: "" };

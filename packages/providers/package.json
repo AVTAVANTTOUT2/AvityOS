@@ -17,7 +17,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@avityos/contracts": "workspace:*"
+    "@avityos/contracts": "workspace:*",
+    "@avityos/policy": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

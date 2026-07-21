@@ -29,7 +29,14 @@ export function runCommand(
   const [executable, ...args] = argv;
   if (!executable) throw new Error("empty command");
   const invocation = sandbox
-    ? sandboxCommand(argv, cwd, { allowNetwork: options.allowNetwork, env: options.env })
+    ? sandboxCommand(argv, cwd, {
+        allowNetwork: options.allowNetwork,
+        env: options.env
+          ? Object.fromEntries(
+              Object.entries(options.env).filter(([k]) => !["HOME", "TMPDIR", "PATH"].includes(k)),
+            )
+          : undefined,
+      })
     : {
         executable,
         args,

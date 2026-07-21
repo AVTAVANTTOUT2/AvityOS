@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { sandboxCommand, type SandboxCredentialFile } from "@avityos/policy";
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -20,8 +21,38 @@ export interface CommandAdapterConfig {
   models?: readonly string[];
   /** Whether this command is trusted/capable to make repository edits. */
   workspaceEdits?: boolean;
-  /** Extra environment variables (e.g. non-interactive flags). */
+  /**
+   * Explicit environment allowlist for this provider. These are the *only*
+   * non-baseline variables the sandboxed agent receives (on top of PATH and a
+   * throwaway HOME/TMPDIR). The control plane's process.env is never inherited.
+   */
   env?: Readonly<Record<string, string>>;
+  /**
+   * Minimal credential files staged into the throwaway HOME (never the real HOME).
+   */
+  credentialFiles?: readonly SandboxCredentialFile[];
+  /**
+   * Real HOME used to validate credential sources (regular file, no symlink,
+   * exact policy path). Defaults to `os.homedir()` inside `sandboxCommand`.
+   */
+  credentialHome?: string;
+  /**
+   * Extra absolute, canonical paths this provider is explicitly allowed to
+   * *read* under the fail-closed sandbox (e.g. a runtime or data directory a
+   * specific CLI needs). Declared by trusted provider policy only — never
+   * derived from the prompt or the untrusted repository. The sandbox validates
+   * each entry (absolute + must exist) before launch.
+   */
+  readablePaths?: readonly string[];  /**
+   * Per-provider network policy. Defaults to false (fail-closed): only agents
+   * that genuinely need to reach a model API should opt in.
+   */
+  allowNetwork?: boolean;
+  /**
+   * When set, startRun fails closed with category `auth` before spawn.
+   * Used when the provider policy requires auth material that is missing.
+   */
+  authError?: string;
 }
 
 /**
@@ -29,6 +60,10 @@ export interface CommandAdapterConfig {
  * non-interactive prompt mode (Claude Code `-p`, Cursor CLI, custom tools).
  * Output is streamed line-buffered; the process group is killed on cancel so
  * no orphan children survive.
+ *
+ * Note: cancel currently sends SIGTERM to the process group only. Escalation
+ * SIGTERM → grace period → SIGKILL is intentionally out of scope for the
+ * execution-hardening work and remains a residual risk for stuck CLIs.
  */
 export class CommandProviderAdapter implements ProviderAdapter {
   readonly name: string;
@@ -44,6 +79,11 @@ export class CommandProviderAdapter implements ProviderAdapter {
         `command adapter executable must be a bare program name/path, got ${JSON.stringify(config.executable)}`,
       );
     }
+  }
+
+  /** Test/inspection helper: expose the resolved adapter config. */
+  getConfig(): Readonly<CommandAdapterConfig> {
+    return this.config;
   }
 
   capabilities(): ProviderCapabilities {
@@ -62,10 +102,18 @@ export class CommandProviderAdapter implements ProviderAdapter {
   }
 
   async healthy(): Promise<boolean> {
-    return true;
+    return !this.config.authError;
   }
 
   startRun(input: StartRunInput): RunHandle {
+    if (this.config.authError) {
+      const message = this.config.authError;
+      async function* failedAuth(): AsyncGenerator<RunEvent, void, void> {
+        yield { type: "error", category: "auth", message };
+      }
+      return { events: failedAuth(), cancel: async () => {} };
+    }
+
     const combinedPrompt = [input.systemPrompt.trim(), input.userPrompt.trim()]
       .filter(Boolean)
       .join("\n\n--- MISSION ---\n\n");
@@ -78,16 +126,43 @@ export class CommandProviderAdapter implements ProviderAdapter {
         .replaceAll("{model}", input.model),
     );
 
-    // Scoped environment only: the control plane's process.env (API keys,
-    // tokens) is never inherited by CLI agents. Adapter config supplies
-    // exactly what the agent needs.
-    const child = spawn(this.config.executable, argv, {
-      cwd: input.cwd,
-      env: {
-        PATH: process.env.PATH ?? "",
-        HOME: process.env.HOME ?? "",
-        ...this.config.env,
-      },
+    // Every CLI agent runs inside the AvityOS OS sandbox: an isolated throwaway
+    // HOME, the workspace as the only writable/readable project path, the real
+    // user HOME hidden, network denied unless this provider opts in, and an
+    // explicit env allowlist. Credential files are staged only when the
+    // provider policy lists them. The control plane's process.env is never
+    // inherited. If the host cannot provide the sandbox primitive, the run
+    // fails closed rather than executing with ambient authority.
+    const workspace = input.cwd ?? process.cwd();
+    let invocation: ReturnType<typeof sandboxCommand>;
+    try {
+      invocation = sandboxCommand([this.config.executable, ...argv], workspace, {
+        allowNetwork: this.config.allowNetwork ?? false,
+        env: this.config.env ? { ...this.config.env } : undefined,
+        credentialFiles: this.config.credentialFiles,
+        credentialHome: this.config.credentialHome,
+        readablePaths: this.config.readablePaths,
+      });
+    } catch (err) {
+      // Fail closed but stay within the adapter contract: surface a normalized
+      // error event instead of throwing out of startRun, so the engine treats
+      // it as a provider failure rather than crashing the mission loop.
+      const message = err instanceof Error ? err.message : String(err);
+      async function* failed(): AsyncGenerator<RunEvent, void, void> {
+        yield { type: "error", category: "unknown", message: `sandbox unavailable: ${message}` };
+      }
+      return { events: failed(), cancel: async () => {} };
+    }
+    let cleanedUp = false;
+    const cleanupSandbox = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      invocation.cleanup();
+    };
+
+    const child = spawn(invocation.executable, invocation.args, {
+      cwd: workspace,
+      env: invocation.env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true, // own process group → clean group kill on cancel
     });
@@ -112,12 +187,14 @@ export class CommandProviderAdapter implements ProviderAdapter {
     child.stderr.on("data", onChunk);
 
     child.on("error", (err) => {
+      cleanupSandbox();
       push({ type: "error", category: "agent_crash", message: `spawn failed: ${err.message}` });
       done = true;
       notify?.();
     });
 
     child.on("close", (code, signal) => {
+      cleanupSandbox();
       if (cancelled) {
         done = true;
         notify?.();
@@ -140,6 +217,7 @@ export class CommandProviderAdapter implements ProviderAdapter {
       ? setTimeout(() => {
           push({ type: "error", category: "unknown", message: `run timed out after ${input.timeoutMs}ms` });
           killGroup(child.pid);
+          cleanupSandbox();
           cancelled = true;
         }, input.timeoutMs)
       : null;
@@ -164,6 +242,7 @@ export class CommandProviderAdapter implements ProviderAdapter {
       cancel: async () => {
         cancelled = true;
         killGroup(child.pid);
+        cleanupSandbox();
         done = true;
         notify?.();
       },
