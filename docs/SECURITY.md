@@ -83,6 +83,14 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   probes such as `printenv`/`node`/`git`; those probes prove the sandbox
   boundary, **not** that Claude/Codex/Cursor completed an authenticated vendor
   call. Separate smoke tests may run `--version` when a binary is installed.
+  Command-adapter **unit** tests inject a hermetic `SandboxLauncher` /
+  `ProcessSpawner` so exit-code, env-filtering, timeout, cancel and
+  `sandbox_unavailable` behaviour stay deterministic without Bubblewrap or
+  `sandbox-exec`. OS isolation remains an **integration** suite that skips with
+  an explicit reason when the host primitive is absent — never a silent
+  unsandboxed green path. Missing sandbox in production wiring yields
+  `ProviderErrorCategory.sandbox_unavailable` (non-retryable escalate), never
+  `unknown` and never an ambient spawn.
   Process groups and the sandbox temp HOME are torn down on completion, timeout
   and cancel. Cancel currently sends `SIGTERM` only; escalation to `SIGKILL`
   after a grace period is **not** implemented.

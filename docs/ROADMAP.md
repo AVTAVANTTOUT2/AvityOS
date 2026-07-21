@@ -86,3 +86,15 @@ Ce jalon clôturera :
 
 - le chantier 2 (preuve de planification réelle) ;
 - le chantier 4 (validation E2E avec providers réels).
+
+## Maintenance défensive (hors chantiers produit)
+
+Ces travaux ne ferment aucun chantier produit. Ils durcissent des invariants
+déjà livrés :
+
+- **Post-audit preflight / readiness (PR #41)** — invariants de contrat E2E
+  (`realProviderCount`, `realWorkspaceEditorCount`, unicité des providers) et
+  éviction des Promises rejetées du cache GitHub readiness.
+- **Cohérence runtime providers / sandbox** — catégorie
+  `sandbox_unavailable`, tests unitaires hermétiques du command adapter, suites
+  d’intégration OS séparées ; pas de fallback non sandboxé.

@@ -18,7 +18,10 @@ be normalized so fallback policy is provider-agnostic.
 - All failures map to a closed set of `ProviderErrorCategory` values
   (`auth`, `quota_exhausted`, `rate_limited`, `transient_network`,
   `invalid_request`, `context_overflow`, `tool_failure`, `agent_crash`,
-  `policy_denied`, `unknown`), with optional `retryAfterMs`.
+  `policy_denied`, `sandbox_unavailable`, `unknown`), with optional
+  `retryAfterMs`. `sandbox_unavailable` is non-retryable and means the host
+  cannot provide the required OS sandbox primitive — the CLI agent must not
+  run with ambient authority.
 - Adapters shipped: `fake` (deterministic, scriptable — the test/demo
   backbone), `command` (generic subprocess adapter that runs any CLI agent,
   including Claude Code and Cursor CLI in non-interactive mode), and HTTP API
