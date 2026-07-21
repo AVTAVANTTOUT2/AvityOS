@@ -7,6 +7,7 @@ import {
   type ProviderAdapter,
 } from "@avityos/providers";
 import { TeamRole, type TeamRole as TeamRoleName } from "@avityos/contracts";
+import { fakeProviderAllowed, FIXTURE_PROVIDER_ID, resolveExecutionMode } from "./provider-policy.js";
 
 /**
  * Runtime provider registration from environment configuration. Only
@@ -30,7 +31,11 @@ import { TeamRole, type TeamRole as TeamRoleName } from "@avityos/contracts";
  */
 export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdapter> {
   const providers = new Map<string, ProviderAdapter>();
-  providers.set("fake", new FakeProviderAdapter());
+  // Fail-closed: the fixture provider is registered only in test/demo modes.
+  // In production it is never present, so nothing can implicitly route to it.
+  if (fakeProviderAllowed(resolveExecutionMode(env))) {
+    providers.set(FIXTURE_PROVIDER_ID, new FakeProviderAdapter());
+  }
 
   const models = (value: string | undefined): string[] =>
     (value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -83,6 +88,8 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
           "-p", "{prompt}", "--output-format", "text",
         ],
         models: claudeModels,
+        // Reaches the Anthropic API from inside the sandbox: network required.
+        allowNetwork: true,
         env: env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY } : {},
       }),
     );
@@ -103,6 +110,8 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
           "{prompt}",
         ],
         models: codexModels,
+        // Reaches the model API from inside the sandbox: network required.
+        allowNetwork: true,
         env: env.CODEX_API_KEY ? { CODEX_API_KEY: env.CODEX_API_KEY } : {},
       }),
     );
@@ -121,6 +130,8 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
           "-p", "{prompt}",
         ],
         models: cursorModels,
+        // Reaches the model API from inside the sandbox: network required.
+        allowNetwork: true,
         env: env.CURSOR_API_KEY ? { CURSOR_API_KEY: env.CURSOR_API_KEY } : {},
       }),
     );
@@ -142,11 +153,33 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
         args,
         models: models(env.AVITY_COMMAND_MODELS),
         workspaceEdits: env.AVITY_COMMAND_WORKSPACE_EDITS === "1",
+        // Generic agents stay network-denied unless explicitly opted in.
+        allowNetwork: env.AVITY_COMMAND_ALLOW_NETWORK === "1",
+        env: parseCommandEnvAllowlist(env),
       }),
     );
   }
 
   return providers;
+}
+
+/**
+ * Explicit secret allowlist for the generic command adapter. Only the names
+ * listed in AVITY_COMMAND_ENV_ALLOWLIST (comma-separated) are forwarded, and
+ * only when present. Nothing else from the control-plane environment reaches
+ * the sandboxed agent.
+ */
+function parseCommandEnvAllowlist(env: NodeJS.ProcessEnv): Record<string, string> {
+  const allowlist = (env.AVITY_COMMAND_ENV_ALLOWLIST ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const result: Record<string, string> = {};
+  for (const name of allowlist) {
+    const value = env[name];
+    if (value !== undefined) result[name] = value;
+  }
+  return result;
 }
 
 /** Parse "name=model,name2=model2" pairs into a map. */
