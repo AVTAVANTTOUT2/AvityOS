@@ -83,6 +83,7 @@ describe("contracts", () => {
 
   it("keeps provider error categories closed", () => {
     expect(ProviderErrorCategory.options).toContain("rate_limited");
+    expect(ProviderErrorCategory.options).toContain("sandbox_unavailable");
     expect(ProviderErrorCategory.safeParse("weird").success).toBe(false);
   });
 
@@ -272,5 +273,80 @@ describe("contracts", () => {
       note: "Preflight reports scenario runnability only.",
     };
     expect(E2EPreflightReport.safeParse(report).success).toBe(false);
+  });
+
+  it("rejects E2E preflight reports that break scenario-count, key, and readiness invariants", () => {
+    const allReady = E2EScenarioKey.options.map((key) => ({
+      key,
+      title: key,
+      status: "ready" as const,
+      detail: "fixture",
+      requires: [] as string[],
+    }));
+    const base = {
+      schemaVersion: E2E_PREFLIGHT_SCHEMA_VERSION,
+      generatedAt: "2026-07-19T12:00:00.000Z",
+      readiness: "ready" as const,
+      usesFakeFixtureOnly: true,
+      realProviderCount: 0,
+      realWorkspaceEditorCount: 0,
+      providers: [
+        {
+          name: "fake",
+          real: false,
+          workspaceEdits: true,
+          inGlobalChain: true,
+          routedRoles: [] as string[],
+        },
+      ],
+      github: {
+        gitAvailable: false,
+        ghAvailable: false,
+        credentialHintAvailable: false,
+        ghAuthenticated: false,
+        repositoryReadable: false,
+        repositoryPushDryRunSucceeded: false,
+        repositoryWriteRoleObserved: false,
+      },
+      scenarios: allReady,
+      readyCount: 10,
+      blockedCount: 0,
+      note: "Preflight reports scenario runnability only.",
+    };
+
+    expect(E2EPreflightReport.safeParse(base).success).toBe(true);
+
+    // Exactly ten scenarios.
+    expect(
+      E2EPreflightReport.safeParse({
+        ...base,
+        scenarios: allReady.slice(0, 9),
+        readyCount: 9,
+      }).success,
+    ).toBe(false);
+
+    // No duplicate scenario keys.
+    expect(
+      E2EPreflightReport.safeParse({
+        ...base,
+        scenarios: [...allReady.slice(0, 9), allReady[0]!],
+      }).success,
+    ).toBe(false);
+
+    // readyCount / blockedCount / readiness must match statuses.
+    expect(
+      E2EPreflightReport.safeParse({ ...base, readyCount: 9 }).success,
+    ).toBe(false);
+    expect(
+      E2EPreflightReport.safeParse({ ...base, blockedCount: 1 }).success,
+    ).toBe(false);
+    expect(
+      E2EPreflightReport.safeParse({ ...base, readiness: "incomplete" }).success,
+    ).toBe(false);
+
+    // Counters must be non-negative (schema-level).
+    expect(
+      E2EPreflightReport.safeParse({ ...base, realProviderCount: -1 }).success,
+    ).toBe(false);
   });
 });
