@@ -10,19 +10,36 @@ tool/agent/policy failure, unknown).
 
 | Name | Interface | Workspace edits | Runtime safety |
 | --- | --- | ---: | --- |
-| `codex` | official `codex exec` | yes | `workspace-write`, no approvals, ephemeral, no inherited shell environment |
-| `claude-code` | `claude -p` | yes | safe mode, no persistence, explicit tools/permission mode |
-| `cursor` | `cursor-agent -p` | yes | built-in sandbox, trusted explicit workspace, setup scripts disabled |
-| `command` | configured argv template | opt-in only | reviewer-only unless `AVITY_COMMAND_WORKSPACE_EDITS=1` |
+| `codex` | official `codex exec` | yes | OS sandbox + `workspace-write`, no approvals, ephemeral, no inherited shell env; **network allowed** |
+| `claude-code` | `claude -p` | yes | OS sandbox + safe mode, no persistence, explicit tools/permission mode; **network allowed** |
+| `cursor` | `cursor-agent -p` | yes | OS sandbox + built-in sandbox, trusted explicit workspace, setup scripts disabled; **network allowed** |
+| `command` | configured argv template | opt-in only | OS sandbox; reviewer-only unless `AVITY_COMMAND_WORKSPACE_EDITS=1`; **network denied** unless `AVITY_COMMAND_ALLOW_NETWORK=1` |
 | `openai` | OpenAI Responses API | no | text/review runs; `store:false`; key scoped to HTTP adapter |
 | `anthropic` | Anthropic Messages API | no | text/review runs |
 | `deepseek` | OpenAI-compatible chat API | no | text/review runs |
-| `fake` | deterministic in-process fixture | fixture edits | tests correction, review, fallback, worktrees and checks offline |
+| `fake` | deterministic in-process fixture | fixture edits | **test/demo modes only** (see below); tests correction, review, fallback, worktrees and checks offline |
 
 HTTP adapters intentionally advertise `workspaceEdits:false`: returning text is
 not equivalent to editing a repository. CLI adapters combine the architecture
-system prompt and mission prompt, execute inside the persisted worktree, and
-receive only explicitly scoped environment variables.
+system prompt and mission prompt, and **every CLI adapter is launched inside the
+AvityOS OS sandbox** (`sandboxCommand`): the persisted worktree is the only
+writable/readable project path, HOME is a throwaway directory (the host HOME,
+its SSH keys, Git config and unrelated repositories are hidden), and network is
+**denied by default** — a provider must declare `allowNetwork: true` in its
+policy to reach its vendor API. Each provider receives only an explicit
+environment allowlist; `process.env` is never inherited. The generic `command`
+adapter forwards only the variables named in `AVITY_COMMAND_ENV_ALLOWLIST`.
+
+### Fixture-provider gating (`fake`)
+
+The `fake` fixture is only available when the execution mode explicitly permits
+it. `AVITY_EXECUTION_MODE` is `test`, `demo` or `production` and defaults
+fail-closed to `production` (a test runner — `NODE_ENV=test`/`VITEST` — is
+detected as `test`). In `production` the fixture is never registered, never
+appended to a default chain, and a `AVITY_PROVIDER_CHAIN` that explicitly names
+`fake` is rejected at startup with a clear error. This makes it impossible for a
+real mission to silently fall back to the fixture, fabricate a plan, or
+auto-approve a review.
 
 Model names and base URLs are configuration. OpenAI uses `/v1/responses` with
 `instructions` + `input`; DeepSeek remains chat-compatible. Current claims are
