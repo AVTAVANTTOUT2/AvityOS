@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,14 @@ import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG } from 
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import type { FastifyInstance } from "fastify";
 import { runCommand } from "./runner.js";
-import { WorkerAgent } from "./agent.js";
+import {
+  CREDENTIAL_FILE_MODE,
+  createEnrollmentMessages,
+  loadWorkerCredentialsFromFile,
+  persistWorkerCredentialsAtomically,
+  resolveWorkerCredentials,
+  WorkerAgent,
+} from "./agent.js";
 
 async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -277,5 +284,85 @@ describe("worker transport policy", () => {
       pollMs: 1000,
       capabilities: ["shell"],
     })).toThrow(/require HTTPS/);
+  });
+});
+
+describe("worker credential persistence", () => {
+  it("persists first enrollment with mode 0600", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-creds-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      await persistWorkerCredentialsAtomically(credentialsPath, {
+        workerId: "wrk_123",
+        workerToken: "tok_secret",
+      });
+
+      const loaded = await loadWorkerCredentialsFromFile(credentialsPath);
+      const fileMode = (await stat(credentialsPath)).mode & 0o777;
+      expect(loaded).toEqual({ workerId: "wrk_123", workerToken: "tok_secret" });
+      expect(fileMode).toBe(CREDENTIAL_FILE_MODE);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses persisted credentials on restart without re-enrollment", async () => {
+    let enrollCalls = 0;
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-restart-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      const first = await resolveWorkerCredentials(
+        { workerId: undefined, workerToken: undefined, credentialsPath },
+        {
+          enroll: async () => {
+            enrollCalls += 1;
+            return { id: "wrk_reuse", token: "tok_reuse" };
+          },
+        },
+        () => undefined,
+      );
+      expect(first).toEqual({ workerId: "wrk_reuse", workerToken: "tok_reuse" });
+      expect(enrollCalls).toBe(1);
+
+      const second = await resolveWorkerCredentials(
+        { workerId: undefined, workerToken: undefined, credentialsPath },
+        {
+          enroll: async () => {
+            enrollCalls += 1;
+            return { id: "wrk_new", token: "tok_new" };
+          },
+        },
+        () => undefined,
+      );
+      expect(second).toEqual({ workerId: "wrk_reuse", workerToken: "tok_reuse" });
+      expect(enrollCalls).toBe(1);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("never logs token material to output", async () => {
+    const lines: string[] = [];
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-logs-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      const resolved = await resolveWorkerCredentials(
+        { workerId: undefined, workerToken: undefined, credentialsPath },
+        {
+          enroll: async () => ({ id: "wrk_safe", token: "tok_should_not_leak" }),
+        },
+        (line) => lines.push(line),
+      );
+      const messages = createEnrollmentMessages(resolved.workerId, credentialsPath);
+      lines.push(...messages);
+
+      const fileContent = await readFile(credentialsPath, "utf8");
+      const output = lines.join("\n");
+      expect(output).not.toContain("tok_should_not_leak");
+      expect(output).not.toContain("AVITY_WORKER_TOKEN");
+      expect(fileContent).toContain("tok_should_not_leak");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 });
