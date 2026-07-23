@@ -9,12 +9,13 @@ import {
   CLAUDE_CODE_SANDBOX_POLICY,
   CODEX_SANDBOX_POLICY,
   CURSOR_SANDBOX_POLICY,
+  type ResolvedCliAuth,
   type ProviderAdapter,
 } from "@avityos/providers";
 import { TeamRole, type TeamRole as TeamRoleName } from "@avityos/contracts";
 import { fakeProviderAllowed, FIXTURE_PROVIDER_ID, resolveExecutionMode } from "./provider-policy.js";
 
-export const KNOWN_PROVIDER_IDS = [
+export const PROVIDER_CHAIN_PREFERENCE_REAL = [
   "codex",
   "claude-code",
   "cursor",
@@ -22,11 +23,34 @@ export const KNOWN_PROVIDER_IDS = [
   "openai",
   "anthropic",
   "deepseek",
+] as const;
+
+export const PROVIDER_STATUS_ORDER = [
+  ...PROVIDER_CHAIN_PREFERENCE_REAL,
   FIXTURE_PROVIDER_ID,
 ] as const;
 
-export function parseModelList(value: string | undefined): string[] {
+type CliProviderId = "codex" | "claude-code" | "cursor" | "command";
+
+function parseModelList(value: string | undefined): string[] {
   return (value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+export function resolveProviderCliAuth(
+  providerId: CliProviderId,
+  env: NodeJS.ProcessEnv,
+  options: { realHome?: string } = {},
+): ResolvedCliAuth {
+  if (providerId === "codex") {
+    return resolveCliProviderAuth(CODEX_SANDBOX_POLICY, env, options);
+  }
+  if (providerId === "claude-code") {
+    return resolveCliProviderAuth(CLAUDE_CODE_SANDBOX_POLICY, env, options);
+  }
+  if (providerId === "cursor") {
+    return resolveCliProviderAuth(CURSOR_SANDBOX_POLICY, env, options);
+  }
+  return resolveCommandProviderAuth(env);
 }
 
 /**
@@ -98,7 +122,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
   }
 
   if (env.AVITY_CLAUDE_CODE_BIN) {
-    const auth = resolveCliProviderAuth(CLAUDE_CODE_SANDBOX_POLICY, env);
+    const auth = resolveProviderCliAuth("claude-code", env);
     const claudeModels = models(env.AVITY_CLAUDE_CODE_MODELS);
     providers.set(
       "claude-code",
@@ -122,7 +146,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
   }
 
   if (env.AVITY_CODEX_BIN) {
-    const auth = resolveCliProviderAuth(CODEX_SANDBOX_POLICY, env);
+    const auth = resolveProviderCliAuth("codex", env);
     const codexModels = models(env.AVITY_CODEX_MODELS);
     providers.set(
       "codex",
@@ -146,7 +170,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
   }
 
   if (env.AVITY_CURSOR_BIN) {
-    const auth = resolveCliProviderAuth(CURSOR_SANDBOX_POLICY, env);
+    const auth = resolveProviderCliAuth("cursor", env);
     const cursorModels = models(env.AVITY_CURSOR_MODELS);
     providers.set(
       "cursor",
@@ -176,7 +200,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
       }
       args = parsed;
     }
-    const auth = resolveCommandProviderAuth(env);
+    const auth = resolveProviderCliAuth("command", env);
     providers.set(
       "command",
       new CommandProviderAdapter("command", {

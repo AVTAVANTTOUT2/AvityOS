@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { TeamRole } from "@avityos/contracts";
 import {
@@ -57,6 +60,7 @@ describe("buildProviderStatus", () => {
       reviewModels: new Map(),
       routing: routingInput([], []),
       campaignFault: null,
+      authRealHome: "/__avity_provider_status_nohome__",
     });
 
     const codex = report.providers.find((provider) => provider.name === "codex");
@@ -139,5 +143,58 @@ describe("buildProviderStatus", () => {
     });
 
     expect(JSON.stringify(report)).not.toContain("sensitive-value");
+  });
+
+  it("accepts sandbox file-based auth without env secret when the provider is registered", async () => {
+    const home = await mkdtemp(join(tmpdir(), "avity-provider-status-home-"));
+    try {
+      const credDir = join(home, ".codex");
+      await mkdir(credDir, { recursive: true });
+      await writeFile(join(credDir, "auth.json"), JSON.stringify({ token: "never-print-me" }), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+
+      const providers = new Map<string, ProviderAdapter>([["codex", new ExplodingAdapter()]]);
+      const report = buildProviderStatus({
+        env: {
+          AVITY_CODEX_BIN: "codex",
+          AVITY_DEFAULT_MODELS: "codex=gpt-5.6-sol-high",
+        },
+        executionMode: "production",
+        providers,
+        defaultModels: new Map([["codex", "gpt-5.6-sol-high"]]),
+        reviewModels: new Map(),
+        routing: routingInput(["codex"], ["codex"]),
+        campaignFault: null,
+        authRealHome: home,
+      });
+
+      const codex = report.providers.find((provider) => provider.name === "codex");
+      expect(codex?.reasons.some((reason) => reason.code === "auth_missing")).toBe(false);
+      expect(JSON.stringify(report)).not.toContain("never-print-me");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the shared readiness severity order from contracts", () => {
+    const report = buildProviderStatus({
+      env: {},
+      executionMode: "production",
+      providers: new Map([["codex", new (class extends ExplodingAdapter {
+        override capabilities(): ProviderCapabilities {
+          return { ...super.capabilities(), workspaceEdits: false };
+        }
+      })()]]),
+      defaultModels: new Map(),
+      reviewModels: new Map(),
+      routing: routingInput([], ["codex"]),
+      campaignFault: null,
+    });
+    const codex = report.providers.find((provider) => provider.name === "codex");
+    // codex has both missing_tool and product_gap reasons; contract severity
+    // prioritizes blocked_product_gap over blocked_missing_tool.
+    expect(codex?.status).toBe("blocked_product_gap");
   });
 });

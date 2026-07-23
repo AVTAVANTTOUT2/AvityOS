@@ -8,7 +8,7 @@ export {
   DEFAULT_MISSION_COMMAND_POLICY,
   type ServerOptions,
 } from "./server.js";
-export { buildProviders, KNOWN_PROVIDER_IDS, parseModelList, parseModelMap } from "./providers.js";
+export { buildProviders, parseModelMap } from "./providers.js";
 export { buildProviderStatus, type ProviderStatusReport } from "./provider-status.js";
 export {
   applyCampaignFaultInjection,

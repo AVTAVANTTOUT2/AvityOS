@@ -1,11 +1,9 @@
-import { TeamRole, type E2EScenarioStatus } from "@avityos/contracts";
 import {
-  CODEX_SANDBOX_POLICY,
-  CLAUDE_CODE_SANDBOX_POLICY,
-  CURSOR_SANDBOX_POLICY,
-  resolveCliProviderAuth,
-  type ProviderAdapter,
-} from "@avityos/providers";
+  summarizeE2EReadiness,
+  TeamRole,
+  type E2EScenarioStatus,
+} from "@avityos/contracts";
+import { type ProviderAdapter } from "@avityos/providers";
 import {
   effectiveProviderChainForRole,
   providersRoutableForRoles,
@@ -14,6 +12,10 @@ import {
 import type { CampaignFaultConfig } from "./campaign-fault.js";
 import type { ExecutionMode } from "./provider-policy.js";
 import { FIXTURE_PROVIDER_ID } from "./provider-policy.js";
+import {
+  PROVIDER_STATUS_ORDER,
+  resolveProviderCliAuth,
+} from "./providers.js";
 
 export type ProviderStatusCategory = Exclude<E2EScenarioStatus, "ready">;
 
@@ -79,30 +81,12 @@ export interface BuildProviderStatusInput {
     missionRoles: readonly string[];
   };
   campaignFault: CampaignFaultConfig | null;
+  authRealHome?: string;
 }
-
-const PROVIDER_ORDER = [
-  "codex",
-  "claude-code",
-  "cursor",
-  "command",
-  "openai",
-  "anthropic",
-  "deepseek",
-  FIXTURE_PROVIDER_ID,
-] as const;
 
 const MISSION_PROVIDER_IDS = new Set(["codex", "claude-code", "cursor"]);
 const HTTP_PROVIDER_IDS = new Set(["openai", "anthropic", "deepseek"]);
 const CLI_PROVIDER_IDS = new Set(["codex", "claude-code", "cursor", "command"]);
-
-const STATUS_PRIORITY: readonly E2EScenarioStatus[] = [
-  "blocked_missing_tool",
-  "blocked_missing_credentials",
-  "blocked_product_gap",
-  "blocked_operator_configuration",
-  "ready",
-];
 
 export function buildProviderStatus(input: BuildProviderStatusInput): ProviderStatusReport {
   const routingInput = {
@@ -112,7 +96,7 @@ export function buildProviderStatus(input: BuildProviderStatusInput): ProviderSt
   const missionRoles = input.routing.missionRoles.filter((role) => role !== "orchestrator");
   const missionReachableProviders = providersRoutableForRoles(routingInput, missionRoles);
 
-  const entries: ProviderStatusEntry[] = PROVIDER_ORDER.map((name) => {
+  const entries: ProviderStatusEntry[] = PROVIDER_STATUS_ORDER.map((name) => {
     const adapter = input.providers.get(name);
     const kind = providerKind(name);
     const reasons: ProviderStatusReason[] = [];
@@ -142,7 +126,7 @@ export function buildProviderStatus(input: BuildProviderStatusInput): ProviderSt
           ],
         });
       }
-      const auth = resolveCliAuth(name, input.env);
+      const auth = resolveCliAuth(name, input.env, input.authRealHome);
       if (!auth.authenticated) {
         reasons.push({
           code: "auth_missing",
@@ -359,11 +343,7 @@ function buildGlobalChecks(
 }
 
 function summarizeStatus(reasons: readonly ProviderStatusReason[]): E2EScenarioStatus {
-  for (const status of STATUS_PRIORITY) {
-    if (status === "ready") continue;
-    if (reasons.some((reason) => reason.category === status)) return status;
-  }
-  return "ready";
+  return summarizeE2EReadiness(reasons.map((reason) => reason.category));
 }
 
 function providerKind(name: string): "fixture" | "http" | "cli" {
@@ -399,53 +379,33 @@ function httpApiKeyEnv(name: string): string {
 function resolveCliAuth(
   provider: "codex" | "claude-code" | "cursor" | "command",
   env: NodeJS.ProcessEnv,
+  authRealHome?: string,
 ): {
   authenticated: boolean;
   reason: string;
   environmentVariables: string[];
   remediation: string[];
 } {
-  if (provider === "codex") {
-    const result = resolveCliProviderAuth(CODEX_SANDBOX_POLICY, env, {
-      realHome: "/__avity_provider_status_disabled_home__",
-    });
+  if (provider === "command") {
     return {
-      authenticated: result.authenticated,
-      reason: result.reason ?? "codex sandbox authentication is not configured",
-      environmentVariables: [...CODEX_SANDBOX_POLICY.allowedEnvironment],
-      remediation: [
-        "set CODEX_API_KEY or provide ~/.codex/auth.json",
-      ],
+      authenticated: true,
+      reason: "command provider does not require auth by default",
+      environmentVariables: [],
+      remediation: [],
     };
   }
-  if (provider === "claude-code") {
-    const result = resolveCliProviderAuth(CLAUDE_CODE_SANDBOX_POLICY, env, {
-      realHome: "/__avity_provider_status_disabled_home__",
-    });
-    return {
-      authenticated: result.authenticated,
-      reason: result.reason ?? "claude-code sandbox authentication is not configured",
-      environmentVariables: [...CLAUDE_CODE_SANDBOX_POLICY.allowedEnvironment],
-      remediation: [
-        "set ANTHROPIC_API_KEY or provide ~/.claude/.credentials.json",
-      ],
-    };
-  }
-  if (provider === "cursor") {
-    const result = resolveCliProviderAuth(CURSOR_SANDBOX_POLICY, env, {
-      realHome: "/__avity_provider_status_disabled_home__",
-    });
-    return {
-      authenticated: result.authenticated,
-      reason: result.reason ?? "cursor sandbox authentication is not configured",
-      environmentVariables: [...CURSOR_SANDBOX_POLICY.allowedEnvironment],
-      remediation: ["set CURSOR_API_KEY"],
-    };
-  }
+  const result = resolveProviderCliAuth(provider, env, { realHome: authRealHome });
   return {
-    authenticated: true,
-    reason: "command provider does not require auth by default",
-    environmentVariables: [],
-    remediation: [],
+    authenticated: result.authenticated,
+    reason: result.reason ?? `${provider} sandbox authentication is not configured`,
+    environmentVariables: [...result.policy.allowedEnvironment],
+    remediation:
+      result.policy.allowedCredentialFiles.length > 0
+        ? [
+            `set one of [${result.policy.allowedEnvironment.join(", ")}] or provide one of [${result.policy.allowedCredentialFiles.join(", ")}]`,
+          ]
+        : result.policy.allowedEnvironment.length > 0
+          ? [`set one of [${result.policy.allowedEnvironment.join(", ")}]`]
+          : [],
   };
 }

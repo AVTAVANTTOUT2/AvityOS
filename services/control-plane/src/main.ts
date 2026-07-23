@@ -17,7 +17,12 @@ import {
   FIXTURE_PROVIDER_ID,
   resolveExecutionMode,
 } from "./provider-policy.js";
-import { buildProviders, parseModelMap, parseRoleProviderMap } from "./providers.js";
+import {
+  buildProviders,
+  parseModelMap,
+  parseRoleProviderMap,
+  PROVIDER_CHAIN_PREFERENCE_REAL,
+} from "./providers.js";
 import { buildProviderStatus } from "./provider-status.js";
 import { buildServer, DEFAULT_ALLOWED_ORIGINS } from "./server.js";
 import { Store } from "./store.js";
@@ -58,7 +63,7 @@ async function main(): Promise<void> {
   // fixture as an offline fallback when the mode already permits it.
   const allowFixture = fakeProviderAllowed(executionMode);
   const defaultChainOrder = [
-    "codex", "claude-code", "cursor", "command", "openai", "anthropic", "deepseek",
+    ...PROVIDER_CHAIN_PREFERENCE_REAL,
     ...(allowFixture ? [FIXTURE_PROVIDER_ID] : []),
   ];
   let providerChain: string[];
