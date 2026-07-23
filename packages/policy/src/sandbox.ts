@@ -290,14 +290,17 @@ export function resolveSystemCaBundle(): string | undefined {
  * under the user HOME (e.g. `~/.local/bin/codex`) cannot be found via PATH once
  * host HOME reads are denied.
  */
-export function resolveExecutablePath(executable: string): string {
+export function resolveExecutablePath(
+  executable: string,
+  pathValue = process.env.PATH ?? "",
+): string {
   if (executable.includes("/") || isAbsolute(executable)) {
     if (!existsSync(executable)) {
       throw new Error(`executable not found: ${executable}`);
     }
     return realpathSync(executable);
   }
-  for (const dir of (process.env.PATH ?? "").split(":")) {
+  for (const dir of pathValue.split(":")) {
     if (!dir) continue;
     const candidate = join(dir, executable);
     if (existsSync(candidate)) return realpathSync(candidate);

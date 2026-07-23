@@ -10,7 +10,7 @@ tool/agent/policy failure, `sandbox_unavailable`, unknown).
 
 | Name | Interface | Workspace edits | Runtime safety |
 | --- | --- | ---: | --- |
-| `codex` | official `codex exec` | yes | OS sandbox + `workspace-write`, no approvals, ephemeral, no inherited shell env; **network allowed**; auth: `CODEX_API_KEY` or staged `~/.codex/auth.json` |
+| `codex` | official `codex exec` | yes | AvityOS OS sandbox for the full process tree; Codex's nested sandbox is disabled to avoid Seatbelt/bubblewrap nesting, with no approvals, ephemeral state, and only an explicit `PATH` passed to tool commands; **network allowed**; auth: `CODEX_API_KEY` or staged `~/.codex/auth.json` |
 | `claude-code` | `claude -p` | yes | OS sandbox + safe mode, no persistence, explicit tools/permission mode; **network allowed**; auth: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or staged `~/.claude/.credentials.json` |
 | `cursor` | `cursor-agent -p` | yes | OS sandbox + built-in sandbox, trusted explicit workspace, setup scripts disabled; **network allowed**; auth: `CURSOR_API_KEY` or staged `~/.cursor/auth.json` file store |
 | `command` | configured argv template | opt-in only | OS sandbox; reviewer-only unless `AVITY_COMMAND_WORKSPACE_EDITS=1`; **network denied** unless `AVITY_COMMAND_ALLOW_NETWORK=1`; env names from `AVITY_COMMAND_ENV_ALLOWLIST` only |
@@ -38,7 +38,12 @@ AvityOS OS sandbox** (`sandboxCommand`), whose boundary is **fail-closed**:
   readable** (not merely mounted read-only).
 - **System runtime exposed:** the executable's directory, its safe install root,
   and the exact shared-library / package roots discovered by bounded `otool`/
-  `ldd` scans (**never** all of `/opt/homebrew` or `/usr/local`); plus the
+  `ldd` scans. CLI agents additionally receive exact runtime roots for a
+  curated repository toolchain (`git`, Node/package managers, `rg`, Python,
+  Swift/Xcode, Make/CMake, Rust and Go when installed). Operators may append
+  bare executable names with `AVITY_CLI_TOOLCHAIN_COMMANDS`; path-like entries
+  are rejected, and **never** all of `/opt/homebrew` or `/usr/local` is granted.
+  The sandbox also exposes the
   platform system read roots (`/usr`, `/System`, `/Library`, `/etc`, … on macOS;
   `/usr`, `/bin`, `/lib*`, `/etc`, … bound read-only on Linux).
 - **Network:** **denied by default** — a provider must declare
@@ -48,9 +53,9 @@ AvityOS OS sandbox** (`sandboxCommand`), whose boundary is **fail-closed**:
   read-only into the throwaway HOME after `lstat` (regular file, no symlink,
   canonical path under the real HOME, exact policy path). `process.env` is never
   inherited; each provider receives only its explicit environment allowlist.
-  `HOME`/`TMPDIR`/`PATH` are reserved by the sandbox. The generic `command`
-  adapter forwards only the variables named in `AVITY_COMMAND_ENV_ALLOWLIST`
-  (which may not list those reserved names).
+  `HOME`/`TMPDIR`/`PATH`/`SSL_CERT_FILE` are reserved by the sandbox. The
+  generic `command` adapter forwards only the variables named in
+  `AVITY_COMMAND_ENV_ALLOWLIST` (which may not list those reserved names).
 - **macOS Mach IPC:** sensitive services (SecurityServer/securityd/Keychain,
   pasteboard, WindowServer, AppleEvents) are denied; a minimal validated
   allowlist covers logging, OpenDirectory, prefs and DNS only.

@@ -13,6 +13,10 @@ import {
   type ProviderAdapter,
 } from "@avityos/providers";
 import { TeamRole, type TeamRole as TeamRoleName } from "@avityos/contracts";
+import {
+  detectRuntimeReadRoots,
+  resolveExecutablePath,
+} from "@avityos/policy";
 import { fakeProviderAllowed, FIXTURE_PROVIDER_ID, resolveExecutionMode } from "./provider-policy.js";
 
 export const PROVIDER_CHAIN_PREFERENCE_REAL = [
@@ -32,8 +36,62 @@ export const PROVIDER_STATUS_ORDER = [
 
 type CliProviderId = "codex" | "claude-code" | "cursor" | "command";
 
+export const DEFAULT_CLI_TOOLCHAIN_COMMANDS = [
+  "git",
+  "node",
+  "npm",
+  "npx",
+  "pnpm",
+  "rg",
+  "python3",
+  "swift",
+  "xcodebuild",
+  "make",
+  "cmake",
+  "cargo",
+  "rustc",
+  "go",
+] as const;
+
+const cliToolchainCache = new Map<string, readonly string[]>();
+const BARE_TOOL_NAME = /^[A-Za-z0-9._+-]+$/;
+
 function parseModelList(value: string | undefined): string[] {
   return (value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Resolve only a curated set of repository tools and their exact runtime
+ * roots. Never grant an entire PATH directory or package-manager prefix.
+ */
+export function resolveCliToolchainRuntimePaths(env: NodeJS.ProcessEnv): readonly string[] {
+  const pathValue = env.PATH ?? process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin";
+  const extraCommands = parseModelList(env.AVITY_CLI_TOOLCHAIN_COMMANDS);
+  const commands = [...new Set([...DEFAULT_CLI_TOOLCHAIN_COMMANDS, ...extraCommands])];
+  const invalid = commands.filter((command) => !BARE_TOOL_NAME.test(command));
+  if (invalid.length > 0) {
+    throw new Error(
+      `AVITY_CLI_TOOLCHAIN_COMMANDS accepts bare executable names only: ${invalid.join(", ")}`,
+    );
+  }
+
+  const cacheKey = `${pathValue}\n${commands.join(",")}`;
+  const cached = cliToolchainCache.get(cacheKey);
+  if (cached) return cached;
+
+  const roots = new Set<string>();
+  for (const command of commands) {
+    try {
+      const executable = resolveExecutablePath(command, pathValue);
+      for (const root of detectRuntimeReadRoots(executable)) roots.add(root);
+    } catch {
+      // Optional tool absent on this host: do not widen the sandbox or fail
+      // providers that do not need it.
+    }
+  }
+  const resolved = [...roots];
+  cliToolchainCache.set(cacheKey, resolved);
+  return resolved;
 }
 
 export function resolveProviderCliAuth(
@@ -69,6 +127,8 @@ export function resolveProviderCliAuth(
  *   AVITY_CURSOR_BIN       path to the cursor-agent executable
  *   AVITY_COMMAND_BIN      optional generic non-interactive coding agent
  *   AVITY_COMMAND_ARGS_JSON JSON argv template for the generic agent
+ *   AVITY_CLI_TOOLCHAIN_COMMANDS optional extra bare executable names whose
+ *                                exact runtime roots CLI agents may read
  *   AVITY_PROVIDER_CHAIN   ordered fallback chain, e.g. "openai,anthropic,fake"
  *   AVITY_DEFAULT_MODELS   e.g. "openai=gpt-4o,anthropic=claude-sonnet-4-5"
  *   AVITY_REVIEW_MODELS    reviewer models per provider (distinct identity)
@@ -83,7 +143,10 @@ export function resolveProviderCliAuth(
  */
 export function buildProviders(
   env: NodeJS.ProcessEnv,
-  options: { readonly realHome?: string } = {},
+  options: {
+    readonly realHome?: string;
+    readonly cliToolchainRuntimePaths?: readonly string[];
+  } = {},
 ): Map<string, ProviderAdapter> {
   const providers = new Map<string, ProviderAdapter>();
   // Fail-closed: the fixture provider is registered only in test/demo modes.
@@ -93,6 +156,14 @@ export function buildProviders(
   }
 
   const models = parseModelList;
+  const hasCliProvider = Boolean(
+    env.AVITY_CLAUDE_CODE_BIN ||
+    env.AVITY_CODEX_BIN ||
+    env.AVITY_CURSOR_BIN ||
+    env.AVITY_COMMAND_BIN,
+  );
+  const cliToolchainRuntimePaths = options.cliToolchainRuntimePaths ??
+    (hasCliProvider ? resolveCliToolchainRuntimePaths(env) : []);
 
   if (env.OPENAI_API_KEY) {
     providers.set(
@@ -146,6 +217,7 @@ export function buildProviders(
         allowNetwork: CLAUDE_CODE_SANDBOX_POLICY.allowNetwork,
         env: auth.env,
         credentialFiles: auth.credentialFiles,
+        runtimePaths: cliToolchainRuntimePaths,
         authError: auth.authenticated ? undefined : auth.reason,
       }),
     );
@@ -159,9 +231,17 @@ export function buildProviders(
       new CommandProviderAdapter("codex", {
         executable: env.AVITY_CODEX_BIN,
         args: [
-          "exec", "--sandbox", "workspace-write",
+          // CommandProviderAdapter already launches Codex inside the AvityOS
+          // fail-closed OS sandbox. Asking Codex to create another Seatbelt /
+          // bubblewrap sandbox makes its tool subprocesses fail under the
+          // outer profile. Disable only Codex's nested sandbox; descendants
+          // remain confined by the AvityOS sandbox for the entire process tree.
+          "exec", "--sandbox", "danger-full-access",
           "-c", 'approval_policy="never"',
           "-c", 'shell_environment_policy.inherit="none"',
+          "-c", `shell_environment_policy.set.PATH=${JSON.stringify(
+            env.PATH ?? process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+          )}`,
           "--ignore-user-config", "--ignore-rules", "--ephemeral", "-C", "{cwd}",
           ...(codexModels.length ? ["--model", "{model}"] : []),
           "{prompt}",
@@ -170,6 +250,7 @@ export function buildProviders(
         allowNetwork: CODEX_SANDBOX_POLICY.allowNetwork,
         env: auth.env,
         credentialFiles: auth.credentialFiles,
+        runtimePaths: cliToolchainRuntimePaths,
         authError: auth.authenticated ? undefined : auth.reason,
       }),
     );
@@ -195,6 +276,7 @@ export function buildProviders(
         allowNetwork: CURSOR_SANDBOX_POLICY.allowNetwork,
         env: cursorEnv,
         credentialFiles: auth.credentialFiles,
+        runtimePaths: cliToolchainRuntimePaths,
         authError: auth.authenticated ? undefined : auth.reason,
       }),
     );
@@ -220,6 +302,7 @@ export function buildProviders(
         allowNetwork: auth.policy.allowNetwork,
         env: auth.env,
         credentialFiles: auth.credentialFiles,
+        runtimePaths: cliToolchainRuntimePaths,
       }),
     );
   }

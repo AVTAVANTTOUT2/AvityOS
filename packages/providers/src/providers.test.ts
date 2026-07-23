@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SandboxedCommand } from "@avityos/policy";
+import type { SandboxCommandOptions, SandboxedCommand } from "@avityos/policy";
 import {
   AnthropicAdapter,
   CommandProviderAdapter,
@@ -279,6 +279,37 @@ describe("command adapter (hermetic unit)", () => {
       env: { CURSOR_API_KEY: "test-credential-value" },
     });
     expect(text.trim()).toBe("test-credential-value");
+  });
+
+  it("forwards trusted toolchain runtime roots to the OS sandbox", async () => {
+    let observed: SandboxCommandOptions | undefined;
+    const adapter = new CommandProviderAdapter(
+      "toolchain-agent",
+      {
+        executable: "echo",
+        args: ["ok"],
+        runtimePaths: ["/trusted/runtime/node", "/trusted/runtime/git"],
+      },
+      {
+        sandbox: ((argv, cwd, options) => {
+          observed = options;
+          return hermeticSandbox(argv, cwd, options);
+        }) as SandboxLauncher,
+      },
+    );
+
+    await drain(
+      adapter.startRun({
+        runId: "r",
+        model: "default",
+        systemPrompt: "",
+        userPrompt: "",
+      }).events,
+    );
+    expect(observed?.runtimePaths).toEqual([
+      "/trusted/runtime/node",
+      "/trusted/runtime/git",
+    ]);
   });
 
   it("normalizes spawn failures as agent_crash", async () => {
