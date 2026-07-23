@@ -127,6 +127,20 @@ describe("git package", () => {
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("commits with a deterministic service identity when the repository has no author config", async () => {
+    await git(repo, "config", "--unset-all", "user.name");
+    await git(repo, "config", "--unset-all", "user.email");
+    await writeFile(join(repo, "identity.txt"), "validated\n");
+
+    await commitAll(repo, "test: identity-independent automated commit");
+
+    expect((await git(repo, "show", "-s", "--format=%an <%ae>", "HEAD")).trim()).toBe(
+      "AvityOS <avityos@local>",
+    );
+    await expect(git(repo, "config", "--get", "user.name")).rejects.toThrow();
+    await expect(git(repo, "config", "--get", "user.email")).rejects.toThrow();
+  });
+
   it("never executes repository post-checkout hooks when adding a worktree", async () => {
     const marker = join(scratch, "post-checkout-ran");
     const hook = join(repo, ".git", "hooks", "post-checkout");

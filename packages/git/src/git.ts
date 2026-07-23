@@ -287,7 +287,21 @@ export async function commitAll(repoPath: string, message: string): Promise<stri
   // Validation is an explicit AvityOS checkpoint. Repository-controlled Git
   // hooks and inherited signing programs are untrusted executable code and
   // must not run with control-plane authority during the commit side effect.
-  await git(repoPath, "commit", "--no-verify", "--no-gpg-sign", "-m", message);
+  // External repositories are also allowed to omit user.name/user.email:
+  // command-scoped identity keeps the autonomous commit deterministic without
+  // mutating either the repository or the operator's global Git configuration.
+  await git(
+    repoPath,
+    "-c",
+    "user.name=AvityOS",
+    "-c",
+    "user.email=avityos@local",
+    "commit",
+    "--no-verify",
+    "--no-gpg-sign",
+    "-m",
+    message,
+  );
   return headCommit(repoPath);
 }
 
