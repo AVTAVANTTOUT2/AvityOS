@@ -612,13 +612,13 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
       ),
     );
   }
-  // Structural guarantee, not credential-dependent: the engine only marks
-  // approved drafts ready and contains no merge operation.
+  // Structural guarantee, not credential-dependent: the engine retains
+  // approved pull requests as drafts and contains no merge operation.
   scenarios.push(
     ready(
       "no_autonomous_merge",
       "No autonomous merge",
-      "Guaranteed by design: the engine marks approved drafts ready and never merges a pull request.",
+      "Guaranteed by design: the engine retains approved pull requests as drafts and never merges them.",
     ),
   );
 

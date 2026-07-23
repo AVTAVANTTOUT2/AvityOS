@@ -7,6 +7,9 @@ allowBuilds:
   esbuild: true
 overrides:
   vite: 6.4.3
+  # GHSA-c96f-x56v-gq3h: remotely triggerable HTTP/2 denial of service.
+  # Fastify accepts 9.x, so keep every service on the patched router release.
+  find-my-way: 9.7.0
   # GHSA-v2hh-gcrm-f6hx: fast-uri host confusion via literal backslash authority
   # delimiter. Force the patched release on each major already in the tree
   # (ajv pulls 3.x, fast-json-stringify pulls 4.x) without weakening the audit

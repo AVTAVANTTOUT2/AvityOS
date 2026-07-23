@@ -358,6 +358,17 @@ describe("buildE2EPreflight", () => {
     );
   });
 
+  it("describes approved pull requests as retained drafts", () => {
+    const report = buildE2EPreflight(inputs());
+    const scenario = report.scenarios.find(
+      (item) => item.key === "no_autonomous_merge",
+    )!;
+
+    expect(scenario.status).toBe("ready");
+    expect(scenario.detail).toMatch(/retains approved pull requests as drafts/i);
+    expect(scenario.detail).not.toMatch(/marks approved drafts ready/i);
+  });
+
   it("never readies write scenarios from repositoryReadable alone", () => {
     const report = buildE2EPreflight(
       inputs({
