@@ -204,7 +204,7 @@ export function resolveCommandProviderAuth(env: NodeJS.ProcessEnv): ResolvedCliA
   if (reserved.length > 0) {
     throw new Error(
       `AVITY_COMMAND_ENV_ALLOWLIST must not include reserved sandbox variables ` +
-        `[${reserved.join(", ")}]; HOME/TMPDIR/PATH are defined exclusively by the sandbox`,
+        `[${reserved.join(", ")}]; HOME/TMPDIR/PATH/SSL_CERT_FILE are defined exclusively by the sandbox`,
     );
   }
   const policy: CliProviderSandboxPolicy = {

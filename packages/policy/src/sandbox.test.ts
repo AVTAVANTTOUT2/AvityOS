@@ -19,6 +19,7 @@ import {
   detectRuntimeReadRoots,
   FORBIDDEN_AUTO_RUNTIME_ROOTS,
   packageManagerRootsForPath,
+  resolveSystemCaBundle,
   runtimeRootsFromOtoolOutputs,
   sandboxCommand,
   type SandboxCommandOptions,
@@ -272,7 +273,7 @@ describe("sandboxCommand reserved env", () => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  it("rejects options.env that tries to replace HOME, TMPDIR or PATH before launch", () => {
+  it("rejects options.env that tries to replace sandbox-owned environment before launch", () => {
     if (!SANDBOX_AVAILABLE) return;
     const workspace = mkdtempSync(join(tmpdir(), "avity-env-ws-"));
     dirs.push(workspace);
@@ -284,6 +285,11 @@ describe("sandboxCommand reserved env", () => {
     ).toThrow(/reserved variables/);
     expect(() =>
       sandboxCommand([nodeBin(), "--version"], workspace, { env: { PATH: "/evil/bin" } }),
+    ).toThrow(/reserved variables/);
+    expect(() =>
+      sandboxCommand([nodeBin(), "--version"], workspace, {
+        env: { SSL_CERT_FILE: join(workspace, "untrusted-ca.pem") },
+      }),
     ).toThrow(/reserved variables/);
   });
 
@@ -307,6 +313,24 @@ describe("sandboxCommand reserved env", () => {
       expect(inv.env.TMPDIR).toBe(inv.home);
       expect(out).toBe(`${inv.home}|${inv.home}`);
       expect(inv.home).not.toBe(homedir());
+    } finally {
+      inv.cleanup();
+    }
+  });
+
+  it("pins network-enabled commands to a readable system CA bundle", () => {
+    if (!SANDBOX_AVAILABLE) return;
+    const workspace = mkdtempSync(join(tmpdir(), "avity-env-ca-"));
+    dirs.push(workspace);
+    const expected = resolveSystemCaBundle();
+    expect(expected).toBeDefined();
+
+    const inv = sandboxCommand([nodeBin(), "--version"], workspace, {
+      allowNetwork: true,
+    });
+    try {
+      expect(inv.env.SSL_CERT_FILE).toBe(expected);
+      expect(statSync(inv.env.SSL_CERT_FILE as string).isFile()).toBe(true);
     } finally {
       inv.cleanup();
     }

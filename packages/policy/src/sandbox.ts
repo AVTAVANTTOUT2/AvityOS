@@ -76,8 +76,30 @@ export interface SandboxedCommand {
  * `options.env` must never set or override these — a clear rejection avoids a
  * misleading configuration that appears to customise the throwaway HOME.
  */
-export const RESERVED_SANDBOX_ENV_VARS = ["HOME", "TMPDIR", "PATH"] as const;
+export const RESERVED_SANDBOX_ENV_VARS = [
+  "HOME",
+  "TMPDIR",
+  "PATH",
+  "SSL_CERT_FILE",
+] as const;
 export type ReservedSandboxEnvVar = (typeof RESERVED_SANDBOX_ENV_VARS)[number];
+
+/**
+ * System-owned CA bundles safe to expose to network-enabled provider CLIs.
+ *
+ * A sandbox must not depend on Keychain/trustd access to validate public TLS:
+ * those Mach services stay denied because they can reach ambient user
+ * credentials. Instead, the sandbox pins SSL_CERT_FILE to the first regular
+ * system bundle available on the host.
+ */
+export const SYSTEM_CA_BUNDLE_CANDIDATES =
+  process.platform === "darwin"
+    ? ["/private/etc/ssl/cert.pem", "/etc/ssl/cert.pem"]
+    : [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+      ];
 
 /**
  * Keep the disposable HOME short enough for CLIs that derive Unix sockets or
@@ -209,14 +231,18 @@ export function sandboxCommand(
       options.allowNetwork ?? false,
       [...runtimeReadable, ...extraReadable],
     );
+    const systemCaBundle = options.allowNetwork
+      ? resolveSystemCaBundle()
+      : undefined;
     // Reserved vars are applied *after* provider env would have been merged —
-    // and provider env is already rejected if it names them — so HOME/TMPDIR/PATH
-    // always come from the sandbox.
+    // and provider env is already rejected if it names them — so
+    // HOME/TMPDIR/PATH and TLS trust always come from the sandbox.
     return {
       ...invocation,
       home,
       env: {
         ...options.env,
+        ...(systemCaBundle ? { SSL_CERT_FILE: systemCaBundle } : {}),
         PATH: process.env.PATH ?? "",
         HOME: home,
         TMPDIR: home,
@@ -240,9 +266,22 @@ export function assertNoReservedSandboxEnv(
   if (reserved.length > 0) {
     throw new Error(
       `sandbox options.env must not set reserved variables [${reserved.join(", ")}]; ` +
-        `HOME/TMPDIR/PATH are defined exclusively by the sandbox`,
+        `HOME/TMPDIR/PATH/SSL_CERT_FILE are defined exclusively by the sandbox`,
     );
   }
+}
+
+/** Resolve an existing, regular, system-owned CA bundle without running code. */
+export function resolveSystemCaBundle(): string | undefined {
+  for (const candidate of SYSTEM_CA_BUNDLE_CANDIDATES) {
+    try {
+      const canonical = realpathSync(candidate);
+      if (lstatSync(canonical).isFile()) return canonical;
+    } catch {
+      // Try the next conventional system bundle.
+    }
+  }
+  return undefined;
 }
 
 /**
