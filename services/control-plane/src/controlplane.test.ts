@@ -619,6 +619,71 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     ).toContain("could not inspect mission diff");
   });
 
+  it("keeps an approved autonomous pull request in draft state", async () => {
+    const project = store.createProject({
+      name: "DraftDelivery",
+      description: "",
+      repoPath: null,
+      repoRemoteUrl: "https://github.com/acme/draft-delivery.git",
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "Retain the reviewed draft",
+      role: "infrastructure",
+      contract: {
+        objective: "Retain the pull request as an unmerged draft",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        acceptanceCriteria: ["the pull request remains draft"],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 120,
+        expectedArtifacts: [],
+        workspaceChangesRequired: false,
+      },
+      priority: 50,
+      dependsOn: [],
+    });
+    for (const state of [
+      "ready",
+      "assigned",
+      "running",
+      "result_submitted",
+      "validating",
+      "review_required",
+      "approved",
+    ] as const) {
+      store.transitionMission(mission.id, state, "fixture");
+    }
+    const pullRequest = store.upsertPullRequest({
+      projectId: project.id,
+      missionId: mission.id,
+      branch: "mission/draft-delivery",
+      title: mission.title,
+      state: "draft",
+      number: 42,
+      url: "https://github.com/acme/draft-delivery/pull/42",
+    });
+
+    await engine.integrateMission(mission.id);
+
+    expect(store.getMission(mission.id)!.state).toBe("completed");
+    expect(store.getProject(project.id)!.status).toBe("completed");
+    expect(store.getPullRequest(pullRequest.id)!.state).toBe("draft");
+    expect(
+      store.eventsAfter(0, project.id).some(
+        (event) => event.type === "git.pr_updated" && event.payload.state === "open",
+      ),
+    ).toBe(false);
+  });
+
   it("blocks a mission whose .avity/worktrees is redirected outside the repo via a symlink", async () => {
     ({ store, engine } = makeEngine(db, "fake:code"));
     // Redirect <repo>/.avity/worktrees to an external directory before any run.

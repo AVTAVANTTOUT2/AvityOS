@@ -18,7 +18,8 @@
 - Completed/abandoned worktrees are removed with `removeWorktree`.
 - Validated changes are committed, pushed to the configured GitHub remote and
   create/update one draft PR per mission through non-interactive `gh`. After
-  independent review, the draft is marked ready; AvityOS never self-merges.
+  independent review, AvityOS retains the draft for an explicit operator
+  decision and never marks it ready or merges it autonomously.
 
 Direct pushes to protected branches and force pushes are dangerous actions
 in the policy engine (approval required by default). Opening real GitHub PRs

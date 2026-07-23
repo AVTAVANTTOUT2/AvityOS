@@ -98,9 +98,11 @@ Implemented flow (all steps durable, all resumable after restart):
    A separate reviewer run receives the diff, requirements, project brain and
    check evidence; rejection re-enters bounded correction. Supervised projects
    require a human decision.
-12. **Integration & completion** — approved GitHub drafts are marked ready,
-    never self-merged. Worktrees are cleaned and durable results enter the
-    project brain; the project completes only when every mission is terminal.
+12. **Integration & completion** — approved GitHub pull requests remain draft
+    and are never self-merged. An operator may explicitly mark one ready
+    outside the autonomous engine. Worktrees are cleaned and durable results
+    enter the project brain; the project completes only when every mission is
+    terminal.
 13. **Interventions** — blocked missions, budget exhaustion, clarification
     groups and correction limits surface as approvals; answering a
     clarification, approving retries/unblocks, or rejecting cancels; all
