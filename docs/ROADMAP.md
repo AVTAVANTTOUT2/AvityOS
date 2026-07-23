@@ -10,7 +10,7 @@ reproductible dans `docs/TRACEABILITY.md`.
    Les validations locales et les CI Linux/macOS de la PR #30 sont
    reproductibles dans `docs/TRACEABILITY.md`.
 
-2. **🟡 Véritable cerveau central IA.** Implémenté et couvert par des tests
+2. **✅ Véritable cerveau central IA.** Implémenté et couvert par des tests
    déterministes via la PR #32 : pipeline durable objectif → snapshot borné du
    dépôt → analyse structurée → architecture proposée → plan versionné/DAG
    validé déterministement → délégation par rôle, plus replanification bornée
@@ -19,9 +19,10 @@ reproductible dans `docs/TRACEABILITY.md`.
    explicite. Les analyses ambiguës ou infaisables bloquent avant délégation,
    les checks correspondent exactement au snapshot serveur et une
    replanification persiste atomiquement sa clé tout en retirant les
-   interventions obsolètes.
-   Reste pour ✅ : une exécution de planification avec un provider de
-   raisonnement réel (clés opérateur), volontairement reportée au chantier 4.
+   interventions obsolètes. La campagne du 23 juillet 2026 a produit avec
+   DeepSeek, provenance `live`, l'analyse, l'architecture et un plan actif de
+   quatre jalons ensuite livré. Les identifiants reproductibles sont consignés
+   dans [`LIVE-E2E-EVIDENCE-2026-07-23.md`](./LIVE-E2E-EVIDENCE-2026-07-23.md).
 
 3. **✅ Terminé — Clarifications structurées et pause/reprise atomique.**
    Fusionné par la PR #35. Trois invariants prouvés :
@@ -40,22 +41,18 @@ reproductible dans `docs/TRACEABILITY.md`.
    (`chantier3-hardening.test.ts`, 21 tests), CI Linux et macOS vertes,
    Web/CLI branchés sur les vraies API.
 
-4. **🟡 Infrastructure prête, campagne live à réaliser — Validation E2E avec
-   providers réels.** Les adapters Codex, Claude Code et Cursor existent déjà.
-   Le chantier doit maintenant fournir les preuves réelles suivantes sur un
-   dépôt fixture externe avec credentials opérateur :
-   - planification par un provider réel ;
-   - mission exécutée par Codex ;
+4. **🟡 Campagne partielle réussie — Validation E2E avec providers réels.**
+   La campagne du 23 juillet 2026 prouve la planification réelle DeepSeek,
+   l'exécution Codex, des revues indépendantes dans les deux sens, les checks
+   finaux, le push de trois branches et la création de trois PR draft jamais
+   fusionnées. Les preuves et limites exactes sont consignées dans
+   [`LIVE-E2E-EVIDENCE-2026-07-23.md`](./LIVE-E2E-EVIDENCE-2026-07-23.md).
+   Restent obligatoires pour ✅ :
    - mission exécutée par Claude Code ;
    - mission exécutée par Cursor ;
-   - reviewer différent de l'auteur ;
-   - correction après rejet ;
-   - fallback entre providers ;
-   - push d'une branche ;
-   - création d'une PR draft ;
-   - aucune auto-fusion.
-   Ce chantier clôturera également le critère restant du chantier 2
-   (planification réelle). C'est la **prochaine priorité produit**.
+   - rejet fonctionnel volontaire suivi d'une correction validée ;
+   - fallback entre deux éditeurs réels authentifiés et prêts.
+   C'est la **prochaine priorité produit**.
 
 5. **⚪ Non commencé comme chantier produit complet — Pont distant sécurisé.**
    Les briques réseau et worker actuelles ne constituent pas un pont distant
@@ -78,13 +75,13 @@ reproductible dans `docs/TRACEABILITY.md`.
 
 ## Prochain jalon
 
-> AvityOS réalise une livraison complète sur un dépôt fixture externe avec des
-> providers réels, produit les preuves techniques, ouvre une PR draft et
-> s'arrête avant la fusion.
+> AvityOS réalise une campagne certifiante sur un dépôt fixture externe avec
+> Claude Code et Cursor en plus de Codex et DeepSeek, prouve un fallback entre
+> deux éditeurs prêts ainsi qu'une correction fonctionnelle après rejet, puis
+> s'arrête avant toute fusion.
 
 Ce jalon clôturera :
 
-- le chantier 2 (preuve de planification réelle) ;
 - le chantier 4 (validation E2E avec providers réels).
 
 ## Maintenance défensive (hors chantiers produit)

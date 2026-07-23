@@ -4,6 +4,9 @@ Ce document décrit comment préparer, vérifier et exécuter une **campagne liv
 AvityOS avec de vrais providers, un dépôt Git externe et GitHub, **sans fusion
 automatique** et **sans secrets dans le dépôt ou les arguments CLI**.
 
+Dernier relevé de campagne :
+[`LIVE-E2E-EVIDENCE-2026-07-23.md`](./LIVE-E2E-EVIDENCE-2026-07-23.md).
+
 ## Principes non négociables
 
 | Règle | Signification |
