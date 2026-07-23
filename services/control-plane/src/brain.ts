@@ -1069,6 +1069,8 @@ const STEP_INSTRUCTIONS: Readonly<Record<BrainStep, string>> = {
     "dependency exists; every acceptance criterion index must appear in some mission's coversCriteria; requiredChecks",
     "must use the really available check commands provided; assign each mission the genuinely fitting specialist role;",
     "set workspaceChangesRequired=true only when the mission must create, modify, or delete repository files;",
+    "expectedArtifacts must contain exact repository-relative file paths only (for example src/file.ts), never prose",
+    "such as 'Modified src/file.ts', backticks, absolute paths, traversal segments, or globs;",
     "set it to false for baseline checks, audits, reviews, and publication-only missions; read-only missions must use",
     "allowedPaths=[] and expectedArtifacts=[].",
   ].join("\n"),

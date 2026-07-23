@@ -1,6 +1,7 @@
 import { CheckpointKind, type BrainPlanProposal, type RepoSnapshot } from "@avityos/contracts";
 import { DependencyCycleError, assertAcyclic } from "@avityos/orchestration";
 import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
+import { expectedArtifactPathIssue } from "./artifact-reference.js";
 
 export interface PlanValidationContext {
   /** Acceptance criteria of the objective revision the plan must cover. */
@@ -149,6 +150,14 @@ export function validatePlanProposal(
     }
     if (!mission.workspaceChangesRequired && mission.expectedArtifacts.length > 0) {
       issues.push(`read-only mission ${mission.key} declares expected repository artifacts`);
+    }
+    for (const artifact of mission.expectedArtifacts) {
+      const issue = expectedArtifactPathIssue(artifact);
+      if (issue) {
+        issues.push(
+          `mission ${mission.key} expected artifact ${JSON.stringify(artifact)} ${issue}`,
+        );
+      }
     }
     if (
       ctx.projectBudgetUsd !== null &&

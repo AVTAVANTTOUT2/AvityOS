@@ -403,6 +403,40 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     expect(store.verifyAuditChain()).toBe(true);
   });
 
+  it("accepts a safely normalized artifact label from a persisted legacy plan", async () => {
+    ({ store, engine } = makeEngine(db, "fake:code"));
+    const project = store.createProject({
+      name: "Legacy artifact reference",
+      description: "",
+      repoPath: repo,
+      repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "Write legacy-labelled artifact",
+      role: "backend",
+      contract: {
+        ...repoMissionContract("Create AVITY.md"),
+        expectedArtifacts: ["Modified AVITY.md"],
+      },
+      priority: 50,
+      dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+    await waitFor(
+      () => store.getMission(mission.id)!.state === "completed",
+      15_000,
+    );
+    expect(store.getMission(mission.id)!.correctionAttempts).toBe(0);
+    expect(store.verifyAuditChain()).toBe(true);
+  });
+
   it("reviews a read-only repository mission without creating a commit or pull request", async () => {
     const project = store.createProject({
       name: "ReadOnly", description: "", repoPath: repo, repoRemoteUrl: null,

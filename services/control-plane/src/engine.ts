@@ -39,6 +39,7 @@ import {
   type CommandPolicy,
 } from "@avityos/policy";
 import type { ProviderAdapter } from "@avityos/providers";
+import { normalizeLegacyExpectedArtifactReference } from "./artifact-reference.js";
 import { BrainPipeline } from "./brain.js";
 import {
   effectiveBrainProviderChain,
@@ -978,12 +979,22 @@ export class Engine {
       );
 
       for (const artifact of mission.contract.expectedArtifacts) {
+        const artifactPath =
+          normalizeLegacyExpectedArtifactReference(artifact);
+        if (artifactPath !== artifact) {
+          this.store.appendAudit(
+            project.id,
+            "engine",
+            "mission.artifact_reference_normalized",
+            `${missionId}: ${artifact} -> ${artifactPath}`,
+          );
+        }
         // Canonical, fail-closed artifact confinement: relative-only, no `..`,
         // must exist, and the artifact itself must not be a symlink (nor sit
         // behind a symlink component that resolves outside the worktree).
         let confined: string;
         try {
-          confined = resolveAndAssertInside(mission.worktreePath, artifact, {
+          confined = resolveAndAssertInside(mission.worktreePath, artifactPath, {
             allowAbsolute: false,
             allowParentSegments: false,
             mustExist: true,
@@ -992,7 +1003,11 @@ export class Engine {
         } catch (err) {
           const reason = err instanceof ConfinementError ? err.message : String(err);
           this.store.appendAudit(project.id, "policy", "mission.artifact_violation", `${missionId}: ${artifact}`);
-          this.failValidation(mission, `expected artifact rejected: ${artifact} (${reason})`, pauseGeneration);
+          this.failValidation(
+            mission,
+            `expected artifact rejected: ${artifact} (${reason})`,
+            pauseGeneration,
+          );
           return;
         }
         const verdict = isPathAllowed(
