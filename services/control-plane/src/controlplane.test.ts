@@ -822,6 +822,178 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
 });
 
 describe("cross-provider fallback", () => {
+  it("skips an unauthenticated provider immediately and completes with the next provider", async () => {
+    const unauthenticated = new FakeProviderAdapter("unauthenticated");
+    const healthy = new FakeProviderAdapter("fake");
+    store = new Store(db);
+    engine = new Engine(
+      store,
+      new Map<string, ProviderAdapter>([
+        ["unauthenticated", unauthenticated],
+        ["fake", healthy],
+      ]),
+      { ...TEST_CONFIG, allowProviderSwitch: true },
+      ["unauthenticated", "fake"],
+      new Map([
+        ["unauthenticated", "fake:fail-auth"],
+        ["fake", "fake:succeed"],
+      ]),
+      new Map([
+        ["unauthenticated", "fake:fail-auth"],
+        ["fake", "fake:review-approve"],
+      ]),
+    );
+    const project = store.createProject({
+      name: "Auth fallback",
+      description: "",
+      repoPath: null,
+      repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "auth fallback mission",
+      role: "backend",
+      contract: {
+        objective: "x",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        acceptanceCriteria: [],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 60,
+        expectedArtifacts: [],
+      },
+      priority: 50,
+      dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+    await waitFor(
+      () => store.getMission(mission.id)!.state === "completed",
+      10_000,
+    );
+
+    const runs = store.listRuns({ projectId: project.id });
+    const unauthenticatedRuns = runs.filter(
+      (run) => run.providerId === "unauthenticated",
+    );
+    // The unavailable provider is considered once for authoring and once as a
+    // distinct reviewer. Each phase skips it immediately; neither retries it.
+    expect(unauthenticatedRuns).toHaveLength(2);
+    expect(
+      unauthenticatedRuns.every(
+        (run) => run.state === "failed" && run.errorCategory === "auth",
+      ),
+    ).toBe(true);
+    expect(
+      runs.some((run) => run.providerId === "fake" && run.state === "succeeded"),
+    ).toBe(true);
+    const authFallbacks = store
+      .eventsAfter(0, project.id)
+      .filter(
+        (event) =>
+          event.type === "provider.fallback" &&
+          event.payload.category === "auth",
+      );
+    expect(authFallbacks).toHaveLength(2);
+    for (const fallback of authFallbacks) {
+      expect(fallback.payload).toMatchObject({
+        action: "switch_provider",
+        provider: "unauthenticated",
+        waitMs: 0,
+      });
+    }
+  });
+
+  it("blocks a failed review safely and retries review after operator approval", async () => {
+    const adapter = new FakeProviderAdapter("fake");
+    store = new Store(db);
+    engine = new Engine(
+      store,
+      new Map<string, ProviderAdapter>([["fake", adapter]]),
+      { ...TEST_CONFIG, allowProviderSwitch: true },
+      ["fake"],
+      new Map([["fake", "fake:succeed"]]),
+      new Map([["fake", "fake:fail-auth"]]),
+    );
+    const project = store.createProject({
+      name: "Review auth recovery",
+      description: "",
+      repoPath: null,
+      repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "review auth recovery mission",
+      role: "backend",
+      contract: {
+        objective: "x",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        acceptanceCriteria: [],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 60,
+        expectedArtifacts: [],
+      },
+      priority: 50,
+      dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+
+    expect(store.getMission(mission.id)).toMatchObject({
+      state: "blocked",
+      stateReason: expect.stringContaining("independent review unavailable:"),
+    });
+    const failedReviewRun = store
+      .listRuns({ missionId: mission.id })
+      .find((run) => run.model === "fake:fail-auth");
+    expect(failedReviewRun).toMatchObject({
+      state: "failed",
+      errorCategory: "auth",
+    });
+    const approval = store.listApprovals("open", project.id)[0];
+    expect(approval).toMatchObject({
+      missionId: mission.id,
+      title: "Independent review blocked: auth",
+    });
+
+    engine.reviewModels.set("fake", "fake:review-approve");
+    store.resolveApproval(approval!.id, "approved", "credentials restored");
+    engine.applyApprovalDecision(approval!.id);
+    await waitFor(
+      () => store.getMission(mission.id)!.state === "completed",
+      10_000,
+    );
+    expect(
+      store
+        .eventsAfter(0, project.id)
+        .some(
+          (event) =>
+            event.type === "mission.state_changed" &&
+            event.payload.from === "blocked" &&
+            event.payload.to === "review_required",
+        ),
+    ).toBe(true);
+  });
+
   it("switches to the next provider in the chain when rate limits exhaust retries", async () => {
     const limited = new FakeProviderAdapter("limited");
     const healthy = new FakeProviderAdapter("fake");

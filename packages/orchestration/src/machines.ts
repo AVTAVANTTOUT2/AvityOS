@@ -30,7 +30,7 @@ export const MISSION_TRANSITIONS: Readonly<Record<MissionState, readonly Mission
     "integrated",
     "cancelled",
   ],
-  blocked: ["ready", "paused", "cancelled", "failed"],
+  blocked: ["ready", "review_required", "paused", "cancelled", "failed"],
   retrying: ["assigned", "paused", "failed", "cancelled"],
   cancelled: [],
   failed: ["retrying", "paused"],

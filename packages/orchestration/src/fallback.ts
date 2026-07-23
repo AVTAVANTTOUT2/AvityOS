@@ -20,12 +20,28 @@ export interface FallbackDecision {
 
 /**
  * Deterministic, policy-driven fallback. Order of preference mirrors ADR-0005:
- * wait -> retry -> switch model -> switch provider -> escalate. Auth, policy
- * and invalid-request failures never retry silently.
+ * wait -> retry -> switch model -> switch provider -> escalate. Authentication
+ * failures never retry the same provider/model, but may skip immediately to an
+ * explicitly allowed provider fallback. Policy, sandbox and invalid-request
+ * failures always stop for operator review.
  */
 export function decideFallback(ctx: FallbackContext): FallbackDecision {
   switch (ctx.category) {
     case "auth":
+      if (ctx.alternateProvidersAllowed) {
+        return {
+          action: "switch_provider",
+          waitMs: 0,
+          reason:
+            "provider authentication unavailable; switching provider without retry",
+        };
+      }
+      return {
+        action: "escalate_user",
+        waitMs: 0,
+        reason:
+          "provider authentication unavailable and no allowed provider fallback",
+      };
     case "policy_denied":
     case "sandbox_unavailable":
     case "invalid_request":
