@@ -1,8 +1,16 @@
-import { openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  openSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { spawn } from "node:child_process";
 import type { OperatorPaths, OperatorServiceName, OperatorServicePaths } from "./paths.js";
 import { redactText } from "./redact.js";
 import { loadOperatorEnvironment } from "./setup.js";
+import { readEnvFile } from "./env.js";
 
 const DEFAULT_MAX_LOG_FILE_BYTES = 256 * 1024;
 
@@ -51,6 +59,30 @@ function defaultPidRunning(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function protectedServiceEnvironment(
+  paths: OperatorPaths,
+  service: OperatorServiceName,
+  operatorEnvironment: Record<string, string>,
+): Record<string, string> {
+  if (service === "web") return operatorEnvironment;
+  const environmentPath = service === "control-plane"
+    ? paths.serviceEnvPaths.controlPlane
+    : paths.serviceEnvPaths.worker;
+  if (!existsSync(environmentPath)) return operatorEnvironment;
+
+  const mode = statSync(environmentPath).mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    throw new Error(
+      `service environment ${environmentPath} has overly permissive mode ${mode.toString(8)}; run: chmod 600 ${environmentPath}`,
+    );
+  }
+
+  return {
+    ...readEnvFile(environmentPath),
+    ...operatorEnvironment,
+  };
 }
 
 export function boundLogFileForAppend(logFilePath: string, maxBytes = DEFAULT_MAX_LOG_FILE_BYTES): void {
@@ -151,10 +183,11 @@ export class OperatorServiceLifecycle {
   }
 
   async start(services: readonly OperatorServiceName[]): Promise<void> {
-    const env = loadOperatorEnvironment(this.paths);
+    const operatorEnvironment = loadOperatorEnvironment(this.paths);
     for (const service of services) {
       const status = this.clearPidIfStale(service);
       if (status.state === "running") continue;
+      const env = protectedServiceEnvironment(this.paths, service, operatorEnvironment);
       if (service === "control-plane" && !env.AVITY_API_TOKEN) {
         throw new Error("control-plane start blocked: AVITY_API_TOKEN is missing in protected operator env");
       }
