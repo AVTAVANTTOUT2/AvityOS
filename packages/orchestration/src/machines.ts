@@ -28,6 +28,7 @@ export const MISSION_TRANSITIONS: Readonly<Record<MissionState, readonly Mission
     "review_required",
     "approved",
     "integrated",
+    "blocked",
     "cancelled",
   ],
   blocked: ["ready", "review_required", "paused", "cancelled", "failed"],
