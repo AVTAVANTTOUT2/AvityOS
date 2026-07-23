@@ -4,7 +4,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { E2EPreflightReport } from "@avityos/contracts";
-import { ApiError, Client, CONFIG_PATH, loadConfig, saveConfig } from "./client.js";
+import {
+  ApiError,
+  Client,
+  loadConfig,
+  resolveConfigPath,
+  saveConfig,
+} from "./client.js";
 import { collectDoctorReport } from "./operator/diagnostics.js";
 import { readEnvFile } from "./operator/env.js";
 import { resolveOperatorPaths, type OperatorServiceName } from "./operator/paths.js";
@@ -191,7 +197,7 @@ function boundedPositiveIntegerFlag(
 type Handler = (ctx: Ctx) => Promise<void>;
 
 function resolveRepositoryRoot(): string {
-  const fromConfig = dirname(dirname(dirname(CONFIG_PATH)));
+  const fromConfig = dirname(dirname(dirname(resolveConfigPath())));
   return process.env.AVITY_REPOSITORY_ROOT ?? process.cwd() ?? fromConfig;
 }
 
@@ -343,7 +349,7 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
   init: async () => {
     const config = loadConfig();
     saveConfig(config);
-    console.log(`wrote ${CONFIG_PATH} (control plane: ${config.controlPlaneUrl})`);
+    console.log(`wrote ${resolveConfigPath()} (control plane: ${config.controlPlaneUrl})`);
   },
 
   login: async (ctx) => {
@@ -379,7 +385,7 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
         console.warn(`warning: operator env sync skipped (${reason})`);
       }
     }
-    console.log(`saved credentials to ${CONFIG_PATH}`);
+    console.log(`saved credentials to ${resolveConfigPath()}`);
   },
 
   doctor: async (ctx) => {

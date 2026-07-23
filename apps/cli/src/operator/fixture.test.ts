@@ -135,6 +135,9 @@ describe("external live fixture generator", () => {
 
   it("exposes the CLI command without breaking e2e preflight route", async () => {
     const fixturePath = join(mkdtempSync(join(tmpdir(), "avity-fixture-parent-")), "cli-fixture");
+    const configDir = mkdtempSync(join(tmpdir(), "avity-fixture-cli-config-"));
+    process.env.AVITY_CONFIG = join(configDir, "cli.json");
+    process.env.AVITY_DISABLE_KEYCHAIN = "1";
 
     const fixtureExitCode = await main(["e2e", "fixture", "create", "--path", fixturePath, "--json"]);
     expect(fixtureExitCode).toBe(0);

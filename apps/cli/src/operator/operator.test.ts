@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../main.js";
@@ -306,6 +313,7 @@ describe("login hardening", () => {
     const code = await main(["login", "--url", "http://127.0.0.1:7717", "--token-file", tokenFilePath]);
 
     expect(code).toBe(0);
+    expect(existsSync(join(configDir, "cli.json"))).toBe(true);
     const warning = warnSpy.mock.calls.map((x) => x.join(" ")).join("\n");
     expect(warning).toContain("operator env sync skipped");
     expect(warning).not.toContain("sync-token-value");
