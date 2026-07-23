@@ -18,6 +18,27 @@
 - The campaign runner has no merge operation and stops after draft/ready-for-review evidence.
 - Preserve existing public commands where safe; reject legacy secret arguments with an actionable stdin/file alternative.
 
+## Stacked Git Strategy
+
+- The verified head of PR #41 used as the immutable stacked base is
+  `416ed1079ea745b41d8496d908cf9cdb4f5eb917`
+  (`fix/preflight-contract-and-readiness-cache-hardening`).
+- Commits at or below that SHA belong exclusively to PR #41. This chantier
+  must not copy, rewrite, squash, or duplicate them.
+- Every `live-e2e-operator-readiness` commit is created strictly above that
+  SHA and remains independently identifiable with
+  `git log 416ed1079ea745b41d8496d908cf9cdb4f5eb917..HEAD --oneline`.
+- No pull request to `main` may be created while its proposed diff contains
+  PR #41 commits. If PR #41 remains open at publication time, any publication
+  must be explicitly stacked on
+  `fix/preflight-contract-and-readiness-cache-hardening`.
+- Before final publication, re-check PR #41. If merged, fetch the new
+  `origin/main` and rebase only the chantier commits onto it; if still open,
+  retain the stacked base or wait. Never merge either pull request.
+- The final report records the old base SHA, the publication base SHA, the
+  exact chantier commit list, `git log origin/main..HEAD --oneline`, and
+  `git diff --stat origin/main...HEAD`.
+
 ---
 
 ### Task 1: Versioned readiness and campaign contracts
