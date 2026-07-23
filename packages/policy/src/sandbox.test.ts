@@ -76,6 +76,7 @@ describe.skipIf(!SANDBOX_AVAILABLE)("sandbox read boundary", () => {
   it("runs the executable and its runtime dependencies (node --version)", () => {
     const inv = sandboxCommand([nodeBin(), "--version"], ws());
     try {
+      expect(inv.home.length).toBeLessThanOrEqual(48);
       const out = execFileSync(inv.executable, inv.args, {
         cwd: inv.env.HOME as string,
         env: inv.env,

@@ -178,8 +178,11 @@ transport.
   reads denied by content on both `sandbox-exec` and Bubblewrap) and (when
   installed) non-mutating binary start (`--version`). **Not proven by CI:**
   vendor authentication, paid model calls, or full missions under sandbox.
-  Claude macOS Keychain / Cursor Keychain login do not transfer into a throwaway
-  HOME; sandboxed runs require the explicit env/file policy for that provider.
+  Claude macOS Keychain / Cursor's default Keychain login do not transfer into a
+  throwaway HOME; sandboxed runs require the explicit env/file policy for that
+  provider. Supported portable alternatives are Claude's official
+  `CLAUDE_CODE_OAUTH_TOKEN` and Cursor's owner-only `.cursor/auth.json` file
+  store; only that single provider credential is staged read-only.
   The OS sandbox is not an absolute guarantee: it depends on the host primitive
   (`sandbox-exec` / Bubblewrap) and its policy grants. **Residual read exposure:**
   the system read roots (`/usr`, `/System`, `/Library`, `/etc`, …) are granted

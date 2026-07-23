@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  CLAUDE_CODE_SANDBOX_POLICY,
+  CODEX_SANDBOX_POLICY,
+  CURSOR_SANDBOX_POLICY,
+  resolveCliProviderAuth,
+} from "@avityos/providers";
 
 const execFileAsync = promisify(execFile);
 
@@ -81,23 +87,40 @@ async function defaultCommandProbe(tool: "node" | "pnpm" | "git" | "gh"): Promis
   }
 }
 
-async function defaultProviderProbe(): Promise<ProviderProbeResult> {
-  const probeBinary = async (binary: string): Promise<boolean> => {
+export async function probeProviderReadiness(
+  env: NodeJS.ProcessEnv = process.env,
+  options: {
+    readonly realHome?: string;
+    readonly probeBinary?: (binary: string) => Promise<boolean>;
+  } = {},
+): Promise<ProviderProbeResult> {
+  const probeBinary = options.probeBinary ?? (async (binary: string): Promise<boolean> => {
     try {
       await execFileAsync(binary, ["--version"], { encoding: "utf8" });
       return true;
     } catch {
       return false;
     }
-  };
+  });
+  const authOptions = options.realHome ? { realHome: options.realHome } : {};
   return {
-    codex: { binary: await probeBinary("codex"), auth: Boolean(process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY) },
-    claudeCode: {
-      binary: await probeBinary("claude"),
-      auth: Boolean(process.env.ANTHROPIC_API_KEY),
+    codex: {
+      binary: await probeBinary(env.AVITY_CODEX_BIN ?? "codex"),
+      auth: resolveCliProviderAuth(CODEX_SANDBOX_POLICY, env, authOptions).authenticated,
     },
-    cursorAgent: { binary: await probeBinary("cursor-agent"), auth: Boolean(process.env.CURSOR_API_KEY) },
+    claudeCode: {
+      binary: await probeBinary(env.AVITY_CLAUDE_CODE_BIN ?? "claude"),
+      auth: resolveCliProviderAuth(CLAUDE_CODE_SANDBOX_POLICY, env, authOptions).authenticated,
+    },
+    cursorAgent: {
+      binary: await probeBinary(env.AVITY_CURSOR_BIN ?? "cursor-agent"),
+      auth: resolveCliProviderAuth(CURSOR_SANDBOX_POLICY, env, authOptions).authenticated,
+    },
   };
+}
+
+async function defaultProviderProbe(): Promise<ProviderProbeResult> {
+  return probeProviderReadiness();
 }
 
 async function defaultServiceProbe(): Promise<ServiceProbeResult> {

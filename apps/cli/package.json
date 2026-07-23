@@ -14,11 +14,11 @@
     "test:operator": "vitest run src/operator/operator.test.ts --no-file-parallelism"
   },
   "dependencies": {
-    "@avityos/contracts": "workspace:*"
+    "@avityos/contracts": "workspace:*",
+    "@avityos/providers": "workspace:*"
   },
   "devDependencies": {
     "@avityos/control-plane": "workspace:*",
-    "@avityos/providers": "workspace:*",
     "@types/node": "22.13.1",
     "fastify": "5.8.5",
     "typescript": "5.7.3",

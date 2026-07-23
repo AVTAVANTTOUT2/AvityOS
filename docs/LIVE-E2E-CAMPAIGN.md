@@ -62,7 +62,7 @@ Ne jamais committer de secrets. Stocker les valeurs réelles dans :
 | `~/.avity/operator/config/operator.env` | URL control plane, token API, worker (0600) |
 | `~/.config/avityos/control-plane.env` | Variables du control plane sous launchd (0600) |
 | `~/.config/avityos/worker.env` | Variables du worker sous launchd (0600) |
-| Variables d’environnement du shell | Clés providers (`CODEX_API_KEY`, `ANTHROPIC_API_KEY`, `CURSOR_API_KEY`, …) |
+| Variables d’environnement du shell | Clés providers (`CODEX_API_KEY`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CURSOR_API_KEY`, …) |
 
 Connexion CLI (refuse `--token` en clair) :
 
@@ -71,6 +71,21 @@ avity login --url http://127.0.0.1:7717 --token-stdin
 # ou
 avity login --url http://127.0.0.1:7717 --token-file /chemin/absolu/token
 ```
+
+Pour une souscription Claude sans clé API, générer le jeton d’automatisation
+officiel avec `claude setup-token`, puis le stocker comme
+`CLAUDE_CODE_OAUTH_TOKEN` dans l’environnement protégé du control plane.
+
+Pour une connexion Cursor par navigateur sans clé API, utiliser son store
+portable owner-only, puis vérifier l’état dans le même mode :
+
+```sh
+AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login
+AGENT_CLI_CREDENTIAL_STORE=file cursor-agent status
+```
+
+AvityOS ne monte jamais le Keychain ou le HOME complet : il copie uniquement
+`~/.cursor/auth.json` en lecture seule dans le HOME jetable du run.
 
 ### 4. Mode campagne et chaîne de providers
 

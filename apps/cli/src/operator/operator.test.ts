@@ -11,7 +11,7 @@ import {
 import { resolveOperatorPaths } from "./paths.js";
 import { redactValue } from "./redact.js";
 import { OperatorServiceLifecycle, boundLogFileForAppend } from "./services.js";
-import { collectDoctorReport } from "./diagnostics.js";
+import { collectDoctorReport, probeProviderReadiness } from "./diagnostics.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -58,6 +58,38 @@ describe("operator setup", () => {
 });
 
 describe("operator diagnostics", () => {
+  it("detects the same sandbox-portable auth material as the control plane", async () => {
+    const home = mkdtempSync(join(tmpdir(), "avity-doctor-auth-"));
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    mkdirSync(join(home, ".cursor"), { recursive: true });
+    writeFileSync(join(home, ".codex", "auth.json"), '{"tokens":{}}\n', { mode: 0o600 });
+    writeFileSync(join(home, ".cursor", "auth.json"), '{"accessToken":"test"}\n', { mode: 0o600 });
+    const probed: string[] = [];
+
+    const result = await probeProviderReadiness(
+      {
+        AVITY_CODEX_BIN: "/custom/codex",
+        AVITY_CLAUDE_CODE_BIN: "/custom/claude",
+        AVITY_CURSOR_BIN: "/custom/cursor",
+        CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
+      },
+      {
+        realHome: home,
+        probeBinary: async (binary) => {
+          probed.push(binary);
+          return true;
+        },
+      },
+    );
+
+    expect(probed).toEqual(["/custom/codex", "/custom/claude", "/custom/cursor"]);
+    expect(result).toEqual({
+      codex: { binary: true, auth: true },
+      claudeCode: { binary: true, auth: true },
+      cursorAgent: { binary: true, auth: true },
+    });
+  });
+
   it("returns stable JSON and blocked statuses for missing tools/sandbox/auth", async () => {
     const report = await collectDoctorReport({
       commandProbe: async (tool) => ({ ok: tool === "node", detail: tool === "node" ? "22.6.0" : `${tool} missing` }),
