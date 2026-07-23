@@ -7,10 +7,23 @@ export interface CliConfig {
   controlPlaneUrl: string;
   apiToken?: string;
   defaultProjectId?: string;
+  requestTimeoutMs?: number;
 }
 
 export const CONFIG_PATH = process.env.AVITY_CONFIG ?? join(homedir(), ".avity", "cli.json");
 const KEYCHAIN_SERVICE = "com.avityos.cli";
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_REQUEST_TIMEOUT_MS = 300_000;
+
+function requestTimeoutMs(config: CliConfig): number {
+  const value = config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_REQUEST_TIMEOUT_MS) {
+    throw new Error(
+      `requestTimeoutMs must be an integer between 1 and ${MAX_REQUEST_TIMEOUT_MS}`,
+    );
+  }
+  return value;
+}
 
 function usesKeychain(): boolean {
   return process.platform === "darwin" && process.env.AVITY_DISABLE_KEYCHAIN !== "1";
@@ -81,14 +94,24 @@ export class Client {
     const headers: Record<string, string> = {};
     if (body !== undefined) headers["content-type"] = "application/json";
     if (this.config.apiToken) headers.authorization = `Bearer ${this.config.apiToken}`;
+    const timeoutMs = requestTimeoutMs(this.config);
+    const signal = AbortSignal.timeout(timeoutMs);
     let res: Response;
     try {
       res = await fetch(`${this.config.controlPlaneUrl}${path}`, {
         method,
         headers,
+        signal,
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
     } catch (err) {
+      if (signal.aborted) {
+        throw new ApiError(
+          0,
+          "timeout",
+          `control plane request ${method} ${path} timed out after ${timeoutMs}ms`,
+        );
+      }
       throw new ApiError(0, "unreachable", `control plane unreachable at ${this.config.controlPlaneUrl}: ${err}`);
     }
     const text = await res.text();

@@ -2,6 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import type { E2EPreflightReport } from "@avityos/contracts";
 import { ApiError, Client, CONFIG_PATH, loadConfig, saveConfig } from "./client.js";
 import { collectDoctorReport } from "./operator/diagnostics.js";
@@ -11,6 +12,8 @@ import { redactText } from "./operator/redact.js";
 import { ensureOperatorSetup, mergeOperatorEnvironment, readProtectedTokenFromFile, saveOperatorEnvironment } from "./operator/setup.js";
 import { OperatorServiceLifecycle } from "./operator/services.js";
 import { createExternalLiveFixture } from "./operator/fixture.js";
+import { prepareLiveCampaign, runLiveCampaign } from "./operator/campaign.js";
+import { createCampaignReportWriter } from "./operator/campaign-report.js";
 
 /**
  * The `avity` CLI. Human output by default; pass --json anywhere for
@@ -127,6 +130,71 @@ function selectedServices(ctx: Ctx): OperatorServiceName[] {
   throw new UsageError(`unknown service: ${service} (allowed: control-plane|web|worker|all)`);
 }
 
+async function collectCliDoctorReport(client: Client) {
+  const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+  const lifecycle = new OperatorServiceLifecycle(paths);
+  return collectDoctorReport({
+    serviceProbe: async () => {
+      const status = await lifecycle.status();
+      return {
+        controlPlane: status.controlPlane.state,
+        web: status.web.state,
+        worker: status.worker.state,
+      };
+    },
+    apiProbe: async () => {
+      try {
+        const health = await client.get<{ status: string }>("/v1/health");
+        await client.get<{ version: number; items: unknown[] }>("/v1/providers/status");
+        return { health: health.status === "ok", providersStatus: true };
+      } catch {
+        return { health: false, providersStatus: false };
+      }
+    },
+  });
+}
+
+function campaignRetentionCount(): number {
+  const raw = process.env.AVITY_E2E_REPORT_RETENTION ?? "20";
+  if (!/^\d+$/.test(raw)) {
+    throw new UsageError("AVITY_E2E_REPORT_RETENTION must be an integer between 1 and 1000");
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 1_000) {
+    throw new UsageError("AVITY_E2E_REPORT_RETENTION must be an integer between 1 and 1000");
+  }
+  return parsed;
+}
+
+function campaignConfiguration() {
+  const config = loadConfig();
+  return {
+    cliVersion: "0.1.0",
+    controlPlaneUrl: config.controlPlaneUrl,
+    environment: {
+      AVITY_EXECUTION_MODE: process.env.AVITY_EXECUTION_MODE,
+      AVITY_PROVIDER_CHAIN: process.env.AVITY_PROVIDER_CHAIN,
+      AVITY_BRAIN_PROVIDER_CHAIN: process.env.AVITY_BRAIN_PROVIDER_CHAIN,
+      AVITY_REVIEWER_PROVIDER_CHAIN: process.env.AVITY_REVIEWER_PROVIDER_CHAIN,
+      AVITY_CAMPAIGN_FAULT_PROVIDER: process.env.AVITY_CAMPAIGN_FAULT_PROVIDER,
+      AVITY_CAMPAIGN_FAULT_CATEGORY: process.env.AVITY_CAMPAIGN_FAULT_CATEGORY,
+      AVITY_API_TOKEN: process.env.AVITY_API_TOKEN,
+    },
+  };
+}
+
+async function interactiveProjectConfirmation(projectId: string): Promise<string | undefined> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return undefined;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await prompt.question(
+      `Type the exact project id "${projectId}" to authorize objective submission: `,
+    );
+  } finally {
+    prompt.close();
+  }
+}
+
 const commands: Record<string, Handler | Record<string, Handler>> = {
   setup: async (ctx) => {
     const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
@@ -225,27 +293,7 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
   },
 
   doctor: async (ctx) => {
-    const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
-    const lifecycle = new OperatorServiceLifecycle(paths);
-    const report = await collectDoctorReport({
-      serviceProbe: async () => {
-        const status = await lifecycle.status();
-        return {
-          controlPlane: status.controlPlane.state,
-          web: status.web.state,
-          worker: status.worker.state,
-        };
-      },
-      apiProbe: async () => {
-        try {
-          const health = await ctx.client.get<{ status: string }>("/v1/health");
-          await ctx.client.get<{ version: number; items: unknown[] }>("/v1/providers/status");
-          return { health: health.status === "ok", providersStatus: true };
-        } catch {
-          return { health: false, providersStatus: false };
-        }
-      },
-    });
+    const report = await collectCliDoctorReport(ctx.client);
     out(ctx, report, (payload: typeof report) => {
       const labels: Record<string, string> = {
         control_plane: "control plane reachable",
@@ -712,6 +760,79 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       });
       return;
     }
+    if (subcommand === "live" && (action === "prepare" || action === "run")) {
+      const projectId = flag(ctx, "project");
+      if (!projectId) {
+        throw new UsageError("missing required argument: --project <id>");
+      }
+      const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+      const reportWriter = createCampaignReportWriter({
+        reportsDir: paths.reportsDir,
+        repositoryRoot: paths.repositoryRoot,
+        retentionCount: campaignRetentionCount(),
+      });
+      const dependencies = {
+        api: ctx.client,
+        collectDoctor: () => collectCliDoctorReport(ctx.client),
+        reportWriter,
+        configuration: campaignConfiguration(),
+        confirmProject: interactiveProjectConfirmation,
+      };
+      const allowFaultInjection = hasFlag(ctx, "allow-fault-injection");
+      const result = action === "prepare"
+        ? await prepareLiveCampaign(
+            { projectId, allowFaultInjection },
+            dependencies,
+          )
+        : await runLiveCampaign(
+            {
+              projectId,
+              allowFaultInjection,
+              isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+              confirmedProjectId: flag(ctx, "confirm-project"),
+              pullRequestPolicy: (() => {
+                const value = flag(ctx, "pr-policy") ?? "draft";
+                if (value !== "draft" && value !== "ready-for-review") {
+                  throw new UsageError("--pr-policy must be draft or ready-for-review");
+                }
+                return value;
+              })(),
+              maxPolls: boundedPositiveIntegerFlag(ctx, "max-polls", {
+                min: 1,
+                max: 1_000,
+                defaultValue: 150,
+              }),
+              pollIntervalMs: boundedPositiveIntegerFlag(ctx, "poll-interval-ms", {
+                min: 1,
+                max: 60_000,
+                defaultValue: 2_000,
+              }),
+            },
+            dependencies,
+          );
+      const payload = {
+        ok: result.ok,
+        reportPath: result.reportPath,
+        report: result.report,
+      };
+      out(
+        ctx,
+        payload,
+        (data: typeof payload) => [
+          `campaign: ${data.report.campaignId}`,
+          `readiness: ${data.report.readiness.status}`,
+          `result: ${data.report.campaign.result}`,
+          `report: ${data.reportPath ?? "(not written)"}`,
+          ...data.report.recommendations.map((recommendation) => `action: ${recommendation}`),
+        ].join("\n"),
+      );
+      if (!result.ok) {
+        throw new Error(
+          `${action} did not succeed: readiness=${result.report.readiness.status}, result=${result.report.campaign.result}`,
+        );
+      }
+      return;
+    }
     if (subcommand === "fixture" && action === "create") {
       const fixturePath = flag(ctx, "path");
       if (!fixturePath) {
@@ -730,7 +851,7 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       );
       return;
     }
-    throw new UsageError("unknown e2e command (expected: preflight | fixture create)");
+    throw new UsageError("unknown e2e command (expected: preflight | fixture create | live prepare|run)");
   },
 
   worker: {
@@ -811,6 +932,10 @@ commands:
   e2e preflight [--project <id>]        live E2E readiness (runnability only)
   e2e fixture create --path <path> [--remote <github-url>]
                                         create local external fixture repository
+  e2e live prepare|run --project <id> [--confirm-project <id>]
+                                        prepare or execute a public-API live campaign
+       [--pr-policy draft|ready-for-review] [--allow-fault-injection]
+       [--max-polls <n>] [--poll-interval-ms <n>]
   worker list | enroll <name> | revoke <id>
   pr list [--project <id>] | show <id>
 `;
