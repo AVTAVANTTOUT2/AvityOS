@@ -19,6 +19,7 @@ import {
   detectRuntimeReadRoots,
   FORBIDDEN_AUTO_RUNTIME_ROOTS,
   packageManagerRootsForPath,
+  resolveShebangInterpreter,
   resolveSystemCaBundle,
   runtimeRootsFromOtoolOutputs,
   sandboxCommand,
@@ -375,6 +376,23 @@ describe("sandboxCommand availability", () => {
 });
 
 describe("runtime dependency grants", () => {
+  it("resolves an env shebang interpreter through the supplied PATH", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "avity-shebang-"));
+    const bin = join(scratch, "bin");
+    mkdirSync(bin);
+    const script = join(scratch, "tool");
+    const interpreter = join(bin, "node");
+    writeFileSync(script, "#!/usr/bin/env node\n");
+    writeFileSync(interpreter, "");
+    try {
+      expect(resolveShebangInterpreter(script, bin)).toBe(
+        realpathSync(interpreter),
+      );
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it("never auto-grants forbidden roots from simulated otool output", () => {
     const exe = "/opt/homebrew/Cellar/node/26.5.0/bin/node";
     const roots = runtimeRootsFromOtoolOutputs(exe, [

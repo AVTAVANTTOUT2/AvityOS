@@ -1,11 +1,14 @@
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readSync,
   realpathSync,
   rmSync,
 } from "node:fs";
@@ -335,6 +338,24 @@ function validateExtraPaths(paths: readonly string[], field: string): string[] {
  */
 export function detectRuntimeReadRoots(executable: string): string[] {
   const roots = new Set<string>();
+  addExecutableRuntimeRoots(executable, roots);
+
+  // Script entrypoints such as Homebrew's npm resolve to npm-cli.js. The
+  // kernel then starts the shebang interpreter (`/usr/bin/env node`), whose
+  // dynamic libraries are separate from the script package. Grant only that
+  // resolved interpreter's exact runtime roots.
+  const interpreter = resolveShebangInterpreter(executable);
+  if (interpreter && interpreter !== executable) {
+    addExecutableRuntimeRoots(interpreter, roots);
+  }
+
+  return [...roots].filter((p) => !isForbiddenAutoRuntimeRoot(p));
+}
+
+function addExecutableRuntimeRoots(
+  executable: string,
+  roots: Set<string>,
+): void {
   const exeDir = dirname(executable);
   roots.add(exeDir);
   const installRoot = safeInstallRoot(exeDir);
@@ -346,8 +367,58 @@ export function detectRuntimeReadRoots(executable: string): string[] {
   } else if (process.platform === "linux") {
     for (const dir of elfSharedObjectDirs(executable)) roots.add(dir);
   }
+}
 
-  return [...roots].filter((p) => !isForbiddenAutoRuntimeRoot(p));
+/**
+ * Resolve a script's shebang interpreter without executing the script. Handles
+ * direct interpreters and the common `#!/usr/bin/env node` / `env -S ...`
+ * forms. Returns undefined for binaries, malformed shebangs or missing tools.
+ */
+export function resolveShebangInterpreter(
+  executable: string,
+  pathValue = process.env.PATH ?? "",
+): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(executable, "r");
+    const buffer = Buffer.alloc(1024);
+    const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+    const firstLine = buffer.subarray(0, bytes).toString("utf8").split(/\r?\n/, 1)[0] ?? "";
+    if (!firstLine.startsWith("#!")) return undefined;
+    const tokens = firstLine.slice(2).trim().split(/\s+/).filter(Boolean);
+    const launcher = tokens.shift();
+    if (!launcher) return undefined;
+
+    if (basename(launcher) !== "env") {
+      return resolveExecutablePath(launcher, pathValue);
+    }
+
+    let interpreter: string | undefined;
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index]!;
+      if (token === "--") {
+        interpreter = tokens[index + 1];
+        break;
+      }
+      if (token === "-u" || token === "--unset") {
+        index += 1;
+        continue;
+      }
+      if (token === "-S" || token === "--split-string") continue;
+      if (token.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        continue;
+      }
+      interpreter = token;
+      break;
+    }
+    return interpreter
+      ? resolveExecutablePath(interpreter, pathValue)
+      : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /**
