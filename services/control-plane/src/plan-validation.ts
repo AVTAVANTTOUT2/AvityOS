@@ -141,6 +141,15 @@ export function validatePlanProposal(
     if (!ctx.repoAvailable && mission.allowedPaths.length > 0) {
       issues.push(`mission ${mission.key} declares workspace paths but the project has no repository`);
     }
+    if (!ctx.repoAvailable && mission.workspaceChangesRequired) {
+      issues.push(`mission ${mission.key} requires workspace changes but the project has no repository`);
+    }
+    if (!mission.workspaceChangesRequired && mission.allowedPaths.length > 0) {
+      issues.push(`read-only mission ${mission.key} declares writable paths`);
+    }
+    if (!mission.workspaceChangesRequired && mission.expectedArtifacts.length > 0) {
+      issues.push(`read-only mission ${mission.key} declares expected repository artifacts`);
+    }
     if (
       ctx.projectBudgetUsd !== null &&
       mission.budgetUsd !== null &&

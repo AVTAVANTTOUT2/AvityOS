@@ -22,6 +22,7 @@ function mission(overrides: Partial<BrainPlanProposal["missions"][number]> = {})
       test: ["pnpm", "run", "test"],
     },
     expectedArtifacts: [],
+    workspaceChangesRequired: true,
     budgetUsd: null,
     timeoutSeconds: 900,
     escalationConditions: [],
@@ -146,6 +147,43 @@ describe("deterministic plan validation", () => {
     expect(issuesOf(proposal([mission({ allowedPaths: ["src/**"] })]), noRepo).join()).toContain(
       "no repository",
     );
+    expect(
+      issuesOf(
+        proposal([mission({ allowedPaths: [], workspaceChangesRequired: true })]),
+        noRepo,
+      ).join(),
+    ).toContain("requires workspace changes");
+  });
+
+  it("rejects writable paths and repository artifacts on read-only missions", () => {
+    expect(
+      issuesOf(
+        proposal([mission({ workspaceChangesRequired: false })]),
+      ).join(),
+    ).toContain("declares writable paths");
+    expect(
+      issuesOf(
+        proposal([
+          mission({
+            allowedPaths: [],
+            expectedArtifacts: ["report.json"],
+            workspaceChangesRequired: false,
+          }),
+        ]),
+      ).join(),
+    ).toContain("declares expected repository artifacts");
+    expect(
+      validatePlanProposal(
+        proposal([
+          mission({
+            allowedPaths: [],
+            expectedArtifacts: [],
+            workspaceChangesRequired: false,
+          }),
+        ]),
+        ctx,
+      ),
+    ).toEqual({ ok: true });
   });
 
   it("rejects a mission budget above the project budget", () => {

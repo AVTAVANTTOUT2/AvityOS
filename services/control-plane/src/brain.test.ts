@@ -403,6 +403,31 @@ describe("AI brain pipeline", () => {
     expect(store.getMission(finalQa.id)!.state).toBe("proposed");
   });
 
+  it("persists repository implementation missions as writable and verification missions as read-only", async () => {
+    ({ store, engine } = makeEngine(db, { brain: "fake:plan-dag" }));
+    const repo = await makeFixtureRepo(scratch);
+    const project = store.createProject({
+      name: "Mission modes", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Implement two repository changes, then verify the integrated result without editing it",
+      ["track A works", "track B works"],
+    );
+    engine.analyzeObjective(project.id, objective.id);
+    await waitFor(() => store.listMissions(project.id).length === 3);
+
+    const byKey = new Map(
+      store.listMissions(project.id).map((mission) => [mission.logicalKey, mission]),
+    );
+    expect(byKey.get("mission-1")!.contract.workspaceChangesRequired).toBe(true);
+    expect(byKey.get("mission-1")!.contract.allowedPaths).toEqual(["**"]);
+    expect(byKey.get("final-qa")!.contract.workspaceChangesRequired).toBe(false);
+    expect(byKey.get("final-qa")!.contract.allowedPaths).toEqual([]);
+    expect(byKey.get("final-qa")!.contract.expectedArtifacts).toEqual([]);
+  });
+
   it("accounts planning usage against the project budget", async () => {
     const project = store.createProject({
       name: "PlanningBudget", description: "", repoPath: null, repoRemoteUrl: null,

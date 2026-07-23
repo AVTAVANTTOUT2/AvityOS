@@ -150,6 +150,8 @@ export const PlannedMission = z.object({
   /** Real argv commands for each required check; a check without one fails. */
   checkCommands: z.record(z.array(z.string().min(1).max(500)).min(1).max(50)).default({}),
   expectedArtifacts: z.array(z.string().min(1).max(500)).max(50).default([]),
+  /** Whether this mission must create, modify or delete repository files. */
+  workspaceChangesRequired: z.boolean(),
   budgetUsd: z.number().finite().nonnegative().nullable().default(null),
   timeoutSeconds: z.number().int().min(30).max(86_400).default(900),
   escalationConditions: z.array(z.string().min(1).max(1000)).max(20).default([]),
