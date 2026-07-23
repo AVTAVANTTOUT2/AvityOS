@@ -38,6 +38,18 @@ export const GIT_HARDENING_FLAGS: readonly string[] = [
 ];
 
 /**
+ * Deterministic, command-scoped identity for commits AvityOS creates after
+ * validation. Keeping this out of repository and global config avoids mutating
+ * operator state while also overriding any untrusted inherited identity.
+ */
+const AVITYOS_COMMIT_IDENTITY_FLAGS: readonly string[] = [
+  "-c",
+  "user.name=AvityOS",
+  "-c",
+  "user.email=avityos@local",
+];
+
+/**
  * Prefix an argv for a git subcommand with the mandatory hardening flags.
  * Callers that must invoke `git` through their own process runner (rather than
  * {@link git}) use this so they share the exact same neutralisation guarantees.
@@ -292,10 +304,7 @@ export async function commitAll(repoPath: string, message: string): Promise<stri
   // mutating either the repository or the operator's global Git configuration.
   await git(
     repoPath,
-    "-c",
-    "user.name=AvityOS",
-    "-c",
-    "user.email=avityos@local",
+    ...AVITYOS_COMMIT_IDENTITY_FLAGS,
     "commit",
     "--no-verify",
     "--no-gpg-sign",
@@ -400,6 +409,7 @@ export async function composeDependencyBaseline(
     baseline = (
       await git(
         repoPath,
+        ...AVITYOS_COMMIT_IDENTITY_FLAGS,
         "commit-tree",
         tree,
         "-p",

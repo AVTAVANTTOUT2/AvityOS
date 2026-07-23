@@ -226,6 +226,8 @@ describe("git package", () => {
     await addMissionWorktree(repo, backend, "mission/backend", "main");
     await writeFile(join(backend, "backend.txt"), "backend\n");
     const backendCommit = await commitAll(backend, "feat: backend");
+    await git(repo, "config", "--unset-all", "user.name");
+    await git(repo, "config", "--unset-all", "user.email");
 
     const baseline = await composeDependencyBaseline(
       repo,
@@ -237,6 +239,11 @@ describe("git package", () => {
     expect(await git(repo, "show", `${baseline}:backend.txt`)).toBe("backend\n");
     const parents = (await git(repo, "show", "-s", "--format=%P", baseline)).trim().split(" ");
     expect(parents).toEqual(expect.arrayContaining([frontendCommit, backendCommit]));
+    expect(
+      (await git(repo, "show", "-s", "--format=%an <%ae>|%cn <%ce>", baseline)).trim(),
+    ).toBe("AvityOS <avityos@local>|AvityOS <avityos@local>");
+    await expect(git(repo, "config", "--get", "user.name")).rejects.toThrow();
+    await expect(git(repo, "config", "--get", "user.email")).rejects.toThrow();
   });
 
   it("fails closed when dependency branches conflict", async () => {
