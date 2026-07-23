@@ -1775,7 +1775,12 @@ export class Store {
 
   updateMissionMeta(
     id: string,
-    fields: Partial<{ branchName: string; worktreePath: string; correctionAttempts: number }>,
+    fields: Partial<{
+      branchName: string;
+      worktreePath: string;
+      baselineCommit: string;
+      correctionAttempts: number;
+    }>,
     expectedPauseGeneration?: number,
   ): void {
     const tx = this.db.transaction(() => {
@@ -1786,11 +1791,15 @@ export class Store {
       }
       this.db
         .prepare(
-          "UPDATE missions SET branch_name = ?, worktree_path = ?, correction_attempts = ?, updated_at = ? WHERE id = ?",
+          `UPDATE missions
+           SET branch_name = ?, worktree_path = ?, baseline_commit = ?,
+               correction_attempts = ?, updated_at = ?
+           WHERE id = ?`,
         )
         .run(
           fields.branchName ?? mission.branchName,
           fields.worktreePath ?? mission.worktreePath,
+          fields.baselineCommit ?? mission.baselineCommit,
           fields.correctionAttempts ?? mission.correctionAttempts,
           now(),
           id,
@@ -2543,6 +2552,7 @@ function rowToMission(r: Record<string, unknown>): Mission {
     contract: JSON.parse(r.contract as string) as Mission["contract"],
     branchName: (r.branch_name as string) ?? null,
     worktreePath: (r.worktree_path as string) ?? null,
+    baselineCommit: (r.baseline_commit as string) ?? null,
     correctionAttempts: r.correction_attempts as number,
     maxCorrectionAttempts: r.max_correction_attempts as number,
     priority: r.priority as number,

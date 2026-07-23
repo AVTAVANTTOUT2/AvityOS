@@ -248,6 +248,109 @@ export async function changedFiles(repoPath: string, baseRef: string, ref = "HEA
   return out.split("\n").map((s) => s.trim()).filter(Boolean);
 }
 
+export class DependencyCompositionError extends Error {
+  constructor(
+    readonly baseCommit: string,
+    readonly dependencyCommit: string,
+  ) {
+    super(`dependency branch ${dependencyCommit} conflicts with composed baseline ${baseCommit}`);
+    this.name = "DependencyCompositionError";
+  }
+}
+
+async function resolveCommit(repoPath: string, ref: string): Promise<string> {
+  return (
+    await git(repoPath, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`)
+  ).trim();
+}
+
+async function isAncestor(repoPath: string, ancestor: string, descendant: string): Promise<boolean> {
+  try {
+    await git(repoPath, "merge-base", "--is-ancestor", ancestor, descendant);
+    return true;
+  } catch (err) {
+    if (err instanceof GitError && err.exitCode === 1) return false;
+    throw err;
+  }
+}
+
+async function neutralizedMergeDriverArgs(repoPath: string): Promise<string[]> {
+  let configured = "";
+  try {
+    configured = await git(
+      repoPath,
+      "config",
+      "--name-only",
+      "--get-regexp",
+      "^merge\\..*\\.driver$",
+    );
+  } catch (err) {
+    if (!(err instanceof GitError) || err.exitCode !== 1) throw err;
+  }
+  return configured
+    .split("\n")
+    .map((key) => key.trim())
+    .filter((key) => /^merge\.[a-z0-9][a-z0-9._-]*\.driver$/i.test(key))
+    .flatMap((key) => ["-c", `${key}=false`]);
+}
+
+/**
+ * Compose completed dependency refs into one immutable baseline commit without
+ * checking out or merging untrusted repository content in the control plane.
+ * Fast-forward relationships reuse the existing dependency commit. Divergent
+ * branches are combined with `merge-tree` + `commit-tree`; conflicts fail
+ * closed and no mission worktree is created.
+ */
+export async function composeDependencyBaseline(
+  repoPath: string,
+  baseRef: string,
+  dependencyRefs: readonly string[],
+): Promise<string> {
+  let baseline = await resolveCommit(repoPath, baseRef);
+  for (const dependencyRef of [...new Set(dependencyRefs)].sort()) {
+    const dependency = await resolveCommit(repoPath, dependencyRef);
+    if (dependency === baseline || await isAncestor(repoPath, dependency, baseline)) continue;
+    if (await isAncestor(repoPath, baseline, dependency)) {
+      baseline = dependency;
+      continue;
+    }
+
+    let tree: string;
+    try {
+      const mergeDriverOverrides = await neutralizedMergeDriverArgs(repoPath);
+      tree = (
+        await git(
+          repoPath,
+          ...mergeDriverOverrides,
+          "merge-tree",
+          "--write-tree",
+          baseline,
+          dependency,
+        )
+      ).trim();
+    } catch (err) {
+      if (err instanceof GitError && err.exitCode === 1) {
+        throw new DependencyCompositionError(baseline, dependency);
+      }
+      throw err;
+    }
+    baseline = (
+      await git(
+        repoPath,
+        "commit-tree",
+        tree,
+        "-p",
+        baseline,
+        "-p",
+        dependency,
+        "-m",
+        "chore(avityos): compose mission dependencies",
+      )
+    ).trim();
+  }
+  return baseline;
+}
+
 /** True when merging `branch` into `baseRef` would conflict (dry run via merge-tree). */
 export async function hasConflicts(repoPath: string, baseRef: string, branch: string): Promise<boolean> {
   try {

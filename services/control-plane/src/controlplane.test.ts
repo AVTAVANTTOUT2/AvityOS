@@ -3,7 +3,7 @@ import { existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { commitAll, git, initRepo, listWorktrees } from "@avityos/git";
+import { addMissionWorktree, commitAll, git, initRepo, listWorktrees } from "@avityos/git";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import { openDatabase, type DB } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
@@ -469,6 +469,146 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
       store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "policy")?.detail,
     ).toContain("read-only mission modified");
     expect(store.listPullRequests(project.id)).toHaveLength(0);
+  });
+
+  it("runs a read-only dependent mission from its completed prerequisite baseline", async () => {
+    class ContractAwareFakeProvider extends FakeProviderAdapter {
+      override async listModels(): Promise<string[]> {
+        return [...await super.listModels(), "fake:author-by-contract"];
+      }
+
+      override startRun(input: Parameters<FakeProviderAdapter["startRun"]>[0]) {
+        if (input.model !== "fake:author-by-contract") return super.startRun(input);
+        return super.startRun({
+          ...input,
+          model: input.systemPrompt.includes("This is a read-only mission")
+            ? "fake:succeed"
+            : "fake:code",
+        });
+      }
+    }
+    store = new Store(db);
+    engine = new Engine(
+      store,
+      new Map<string, ProviderAdapter>([["fake", new ContractAwareFakeProvider()]]),
+      TEST_CONFIG,
+      ["fake"],
+      new Map([["fake", "fake:author-by-contract"]]),
+      new Map([["fake", "fake:review-approve"]]),
+    );
+    const project = store.createProject({
+      name: "DependencyBaseline", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const implementation = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Create the validated artifact", role: "backend",
+      contract: repoMissionContract("Create AVITY.md for downstream verification"),
+      priority: 60, dependsOn: [],
+    });
+    const verification = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Verify the inherited artifact", role: "qa",
+      contract: {
+        objective: "Verify AVITY.md from the completed implementation without modifying it",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: ["**/.env", "**/secrets/**"],
+        acceptanceCriteria: ["the inherited AVITY.md passes its real check"],
+        requiredChecks: ["test"],
+        checkCommands: { test: CHECK_AVITY_MD },
+        budgetUsd: null,
+        timeoutSeconds: 120,
+        expectedArtifacts: [],
+        workspaceChangesRequired: false,
+      },
+      priority: 50, dependsOn: [implementation.id],
+    });
+
+    engine.start();
+    await waitFor(() => store.getProject(project.id)!.status === "completed", 15_000);
+
+    const completedImplementation = store.getMission(implementation.id)!;
+    const completedVerification = store.getMission(verification.id)!;
+    expect(completedImplementation.state).toBe("completed");
+    expect(completedVerification.state).toBe("completed");
+    expect(completedVerification.baselineCommit).toBe(
+      (await git(repo, "rev-parse", completedImplementation.branchName!)).trim(),
+    );
+    expect(
+      await git(repo, "show", `${completedVerification.branchName}:AVITY.md`),
+    ).not.toContain("DEFECT");
+    expect(
+      await git(repo, "diff", "--name-only", `${completedVerification.baselineCommit}...${completedVerification.branchName}`),
+    ).toBe("");
+    expect(
+      (await git(repo, "diff", "--name-only", `main...${completedVerification.branchName}`)).trim(),
+    ).toBe("AVITY.md");
+    expect(
+      store.listCheckpoints(verification.id).find((checkpoint) => checkpoint.kind === "test")?.status,
+    ).toBe("passed");
+    expect(store.listPullRequests(project.id).map((pullRequest) => pullRequest.missionId)).toEqual([
+      implementation.id,
+    ]);
+  }, 20_000);
+
+  it("fails closed when a mission baseline cannot be inspected", async () => {
+    const project = store.createProject({
+      name: "InvalidBaseline", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Inspect from a corrupted baseline", role: "qa",
+      contract: {
+        objective: "Inspect without modifying files",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        acceptanceCriteria: ["inspection is evidence based"],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 120,
+        expectedArtifacts: [],
+        workspaceChangesRequired: false,
+      },
+      priority: 50, dependsOn: [], maxCorrectionAttempts: 0,
+    });
+    const worktreePath = join(repo, ".avity", "worktrees", mission.id);
+    const branchName = `mission/${mission.id}-invalid-baseline`;
+    await mkdir(join(repo, ".avity", "worktrees"), { recursive: true });
+    await addMissionWorktree(repo, worktreePath, branchName, "main");
+    store.updateMissionMeta(mission.id, {
+      branchName,
+      worktreePath,
+      baselineCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    store.transitionMission(mission.id, "running", "");
+    const run = store.createRun({
+      projectId: project.id,
+      missionId: mission.id,
+      providerId: "fake",
+      model: "fake:succeed",
+    });
+    store.transitionRun(run.id, "starting");
+    store.transitionRun(run.id, "running");
+    store.transitionRun(run.id, "succeeded");
+    store.transitionMission(mission.id, "result_submitted", "");
+    store.transitionMission(mission.id, "validating", "");
+
+    await engine.validateMission(mission.id);
+
+    expect(store.getMission(mission.id)!.state).toBe("failed");
+    expect(
+      store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "policy")?.detail,
+    ).toContain("could not inspect mission diff");
   });
 
   it("blocks a mission whose .avity/worktrees is redirected outside the repo via a symlink", async () => {
