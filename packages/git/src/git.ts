@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { appendFile, lstat, readFile, realpath } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -181,6 +183,60 @@ export function missionBranchName(missionId: string, title: string): string {
 export async function isCleanWorkingTree(repoPath: string): Promise<boolean> {
   const out = await git(repoPath, "status", "--porcelain");
   return out.trim().length === 0;
+}
+
+/**
+ * Keep AvityOS-owned runtime state out of the repository's visible working
+ * tree without modifying the project's versioned `.gitignore`.
+ *
+ * The repository-local info/exclude file is Git's intended home for
+ * tool-specific private ignores. Refuse symlinked metadata components before
+ * appending so a hostile repository cannot redirect this control-plane write.
+ */
+export async function ensureRuntimeMetadataIgnored(repoPath: string): Promise<void> {
+  const commonDir = await realpath(
+    (
+      await git(
+        repoPath,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      )
+    ).trim(),
+  );
+  const infoDir = join(commonDir, "info");
+  const excludePath = join(infoDir, "exclude");
+  const infoStat = await lstat(infoDir);
+  if (!infoStat.isDirectory() || infoStat.isSymbolicLink()) {
+    throw new Error(`unsafe Git info directory: ${infoDir}`);
+  }
+
+  let contents = "";
+  try {
+    const excludeStat = await lstat(excludePath);
+    if (!excludeStat.isFile() || excludeStat.isSymbolicLink()) {
+      throw new Error(`unsafe Git exclude file: ${excludePath}`);
+    }
+    contents = await readFile(excludePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+
+  const pattern = "/.avity/";
+  if (
+    contents
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .includes(pattern)
+  ) {
+    return;
+  }
+
+  const separator = contents.length > 0 && !contents.endsWith("\n") ? "\n" : "";
+  await appendFile(excludePath, `${separator}${pattern}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 export async function currentBranch(repoPath: string): Promise<string> {

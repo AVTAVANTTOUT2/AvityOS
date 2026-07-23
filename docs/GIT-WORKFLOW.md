@@ -8,6 +8,9 @@
   `addMissionWorktree(repo, path, branch, baseRef)`; branch names are
   predictable and tied to mission ids: `mission/<id>-<slug>`
   (`missionBranchName`).
+- **Invisible runtime metadata**: AvityOS adds `/.avity/` idempotently to the
+  repository-local `.git/info/exclude`; it never edits the project's versioned
+  `.gitignore`, and it refuses symlinked Git metadata before writing.
 - **Clean-state discipline**: `isCleanWorkingTree` before and after
   execution; `changedFiles(base, branch)` enforces the mission's path
   scope.

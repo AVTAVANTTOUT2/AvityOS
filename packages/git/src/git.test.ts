@@ -1,4 +1,12 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +17,7 @@ import {
   composeDependencyBaseline,
   currentBranch,
   DependencyCompositionError,
+  ensureRuntimeMetadataIgnored,
   git,
   hasConflicts,
   initRepo,
@@ -59,6 +68,37 @@ describe("git package", () => {
     expect(await currentBranch(repo)).toBe("main");
     await writeFile(join(repo, "dirty.txt"), "x");
     expect(await isCleanWorkingTree(repo)).toBe(false);
+  });
+
+  it("locally ignores AvityOS runtime metadata without changing tracked files", async () => {
+    await ensureRuntimeMetadataIgnored(repo);
+    await ensureRuntimeMetadataIgnored(repo);
+    await mkdir(join(repo, ".avity", "worktrees"), { recursive: true });
+    await writeFile(join(repo, ".avity", "worktrees", "runtime-state"), "private\n");
+
+    expect(await isCleanWorkingTree(repo)).toBe(true);
+    const commonDir = (
+      await git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    ).trim();
+    const exclude = await readFile(join(commonDir, "info", "exclude"), "utf8");
+    expect(exclude.split("\n").filter((line) => line === "/.avity/")).toHaveLength(1);
+    expect(await git(repo, "ls-files", ".gitignore")).toBe("");
+  });
+
+  it("refuses a symlinked local exclude file", async () => {
+    const commonDir = (
+      await git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    ).trim();
+    const excludePath = join(commonDir, "info", "exclude");
+    const external = join(scratch, "external-exclude");
+    await writeFile(external, "keep\n");
+    await rm(excludePath, { force: true });
+    await symlink(external, excludePath);
+
+    await expect(ensureRuntimeMetadataIgnored(repo)).rejects.toThrow(
+      /unsafe Git exclude file/,
+    );
+    expect(await readFile(external, "utf8")).toBe("keep\n");
   });
 
   it("never executes repository-controlled commit hooks", async () => {

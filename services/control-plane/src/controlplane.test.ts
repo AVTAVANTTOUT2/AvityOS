@@ -3,7 +3,14 @@ import { existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addMissionWorktree, commitAll, git, initRepo, listWorktrees } from "@avityos/git";
+import {
+  addMissionWorktree,
+  commitAll,
+  git,
+  initRepo,
+  isCleanWorkingTree,
+  listWorktrees,
+} from "@avityos/git";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import { openDatabase, type DB } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
@@ -392,6 +399,7 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     expect(checkpoints.find((c) => c.kind === "review")!.status).toBe("passed");
     expect(existsSync(done.worktreePath!)).toBe(false);
     expect((await listWorktrees(repo)).some((w) => w.branch === done.branchName)).toBe(false);
+    expect(await isCleanWorkingTree(repo)).toBe(true);
     expect(store.verifyAuditChain()).toBe(true);
   });
 
