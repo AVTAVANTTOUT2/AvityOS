@@ -10,6 +10,7 @@ import { resolveOperatorPaths, type OperatorServiceName } from "./operator/paths
 import { redactText } from "./operator/redact.js";
 import { ensureOperatorSetup, mergeOperatorEnvironment, readProtectedTokenFromFile, saveOperatorEnvironment } from "./operator/setup.js";
 import { OperatorServiceLifecycle } from "./operator/services.js";
+import { createExternalLiveFixture } from "./operator/fixture.js";
 
 /**
  * The `avity` CLI. Human output by default; pass --json anywhere for
@@ -667,8 +668,9 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
     },
   },
 
-  e2e: {
-    preflight: async (ctx) => {
+  e2e: async (ctx) => {
+    const [subcommand, action] = ctx.args;
+    if (subcommand === "preflight") {
       const projectId = flag(ctx, "project");
       const path = projectId
         ? `/v1/e2e/preflight?projectId=${encodeURIComponent(projectId)}`
@@ -708,7 +710,27 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
           r.note,
         ].join("\n");
       });
-    },
+      return;
+    }
+    if (subcommand === "fixture" && action === "create") {
+      const fixturePath = flag(ctx, "path");
+      if (!fixturePath) {
+        throw new UsageError("missing required argument: --path <path>");
+      }
+      const remote = flag(ctx, "remote");
+      const result = createExternalLiveFixture({
+        path: fixturePath,
+        ...(remote ? { remote } : {}),
+      });
+      out(
+        ctx,
+        result,
+        (payload: typeof result) =>
+          `fixture created at ${payload.path}\nbranch: ${payload.branch}\nremote: ${payload.remote ?? "(none)"}`,
+      );
+      return;
+    }
+    throw new UsageError("unknown e2e command (expected: preflight | fixture create)");
   },
 
   worker: {
@@ -787,6 +809,8 @@ commands:
   intervention list | answer <id> [key=answer...|--decision approved|rejected]
   provider list | status
   e2e preflight [--project <id>]        live E2E readiness (runnability only)
+  e2e fixture create --path <path> [--remote <github-url>]
+                                        create local external fixture repository
   worker list | enroll <name> | revoke <id>
   pr list [--project <id>] | show <id>
 `;
