@@ -165,13 +165,6 @@ export async function publishGitHubPullRequest(input: {
   return { number: item.number, url: item.url, state: item.isDraft ? "draft" : "open" };
 }
 
-/** Mark an approved draft PR ready for human/project-policy integration. */
-export async function markGitHubPullRequestReady(remoteUrl: string, number: number): Promise<void> {
-  const repository = parseGitHubRemote(remoteUrl);
-  if (!repository) throw new Error(`unsupported GitHub remote URL: ${remoteUrl}`);
-  await gh("pr", "ready", String(number), "--repo", `${repository.owner}/${repository.name}`);
-}
-
 /** Branch name derived from a mission: predictable, filesystem-safe. */
 export function missionBranchName(missionId: string, title: string): string {
   const slug = title

@@ -17,7 +17,6 @@ import {
   git,
   isCleanWorkingTree,
   listWorktrees,
-  markGitHubPullRequestReady,
   missionBranchName,
   publishGitHubPullRequest,
   removeWorktree,
@@ -1440,35 +1439,10 @@ export class Engine {
     const project = this.store.getProject(mission.projectId)!;
     const pauseGeneration = expectedPauseGeneration ?? this.store.getPauseGeneration(project.id);
     if (this.fencePausedWork(project.id, missionId, "integration", pauseGeneration)) return;
-    const pr = this.store.listPullRequests(project.id).find((candidate) => candidate.missionId === missionId);
-    if (project.repoRemoteUrl && pr?.number && pr.state === "draft") {
-      try {
-        await markGitHubPullRequestReady(project.repoRemoteUrl, pr.number);
-        // A pause during the GitHub round-trip must not integrate or complete.
-        if (this.fencePausedWork(project.id, missionId, "integration publish", pauseGeneration)) return;
-        this.store.setPullRequestState(pr.id, "open", pauseGeneration);
-      } catch (err) {
-        if (this.fencePausedWork(project.id, missionId, "integration publish failure", pauseGeneration)) return;
-        this.store.transitionMission(
-          missionId,
-          "blocked",
-          `could not mark GitHub PR ready: ${String(err).slice(0, 300)}`,
-          "engine",
-          pauseGeneration,
-        );
-        this.store.createApproval(
-          project.id,
-          missionId,
-          "GitHub PR could not be marked ready",
-          "Verify GitHub CLI authentication and approve to retry. AvityOS will never self-merge this PR.",
-        );
-        return;
-      }
-    }
     this.store.transitionMission(
       missionId,
       "integrated",
-      "approved PR/branch published and retained for policy-controlled merge",
+      "approved PR/branch published and retained as an unmerged draft",
       "engine",
       pauseGeneration,
     );
