@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG } from "@avityos/control-plane";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import type { FastifyInstance } from "fastify";
-import { runCommand } from "./runner.js";
+import { runCommand, type RunnerCallbacks, type RunnerHandle } from "./runner.js";
 import {
   CREDENTIAL_FILE_MODE,
   createEnrollmentMessages,
@@ -438,5 +438,76 @@ describe("worker credential persistence", () => {
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("worker output/exit ordering", () => {
+  // Regression for the empty-log flake: the worker must not report a terminal's
+  // exit (which flips its state to succeeded/failed) before every streamed
+  // output chunk has been persisted. This mirrors the real runner's callback
+  // shape — fire-and-forget onOutput, then onExit — while an injected fetch
+  // delays the /output response so an unsynchronised exit would overtake it.
+  it("persists streamed output before reporting the terminal exit", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/output")) {
+        // Simulate a slow output persistence round-trip.
+        await new Promise((r) => setTimeout(r, 50));
+        calls.push("output");
+      } else if (url.endsWith("/exit")) {
+        calls.push("exit");
+      }
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    // Faithful stand-in for the sandboxed runner: emits one chunk fire-and-forget
+    // exactly like the stdout 'data' path, then reports exit like the 'close'
+    // path. No non-sandboxed subprocess is ever spawned.
+    const fakeRunner = ((
+      _argv: readonly string[],
+      _cwd: string,
+      callbacks: RunnerCallbacks,
+    ): RunnerHandle => {
+      let resolveDone: () => void = () => undefined;
+      const done = new Promise<void>((resolve) => {
+        resolveDone = resolve;
+      });
+      void callbacks.onOutput("streamed via worker\n");
+      void Promise.resolve(
+        callbacks.onExit({ exitCode: 0, state: "succeeded" }),
+      ).then(() => resolveDone());
+      return {
+        pid: 4321,
+        done,
+        pause: () => undefined,
+        resume: () => undefined,
+        cancel: () => undefined,
+      };
+    }) as typeof runCommand;
+
+    const agent = new WorkerAgent({
+      controlPlaneUrl: "http://127.0.0.1:1",
+      name: "ordering",
+      workerId: "wrk_ordering",
+      workerToken: "tok_ordering",
+      pollMs: 10_000,
+      capabilities: ["shell"],
+      fetchImpl,
+      runCommandImpl: fakeRunner,
+    });
+
+    await agent.execute({
+      id: "term_ordering",
+      command: ["echo", "streamed via worker"],
+      cwd: "/tmp",
+      leaseToken: "lease_ordering",
+    });
+
+    // The delayed /output must land before /exit despite being fire-and-forget.
+    expect(calls).toEqual(["output", "exit"]);
   });
 });

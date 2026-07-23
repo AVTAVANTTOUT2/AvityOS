@@ -3,6 +3,8 @@ import { basename, dirname, join } from "node:path";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { runCommand, type RunnerHandle } from "./runner.js";
 
+type RunCommand = typeof runCommand;
+
 export interface WorkerConfig {
   controlPlaneUrl: string;
   name: string;
@@ -16,6 +18,12 @@ export interface WorkerConfig {
   /** Explicit development escape hatch; never enable for a remote worker. */
   allowInsecureTransport?: boolean;
   fetchImpl?: typeof fetch;
+  /**
+   * Test seam only: overrides the subprocess runner. Production always uses the
+   * default sandboxed {@link runCommand}; this never introduces a non-sandboxed
+   * execution path in a real worker.
+   */
+  runCommandImpl?: RunCommand;
 }
 
 export interface WorkerCredentials {
@@ -241,15 +249,31 @@ export class WorkerAgent {
       return res.ok ? ((await res.json()) as Record<string, unknown>) : {};
     };
 
-    const handle = runCommand(
+    // Serialize streamed output and make the terminal exit report wait for the
+    // full output drain. Without this, a fast command's exit POST (which flips
+    // the terminal to succeeded/failed) can overtake the fire-and-forget output
+    // POST, so an observer that waits for the terminal state then reads the logs
+    // sees them empty. Chaining also preserves chunk ordering. A dropped chunk
+    // must never block exit reporting, so per-chunk failures are swallowed.
+    let outputDrain: Promise<void> = Promise.resolve();
+    const run = this.config.runCommandImpl ?? runCommand;
+    const handle = run(
       lease.command,
       lease.cwd,
       {
-        onOutput: async (text) => {
-          const ack = await post(`/v1/terminals/${lease.id}/output`, { text, leaseToken: lease.leaseToken });
-          if (ack.cancelRequested) handle.cancel();
+        onOutput: (text) => {
+          outputDrain = outputDrain.then(async () => {
+            try {
+              const ack = await post(`/v1/terminals/${lease.id}/output`, { text, leaseToken: lease.leaseToken });
+              if (ack.cancelRequested) handle.cancel();
+            } catch {
+              // best-effort streaming; keep draining so exit is never blocked
+            }
+          });
+          return outputDrain;
         },
         onExit: async ({ exitCode, state }) => {
+          await outputDrain;
           await post(`/v1/terminals/${lease.id}/exit`, { exitCode, state, leaseToken: lease.leaseToken });
           this.active.delete(lease.id);
         },
