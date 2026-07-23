@@ -7,3 +7,9 @@ allowBuilds:
   esbuild: true
 overrides:
   vite: 6.4.3
+  # GHSA-v2hh-gcrm-f6hx: fast-uri host confusion via literal backslash authority
+  # delimiter. Force the patched release on each major already in the tree
+  # (ajv pulls 3.x, fast-json-stringify pulls 4.x) without weakening the audit
+  # or crossing a major boundary that would break the consumers' APIs.
+  fast-uri@3: 3.1.4
+  fast-uri@4: 4.1.1
