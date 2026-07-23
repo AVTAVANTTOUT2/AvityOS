@@ -8,6 +8,7 @@ import {
   E2ECampaignResultStatus,
   E2EGitHubReadiness,
   E2EPreflightReport,
+  E2EReadinessReason,
   E2EScenarioKey,
   E2EScenarioStatus,
   EventEnvelope,
@@ -420,12 +421,96 @@ describe("contracts", () => {
     ).toBe(false);
   });
 
+  it("rejects a ready fallback backed by only one real workspace editor", () => {
+    const base = validPreflightReport();
+    const textOnlyProviders = base.providers.map((provider) =>
+      ["claude-code", "cursor", "anthropic"].includes(provider.name)
+        ? { ...provider, workspaceEdits: false }
+        : provider,
+    );
+    const scenarios = base.scenarios.map((item) =>
+      item.key === "claude_code_mission" || item.key === "cursor_mission"
+        ? scenario(item.key, "blocked_product_gap")
+        : item,
+    );
+    expect(
+      E2EPreflightReport.safeParse({
+        ...base,
+        providers: textOnlyProviders,
+        realWorkspaceEditorCount: 1,
+        scenarios,
+        readiness: "blocked_product_gap",
+        readyCount: 8,
+        blockedCount: 2,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts each of the five readiness states as a coherent aggregate", () => {
+    const base = validPreflightReport();
+    for (const status of E2EScenarioStatus.options) {
+      const scenarios =
+        status === "ready"
+          ? base.scenarios
+          : [
+              scenario("real_planning", status),
+              ...base.scenarios.slice(1),
+            ];
+      expect(
+        E2EPreflightReport.safeParse({
+          ...base,
+          scenarios,
+          readiness: status,
+          readyCount: status === "ready" ? 10 : 9,
+          blockedCount: status === "ready" ? 0 : 1,
+        }).success,
+      ).toBe(true);
+    }
+  });
+
+  it("rejects common credential formats without rejecting environment names", () => {
+    const base = validPreflightReport();
+    const secretPatterns = [
+      "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+      "github_pat_abcdefghijklmnopqrstuvwxyz_1234567890",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+      "-----BEGIN PRIVATE KEY-----",
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "AKIAIOSFODNN7EXAMPLE",
+      "api_key=not-a-real-credential-value-for-tests",
+      "glpat-abcdefghijklmnopqrst",
+    ];
+    for (const leaked of secretPatterns) {
+      expect(
+        E2EPreflightReport.safeParse({
+          ...base,
+          scenarios: [
+            { ...base.scenarios[0], detail: leaked },
+            ...base.scenarios.slice(1),
+          ],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      E2EReadinessReason.safeParse({
+        ...readinessReason("blocked_missing_credentials"),
+        message: "Configure GITHUB_TOKEN or GH_TOKEN through a protected file.",
+      }).success,
+    ).toBe(true);
+  });
+
   it("parses versioned campaign results and rejects readiness as an outcome", () => {
     const results = E2EScenarioKey.options.map((key) => ({
       key,
       status: "passed" as const,
       detail: "Observed through the public API.",
-      evidence: ["run:run-1"],
+      evidence: [
+        {
+          source: "public_api",
+          provider: null,
+          reference: "run:run-1",
+        },
+      ],
     }));
     const report = {
       schemaVersion: E2E_CAMPAIGN_REPORT_SCHEMA_VERSION,
@@ -454,6 +539,44 @@ describe("contracts", () => {
         ...report,
         results: [
           { ...results[0], status: "ready" },
+          ...results.slice(1),
+        ],
+      }).success,
+    ).toBe(false);
+    for (const fakeProvider of ["fake", "fake_fixture"]) {
+      expect(
+        E2ECampaignReport.safeParse({
+          ...report,
+          results: [
+            {
+              ...results[0],
+              evidence: [
+                {
+                  source: "provider_run",
+                  provider: fakeProvider,
+                  reference: "run:fixture",
+                },
+              ],
+            },
+            ...results.slice(1),
+          ],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      E2ECampaignReport.safeParse({
+        ...report,
+        results: [
+          {
+            ...results[0],
+            evidence: [
+              {
+                source: "fake_fixture",
+                provider: null,
+                reference: "run:fixture",
+              },
+            ],
+          },
           ...results.slice(1),
         ],
       }).success,

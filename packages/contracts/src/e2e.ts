@@ -9,7 +9,7 @@ import { Timestamp } from "./entities.js";
  * names appear here; credential values never do.
  */
 export const E2E_PREFLIGHT_SCHEMA_VERSION = 2 as const;
-export const E2E_CAMPAIGN_REPORT_SCHEMA_VERSION = 1 as const;
+export const E2E_CAMPAIGN_REPORT_SCHEMA_VERSION = 2 as const;
 
 /** The ten mandatory scenarios of the E2E live-validation milestone. */
 export const E2EScenarioKey = z.enum([
@@ -69,16 +69,24 @@ export function summarizeE2EReadiness(
   );
 }
 
+const CREDENTIAL_VALUE_PATTERN =
+  /(?:\bBearer\s+\S+|(?:^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}|\bsk_(?:live|test)_[A-Za-z0-9]{12,}|\bghp_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bAKIA[0-9A-Z]{16}\b|\bxox[baprs]-[A-Za-z0-9-]{20,}|\bglpat-[A-Za-z0-9_-]{12,}|\bnpm_[A-Za-z0-9]{20,}|\bAIza[0-9A-Za-z_-]{35}|(?:api[_-]?key|token|secret)\s*[=:]\s*\S+)/i;
+
+function isSecretFree(value: string): boolean {
+  return !CREDENTIAL_VALUE_PATTERN.test(value);
+}
+
 const SecretFreeText = z
   .string()
   .min(1)
-  .refine(
-    (value) =>
-      !/(?:\bBearer\s+\S+|(?:^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}|(?:api[_-]?key|token|secret)\s*[=:]\s*\S+)/i.test(
-        value,
-      ),
-    "must not contain a credential-like value",
-  );
+  .refine(isSecretFree, "must not contain a credential-like value");
+
+const SecretFreeIdentifier = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:+/_-]*$/)
+  .refine(isSecretFree, "must not contain a credential-like value");
 
 /** Structured, secret-free reason attached to one blocked readiness check. */
 export const E2EReadinessReason = z
@@ -115,7 +123,7 @@ export type E2EReadinessReason = z.infer<typeof E2EReadinessReason>;
 /** Secret-free summary of one registered provider, including effective routing. */
 export const E2EProviderSummary = z
   .object({
-    name: z.string().min(1),
+    name: SecretFreeIdentifier,
     /** A real provider is any registered adapter other than the fake fixture. */
     real: z.boolean(),
     /** Whether the adapter can author repository changes (workspace edits). */
@@ -177,8 +185,8 @@ export type E2EGitHubReadiness = z.infer<typeof E2EGitHubReadiness>;
 /** One effective engine provider chain associated with a mission role. */
 export const E2ERoleRouting = z
   .object({
-    role: z.string().min(1),
-    providers: z.array(z.string().min(1)),
+    role: SecretFreeIdentifier,
+    providers: z.array(SecretFreeIdentifier),
   })
   .strict();
 export type E2ERoleRouting = z.infer<typeof E2ERoleRouting>;
@@ -190,9 +198,9 @@ export type E2ERoleRouting = z.infer<typeof E2ERoleRouting>;
  */
 export const E2EEffectiveRouting = z
   .object({
-    globalChain: z.array(z.string().min(1)),
-    brainChain: z.array(z.string().min(1)),
-    reviewerChain: z.array(z.string().min(1)),
+    globalChain: z.array(SecretFreeIdentifier),
+    brainChain: z.array(SecretFreeIdentifier),
+    reviewerChain: z.array(SecretFreeIdentifier),
     missionRoleChains: z.array(E2ERoleRouting),
   })
   .strict();
@@ -201,7 +209,7 @@ export type E2EEffectiveRouting = z.infer<typeof E2EEffectiveRouting>;
 export const E2EScenarioReport = z
   .object({
     key: E2EScenarioKey,
-    title: z.string().min(1),
+    title: SecretFreeText,
     status: E2EScenarioStatus,
     /** Human-readable, secret-free explanation of the status. */
     detail: SecretFreeText,
@@ -254,7 +262,7 @@ export const E2EPreflightReport = z
     readyCount: z.number().int().min(0),
     blockedCount: z.number().int().min(0),
     /** Explicit honesty guard printed with every report. */
-    note: z.string().min(1),
+    note: SecretFreeText,
   })
   .strict()
   .superRefine((report, ctx) => {
@@ -512,9 +520,9 @@ export const E2EPreflightReport = z
         ...missionChains,
       ].some(
         (chain) =>
-          new Set(chain.filter(isRealRegistered)).size >= 2,
+          new Set(chain.filter(isRealEditor)).size >= 2,
       ),
-      "ready fallback requires two registered real providers in one effective chain",
+      "ready fallback requires two registered real workspace editors in one effective chain",
     );
     rejectUnsupportedReadyClaim(
       "branch_push",
@@ -545,14 +553,54 @@ export type E2ECampaignResultStatus = z.infer<
   typeof E2ECampaignResultStatus
 >;
 
+/** Origin of one campaign evidence reference. */
+export const E2ECampaignEvidenceSource = z.enum([
+  "provider_run",
+  "public_api",
+  "git",
+  "github",
+  "fake_fixture",
+]);
+export type E2ECampaignEvidenceSource = z.infer<
+  typeof E2ECampaignEvidenceSource
+>;
+
+/**
+ * Structured evidence provenance. Provider runs must identify their adapter;
+ * system evidence must not invent one.
+ */
+export const E2ECampaignEvidence = z
+  .object({
+    source: E2ECampaignEvidenceSource,
+    provider: SecretFreeIdentifier.nullable(),
+    reference: SecretFreeText,
+  })
+  .strict()
+  .superRefine((evidence, ctx) => {
+    if (evidence.source === "provider_run" && evidence.provider === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["provider"],
+        message: "provider-run evidence must identify its provider",
+      });
+    }
+    if (evidence.source !== "provider_run" && evidence.provider !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["provider"],
+        message: "non-provider evidence cannot claim a provider",
+      });
+    }
+  });
+export type E2ECampaignEvidence = z.infer<typeof E2ECampaignEvidence>;
+
 /** Observed outcome and evidence references for one mandatory scenario. */
 export const E2ECampaignScenarioResult = z
   .object({
     key: E2EScenarioKey,
     status: E2ECampaignResultStatus,
     detail: SecretFreeText,
-    /** Opaque, secret-free references to public API evidence or local artifacts. */
-    evidence: z.array(SecretFreeText),
+    evidence: z.array(E2ECampaignEvidence),
   })
   .strict()
   .superRefine((result, ctx) => {
@@ -562,6 +610,22 @@ export const E2ECampaignScenarioResult = z
         path: ["evidence"],
         message: "passed campaign scenarios require observed evidence",
       });
+    }
+    if (result.status === "passed") {
+      for (const [index, evidence] of result.evidence.entries()) {
+        const provider = evidence.provider?.toLowerCase();
+        if (
+          evidence.source === "fake_fixture" ||
+          provider === "fake" ||
+          provider === "fake_fixture"
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["evidence", index],
+            message: "fake fixtures cannot prove a passed live campaign scenario",
+          });
+        }
+      }
     }
     if (
       result.status === "not_attempted" &&
@@ -601,8 +665,8 @@ export const E2ECampaignReport = z
   .object({
     schemaVersion: z.literal(E2E_CAMPAIGN_REPORT_SCHEMA_VERSION),
     generatedAt: Timestamp,
-    campaignId: z.string().min(1),
-    projectId: z.string().min(1),
+    campaignId: SecretFreeIdentifier,
+    projectId: SecretFreeIdentifier,
     result: E2ECampaignResultStatus,
     results: z.array(E2ECampaignScenarioResult),
     passedCount: z.number().int().min(0),

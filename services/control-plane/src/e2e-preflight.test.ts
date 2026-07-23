@@ -361,6 +361,36 @@ describe("buildE2EPreflight", () => {
     expect(statusOf(report, "real_planning")).toBe("ready");
   });
 
+  it("classifies an unrouted real planning provider as operator configuration", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        providers: providersFrom([["fake", true], ["anthropic", false]]),
+        providerChain: ["fake"],
+        roleProviderChains: new Map(),
+      }),
+    );
+    expect(statusOf(report, "real_planning")).toBe(
+      "blocked_operator_configuration",
+    );
+  });
+
+  it("keeps mission fallback blocked with one editor and one text-only provider", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        providers: providersFrom([
+          ["fake", true],
+          ["codex", true],
+          ["anthropic", false],
+        ]),
+        providerChain: ["codex", "anthropic", "fake"],
+        missionRoles: ["backend"],
+      }),
+    );
+    expect(statusOf(report, "cross_provider_fallback")).toBe(
+      "blocked_product_gap",
+    );
+  });
+
   it("reports fully ready when every real provider, route and GitHub channel is present", () => {
     const report = buildE2EPreflight(
       inputs({

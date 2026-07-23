@@ -149,23 +149,40 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
           "Planning by a real reasoning provider",
           "A real provider is present in the effective brain (orchestrator) chain.",
         )
-      : blocked(
-          "real_planning",
-          "Planning by a real reasoning provider",
-          "blocked_missing_credentials",
-          "no_real_brain_provider",
-          "No real provider is registered for the brain chain; only the deterministic fixture is available.",
-          {
-            environmentVariables: [
-              "OPENAI_API_KEY",
-              "ANTHROPIC_API_KEY",
-              "DEEPSEEK_API_KEY",
-            ],
-            remediation: [
-              "Configure credentials for a real reasoning provider and include it in the orchestrator route.",
-            ],
-          },
-        ),
+      : realProviders.length > 0
+        ? blocked(
+            "real_planning",
+            "Planning by a real reasoning provider",
+            "blocked_operator_configuration",
+            "real_brain_provider_not_routed",
+            "Real providers are registered, but none appears in the effective brain chain.",
+            {
+              environmentVariables: [
+                "AVITY_PROVIDER_CHAIN",
+                "AVITY_ROLE_PROVIDERS",
+              ],
+              remediation: [
+                "Route a registered real reasoning provider through the orchestrator chain.",
+              ],
+            },
+          )
+        : blocked(
+            "real_planning",
+            "Planning by a real reasoning provider",
+            "blocked_missing_credentials",
+            "no_real_brain_provider",
+            "No real reasoning provider is registered for the brain chain.",
+            {
+              environmentVariables: [
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "DEEPSEEK_API_KEY",
+              ],
+              remediation: [
+                "Configure credentials for a real reasoning provider and include it in the orchestrator route.",
+              ],
+            },
+          ),
   );
 
   const missionProviders: { name: string; key: E2EScenarioReport["key"]; env: string }[] = [
@@ -336,10 +353,12 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
     ...missionRoleChains.map((route) => route.providers),
   ];
   const hasCrossProviderFallback = effectiveChains.some((chain) => {
-    const realAvailable = chain.filter(
-      (provider) => provider !== FIXTURE_PROVIDER && inputs.providers.has(provider),
+    const realAvailableEditors = chain.filter(
+      (provider) =>
+        provider !== FIXTURE_PROVIDER &&
+        inputs.providers.get(provider)?.capabilities().workspaceEdits === true,
     );
-    return new Set(realAvailable).size >= 2;
+    return new Set(realAvailableEditors).size >= 2;
   });
 
   scenarios.push(
@@ -347,25 +366,38 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
       ? ready(
           "cross_provider_fallback",
           "Real cross-provider fallback",
-          "At least one effective brain or mission-role chain contains two registered real providers.",
+          "At least one effective brain or mission-role chain contains two registered real workspace editors.",
         )
-      : realProviders.length >= 2
+      : realEditors.length >= 2
         ? blocked(
             "cross_provider_fallback",
             "Real cross-provider fallback",
             "blocked_operator_configuration",
             "fallback_providers_not_co_routed",
-            "Multiple real providers are registered, but no effective chain contains two of them.",
+            "Multiple real workspace editors are registered, but no effective chain contains two of them.",
             {
               environmentVariables: [
                 "AVITY_PROVIDER_CHAIN",
                 "AVITY_ROLE_PROVIDERS",
               ],
               remediation: [
-                "Place at least two registered real providers in one effective provider chain.",
+                "Place at least two registered real workspace editors in one effective provider chain.",
               ],
             },
           )
+        : realProviders.length >= 2
+          ? blocked(
+              "cross_provider_fallback",
+              "Real cross-provider fallback",
+              "blocked_product_gap",
+              "fallback_workspace_editor_gap",
+              "Multiple real providers are registered, but fewer than two can author workspace edits.",
+              {
+                remediation: [
+                  "Use at least two registered real providers that declare workspace-edit capability.",
+                ],
+              },
+            )
         : blocked(
             "cross_provider_fallback",
             "Real cross-provider fallback",
