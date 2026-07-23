@@ -377,20 +377,53 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 
 describe("openai-compatible adapter", () => {
   it("completes a run and reports usage", async () => {
+    let requestBody: Record<string, unknown> = {};
     const adapter = new OpenAICompatibleAdapter("openai", {
       baseUrl: "https://api.example/v1",
       apiKey: "test-key",
-      fetchImpl: async () =>
-        jsonResponse(200, {
+      fetchImpl: async (_url, init) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse(200, {
           choices: [{ message: { content: "result text" } }],
           usage: { prompt_tokens: 10, completion_tokens: 5 },
-        }),
+        });
+      },
     });
     const events = await drain(
       adapter.startRun({ runId: "r", model: "gpt-test", systemPrompt: "s", userPrompt: "u" }).events,
     );
+    expect(requestBody.max_tokens).toBe(16_384);
     expect(events).toContainEqual({ type: "usage", inputTokens: 10, outputTokens: 5, costUsd: 0 });
     expect(events.at(-1)).toMatchObject({ type: "completed", resultText: "result text" });
+  });
+
+  it("falls back to reasoning_content when message content is empty", async () => {
+    let requestBody: Record<string, unknown> = {};
+    const adapter = new OpenAICompatibleAdapter("deepseek", {
+      baseUrl: "https://api.deepseek.example",
+      apiKey: "k",
+      fetchImpl: async (_url, init) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse(200, {
+          choices: [{ message: { content: "", reasoning_content: "```json\n{\"ok\":true}\n```" } }],
+          usage: { prompt_tokens: 3, completion_tokens: 9 },
+        });
+      },
+    });
+    const events = await drain(
+      adapter.startRun({
+        runId: "r",
+        model: "deepseek-v4-pro",
+        systemPrompt: "",
+        userPrompt: "plan",
+        maxOutputTokens: 16_384,
+      }).events,
+    );
+    expect(requestBody.max_tokens).toBe(16_384);
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      resultText: "```json\n{\"ok\":true}\n```",
+    });
   });
 
   it("normalizes 429 with retry-after", async () => {
