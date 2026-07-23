@@ -121,7 +121,9 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   `ensureConfinedDirectory`, which inspects every existing component with
   `lstat` and refuses outbound symlinks **before** creating any missing
   directory — so a redirected `.avity` cannot materialise paths outside the
-  repo) all flow through it.
+  repo) all flow through it. The runtime directory is added only to the local
+  `.git/info/exclude` (never the tracked `.gitignore`); symlinked Git metadata
+  is rejected before that private ignore is appended.
   Coding missions require a diff and real command exit evidence; missing checks
   cannot pass.
 - **Brain snapshot boundary** — the AI planning snapshot is built only from

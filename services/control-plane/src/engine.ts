@@ -14,6 +14,7 @@ import {
   changedFiles,
   commitAll,
   composeDependencyBaseline,
+  ensureRuntimeMetadataIgnored,
   git,
   isCleanWorkingTree,
   listWorktrees,
@@ -526,6 +527,10 @@ export class Engine {
     }
     const dependencyBranches = dependencies.map((dependency) => dependency!.branchName!);
     let baselineCommit = mission.baselineCommit;
+
+    // Keep the private worktree container invisible to normal repository
+    // status without changing the project's versioned ignore rules.
+    await ensureRuntimeMetadataIgnored(project.repoPath);
 
     // Confine the worktree location to <repo>/.avity/worktrees on canonical
     // paths. Rejects a persisted/redirected worktree path that escapes, and a
