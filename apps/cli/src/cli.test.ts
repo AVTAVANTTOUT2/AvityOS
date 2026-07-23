@@ -263,14 +263,20 @@ describe("avity CLI", () => {
       note: string;
     };
     expect(report.usesFakeFixtureOnly).toBe(true);
-    expect(report.readiness).toBe("incomplete");
+    expect(report.readiness).toBe("blocked_missing_tool");
     expect(report.scenarios).toHaveLength(10);
     const planning = report.scenarios.find((s) => s.key === "real_planning")!;
     expect(planning.status).toBe("blocked_missing_credentials");
     const merge = report.scenarios.find((s) => s.key === "no_autonomous_merge")!;
     expect(merge.status).toBe("ready");
     for (const scenario of report.scenarios) {
-      expect(["ready", "blocked_missing_credentials", "blocked_configuration"]).toContain(scenario.status);
+      expect([
+        "ready",
+        "blocked_operator_configuration",
+        "blocked_missing_tool",
+        "blocked_missing_credentials",
+        "blocked_product_gap",
+      ]).toContain(scenario.status);
     }
     expect(report.note).toMatch(/never guarantees/i);
   });

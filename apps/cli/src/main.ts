@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import type { E2EPreflightReport } from "@avityos/contracts";
 import { ApiError, Client, CONFIG_PATH, loadConfig, saveConfig } from "./client.js";
 
 /**
@@ -493,35 +494,29 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
 
   e2e: {
     preflight: async (ctx) => {
-      interface Report {
-        readiness: string;
-        usesFakeFixtureOnly: boolean;
-        realProviderCount: number;
-        readyCount: number;
-        blockedCount: number;
-        note: string;
-        github: {
-          gitAvailable: boolean;
-          ghAvailable: boolean;
-          credentialHintAvailable: boolean;
-          ghAuthenticated: boolean;
-          repositoryReadable: boolean;
-          repositoryPushDryRunSucceeded: boolean;
-          repositoryWriteRoleObserved: boolean;
-        };
-        scenarios: { key: string; title: string; status: string; detail: string; requires: string[] }[];
-      }
       const projectId = flag(ctx, "project");
       const path = projectId
         ? `/v1/e2e/preflight?projectId=${encodeURIComponent(projectId)}`
         : "/v1/e2e/preflight";
-      const report = await ctx.client.get<Report>(path);
-      out(ctx, report, (r: Report) => {
-        const rows = r.scenarios.map((s) => ({
-          scenario: s.key,
-          status: s.status,
-          detail: s.requires.length ? `${s.detail} (needs: ${s.requires.join(", ")})` : s.detail,
-        }));
+      const report = await ctx.client.get<E2EPreflightReport>(path);
+      out(ctx, report, (r: E2EPreflightReport) => {
+        const rows = r.scenarios.map((scenario) => {
+          const requirements = [
+            ...new Set(
+              scenario.reasons.flatMap((reason) => [
+                ...reason.tools,
+                ...reason.environmentVariables,
+              ]),
+            ),
+          ];
+          return {
+            scenario: scenario.key,
+            status: scenario.status,
+            detail: requirements.length
+              ? `${scenario.detail} (needs: ${requirements.join(", ")})`
+              : scenario.detail,
+          };
+        });
         return [
           `readiness: ${r.readiness} (${r.readyCount} ready, ${r.blockedCount} blocked)`,
           `real providers: ${r.realProviderCount}${r.usesFakeFixtureOnly ? " (fake fixture only)" : ""}`,

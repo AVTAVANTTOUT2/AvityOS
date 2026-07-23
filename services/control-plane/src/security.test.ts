@@ -305,7 +305,9 @@ describe("E2E preflight endpoint", () => {
       scenarios: { key: string; status: string }[];
     };
     expect(body.github.repositoryPushDryRunSucceeded).toBe(false);
-    expect(body.scenarios.find((s) => s.key === "branch_push")?.status).toBe("blocked_configuration");
+    expect(body.scenarios.find((s) => s.key === "branch_push")?.status).toBe(
+      "blocked_operator_configuration",
+    );
     expect(body.scenarios.find((s) => s.key === "draft_pull_request")?.status).not.toBe("ready");
   });
 });

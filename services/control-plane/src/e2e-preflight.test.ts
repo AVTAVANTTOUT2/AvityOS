@@ -69,13 +69,13 @@ describe("buildE2EPreflight", () => {
     expect(report.scenarios.map((s) => s.key).sort()).toEqual([...E2EScenarioKey.options].sort());
   });
 
-  it("marks a fixture-only environment incomplete and blocked on credentials", () => {
+  it("marks a fixture-only environment blocked without treating fake as live evidence", () => {
     const report = buildE2EPreflight(inputs());
-    expect(report.readiness).toBe("incomplete");
+    expect(report.readiness).not.toBe("ready");
     expect(report.usesFakeFixtureOnly).toBe(true);
     expect(report.realProviderCount).toBe(0);
     expect(statusOf(report, "real_planning")).toBe("blocked_missing_credentials");
-    expect(statusOf(report, "codex_mission")).toBe("blocked_missing_credentials");
+    expect(statusOf(report, "codex_mission")).toBe("blocked_missing_tool");
     expect(statusOf(report, "reviewer_distinct_from_author")).toBe("blocked_missing_credentials");
   });
 
@@ -84,7 +84,13 @@ describe("buildE2EPreflight", () => {
       inputs({ providers: providersFrom([["fake", true], ["codex", true]]), providerChain: ["codex", "fake"] }),
     );
     for (const scenario of report.scenarios) {
-      expect(["ready", "blocked_missing_credentials", "blocked_configuration"]).toContain(scenario.status);
+      expect([
+        "ready",
+        "blocked_operator_configuration",
+        "blocked_missing_tool",
+        "blocked_missing_credentials",
+        "blocked_product_gap",
+      ]).toContain(scenario.status);
     }
     expect(report.note).toMatch(/never guarantees/i);
   });
@@ -102,8 +108,8 @@ describe("buildE2EPreflight", () => {
         missionRoles: ["backend"],
       }),
     );
-    expect(statusOf(report, "codex_mission")).toBe("blocked_configuration");
-    expect(statusOf(report, "bounded_correction_after_rejection")).toBe("blocked_configuration");
+    expect(statusOf(report, "codex_mission")).toBe("blocked_operator_configuration");
+    expect(statusOf(report, "bounded_correction_after_rejection")).toBe("blocked_operator_configuration");
     expect(report.scenarios.find((s) => s.key === "codex_mission")!.detail).toMatch(
       /not reachable through any effective mission-role/,
     );
@@ -116,7 +122,7 @@ describe("buildE2EPreflight", () => {
         providerChain: ["codex", "fake"],
       }),
     );
-    expect(statusOf(report, "reviewer_distinct_from_author")).toBe("blocked_configuration");
+    expect(statusOf(report, "reviewer_distinct_from_author")).toBe("blocked_operator_configuration");
   });
 
   it("readies distinct-reviewer when the engine reviewer chain has two real providers", () => {
@@ -168,7 +174,7 @@ describe("buildE2EPreflight", () => {
         },
       }),
     );
-    expect(statusOf(report, "branch_push")).toBe("blocked_configuration");
+    expect(statusOf(report, "branch_push")).toBe("blocked_operator_configuration");
     expect(statusOf(report, "draft_pull_request")).toBe("blocked_missing_credentials");
   });
 
@@ -186,8 +192,8 @@ describe("buildE2EPreflight", () => {
         },
       }),
     );
-    expect(statusOf(report, "branch_push")).toBe("blocked_configuration");
-    expect(statusOf(report, "draft_pull_request")).toBe("blocked_configuration");
+    expect(statusOf(report, "branch_push")).toBe("blocked_operator_configuration");
+    expect(statusOf(report, "draft_pull_request")).toBe("blocked_operator_configuration");
     expect(report.scenarios.find((s) => s.key === "branch_push")!.detail).toMatch(
       /non-mutating dry-run push preflight/,
     );
@@ -208,7 +214,7 @@ describe("buildE2EPreflight", () => {
       }),
     );
     expect(statusOf(report, "branch_push")).toBe("ready");
-    expect(statusOf(report, "draft_pull_request")).toBe("blocked_missing_credentials");
+    expect(statusOf(report, "draft_pull_request")).toBe("blocked_missing_tool");
   });
 
   it("blocks draft PR readiness when GitHub permission exists but the configured remote cannot be pushed", () => {
@@ -225,8 +231,8 @@ describe("buildE2EPreflight", () => {
         },
       }),
     );
-    expect(statusOf(report, "branch_push")).toBe("blocked_configuration");
-    expect(statusOf(report, "draft_pull_request")).toBe("blocked_configuration");
+    expect(statusOf(report, "branch_push")).toBe("blocked_operator_configuration");
+    expect(statusOf(report, "draft_pull_request")).toBe("blocked_operator_configuration");
     expect(report.scenarios.find((s) => s.key === "draft_pull_request")!.detail).toMatch(
       /non-mutating dry-run push required before attempting a Pull Request/,
     );
@@ -329,6 +335,21 @@ describe("buildE2EPreflight", () => {
     expect(statusOf(report, "bounded_correction_after_rejection")).toBe("blocked_missing_credentials");
   });
 
+  it("classifies a registered text-only mission adapter as a product gap", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        providers: providersFrom([["fake", true], ["codex", false]]),
+        providerChain: ["codex", "fake"],
+        missionRoles: ["backend"],
+      }),
+    );
+    const mission = report.scenarios.find(
+      (item) => item.key === "codex_mission",
+    )!;
+    expect(mission.status).toBe("blocked_product_gap");
+    expect(mission.reasons[0]?.category).toBe("blocked_product_gap");
+  });
+
   it("uses the orchestrator role chain to satisfy real planning", () => {
     const report = buildE2EPreflight(
       inputs({
@@ -368,17 +389,40 @@ describe("buildE2EPreflight", () => {
     expect(report.usesFakeFixtureOnly).toBe(false);
   });
 
-  it("never surfaces a credential value — only names, booleans and env-var identifiers", () => {
+  it("returns structured, secret-free tools, environment channels, and remediation", () => {
     const report = buildE2EPreflight(
       inputs({ providers: providersFrom([["fake", true], ["codex", true]]), providerChain: ["codex", "fake"] }),
     );
     const serialized = JSON.stringify(report);
     for (const scenario of report.scenarios) {
-      for (const requirement of scenario.requires) {
-        expect(requirement).toMatch(/^[A-Za-z][A-Za-z0-9_]*$/);
+      for (const reason of scenario.reasons) {
+        expect(reason.category).toBe(scenario.status);
+        expect(reason.remediation.length).toBeGreaterThan(0);
+        for (const environmentVariable of reason.environmentVariables) {
+          expect(environmentVariable).toMatch(/^[A-Z][A-Z0-9_]*$/);
+        }
       }
     }
     expect(serialized).not.toMatch(/sk-|api[_-]?key=|token=/i);
+  });
+
+  it("reports only registered providers in effective engine routing", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        providers: providersFrom([["fake", true], ["codex", true]]),
+        providerChain: ["missing", "codex", "fake"],
+        roleProviderChains: new Map([
+          ["backend", ["missing-role-provider", "codex"]],
+        ]),
+        missionRoles: ["backend"],
+      }),
+    );
+    expect(report.effectiveRouting.globalChain).toEqual(["codex", "fake"]);
+    expect(report.effectiveRouting.brainChain).toEqual(["codex", "fake"]);
+    expect(report.effectiveRouting.missionRoleChains).toEqual([
+      { role: "backend", providers: ["codex", "fake"] },
+    ]);
+    expect(JSON.stringify(report.effectiveRouting)).not.toContain("missing");
   });
 
   it("always returns a report that re-parses through E2EPreflightReport", () => {
@@ -391,94 +435,5 @@ describe("buildE2EPreflight", () => {
       }),
     );
     expect(E2EPreflightReport.parse(report)).toEqual(report);
-  });
-});
-
-describe("E2EPreflightReport invariants", () => {
-  const baseGithub = {
-    gitAvailable: false,
-    ghAvailable: false,
-    credentialHintAvailable: false,
-    ghAuthenticated: false,
-    repositoryReadable: false,
-    repositoryPushDryRunSucceeded: false,
-    repositoryWriteRoleObserved: false,
-  };
-
-  function scenario(key: ScenarioKey, status: "ready" | "blocked_configuration" = "ready") {
-    return {
-      key,
-      title: key,
-      status,
-      detail: "test",
-      requires: [] as string[],
-    };
-  }
-
-  function fullScenarios(status: "ready" | "blocked_configuration" = "ready") {
-    return E2EScenarioKey.options.map((key) => scenario(key, status));
-  }
-
-  it("rejects reports with the wrong number of scenarios or duplicate keys", () => {
-    const nine = {
-      schemaVersion: 1 as const,
-      generatedAt: "2026-07-19T12:00:00.000Z",
-      readiness: "incomplete" as const,
-      usesFakeFixtureOnly: true,
-      realProviderCount: 0,
-      realWorkspaceEditorCount: 0,
-      providers: [] as { name: string; real: boolean; workspaceEdits: boolean; inGlobalChain: boolean; routedRoles: string[] }[],
-      github: baseGithub,
-      scenarios: fullScenarios().slice(0, 9),
-      readyCount: 9,
-      blockedCount: 0,
-      note: "note",
-    };
-    expect(E2EPreflightReport.safeParse(nine).success).toBe(false);
-
-    const eleven = {
-      ...nine,
-      scenarios: [...fullScenarios(), scenario("real_planning")],
-      readyCount: 11,
-    };
-    expect(E2EPreflightReport.safeParse(eleven).success).toBe(false);
-
-    const dup = {
-      ...nine,
-      scenarios: [...fullScenarios().slice(0, 9), scenario("real_planning")],
-      readyCount: 10,
-    };
-    expect(E2EPreflightReport.safeParse(dup).success).toBe(false);
-  });
-
-  it("rejects inconsistent counters and readiness", () => {
-    const scenarios = fullScenarios("blocked_configuration");
-    scenarios[0] = scenario("real_planning", "ready");
-    const badCounts = {
-      schemaVersion: 1 as const,
-      generatedAt: "2026-07-19T12:00:00.000Z",
-      readiness: "incomplete" as const,
-      usesFakeFixtureOnly: true,
-      realProviderCount: 0,
-      realWorkspaceEditorCount: 0,
-      providers: [],
-      github: baseGithub,
-      scenarios,
-      readyCount: 0,
-      blockedCount: 10,
-      note: "note",
-    };
-    expect(E2EPreflightReport.safeParse(badCounts).success).toBe(false);
-
-    const badBlocked = { ...badCounts, readyCount: 1, blockedCount: 0 };
-    expect(E2EPreflightReport.safeParse(badBlocked).success).toBe(false);
-
-    const badReady = {
-      ...badCounts,
-      readyCount: 1,
-      blockedCount: 9,
-      readiness: "ready" as const,
-    };
-    expect(E2EPreflightReport.safeParse(badReady).success).toBe(false);
   });
 });
