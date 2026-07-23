@@ -83,6 +83,20 @@ describe("avity CLI", () => {
     expect((await run("help")).code).toBe(0);
   });
 
+  it("rejects invalid --max-bytes values with usage errors", async () => {
+    const nanValue = await run("logs", "--max-bytes", "NaN");
+    expect(nanValue.code).toBe(2);
+    expect(nanValue.err).toContain("--max-bytes must be");
+
+    const negativeValue = await run("logs", "--max-bytes", "-1");
+    expect(negativeValue.code).toBe(2);
+    expect(negativeValue.err).toContain("--max-bytes must be");
+
+    const fractionalValue = await run("logs", "--max-bytes", "12.5");
+    expect(fractionalValue.code).toBe(2);
+    expect(fractionalValue.err).toContain("--max-bytes must be");
+  });
+
   it("doctor reports healthy environment", async () => {
     const { code, out } = await run("doctor");
     expect(code).toBe(0);

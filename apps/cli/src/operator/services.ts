@@ -1,8 +1,10 @@
-import { openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import type { OperatorPaths, OperatorServiceName, OperatorServicePaths } from "./paths.js";
 import { redactText } from "./redact.js";
 import { loadOperatorEnvironment } from "./setup.js";
+
+const DEFAULT_MAX_LOG_FILE_BYTES = 256 * 1024;
 
 export interface ServiceStatus {
   readonly state: "running" | "stopped" | "stale";
@@ -23,6 +25,7 @@ export interface ServiceLifecycleDependencies {
   readonly isPidRunning?: (pid: number) => boolean;
   readonly spawnDetached?: (service: OperatorServiceName, env: Record<string, string>) => SpawnResult;
   readonly terminatePid?: (pid: number) => Promise<boolean>;
+  readonly prepareLogFileForAppend?: (service: OperatorServiceName) => void;
 }
 
 function parsePid(path: string): number | null {
@@ -47,6 +50,26 @@ function defaultPidRunning(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+export function boundLogFileForAppend(logFilePath: string, maxBytes = DEFAULT_MAX_LOG_FILE_BYTES): void {
+  if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error(`invalid log size bound: ${maxBytes}`);
+  }
+  let size = 0;
+  try {
+    size = statSync(logFilePath).size;
+  } catch {
+    return;
+  }
+  if (size <= maxBytes) return;
+  try {
+    const content = readFileSync(logFilePath);
+    const bounded = content.subarray(content.length - maxBytes);
+    writeFileSync(logFilePath, bounded, { mode: 0o600 });
+  } catch {
+    throw new Error(`failed to bound log file before append: ${logFilePath}`);
   }
 }
 
@@ -102,6 +125,10 @@ export class OperatorServiceLifecycle {
       isPidRunning: deps.isPidRunning ?? defaultPidRunning,
       spawnDetached: deps.spawnDetached ?? ((service, env) => defaultSpawnDetached(this.paths, service, env)),
       terminatePid: deps.terminatePid ?? defaultTerminatePid,
+      prepareLogFileForAppend: deps.prepareLogFileForAppend ?? ((service) => {
+        const servicePaths = resolveService(this.paths, service);
+        boundLogFileForAppend(servicePaths.logFilePath);
+      }),
     };
   }
 
@@ -134,6 +161,7 @@ export class OperatorServiceLifecycle {
       if (service === "worker" && (!env.AVITY_WORKER_ID || !env.AVITY_WORKER_TOKEN)) {
         throw new Error("worker start blocked: persistent worker credentials are not configured yet (Task 4 boundary)");
       }
+      this.deps.prepareLogFileForAppend(service);
       const created = this.deps.spawnDetached(service, env);
       if (!created.pid) {
         throw new Error(`${service} failed to start`);

@@ -5,17 +5,19 @@ import { join } from "node:path";
 import { main } from "../main.js";
 import {
   ensureOperatorSetup,
+  readProtectedTokenFromFile,
   type SetupCommandRunner,
 } from "./setup.js";
 import { resolveOperatorPaths } from "./paths.js";
 import { redactValue } from "./redact.js";
-import { OperatorServiceLifecycle } from "./services.js";
+import { OperatorServiceLifecycle, boundLogFileForAppend } from "./services.js";
 import { collectDoctorReport } from "./diagnostics.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.AVITY_CONFIG;
   delete process.env.AVITY_DISABLE_KEYCHAIN;
+  delete process.env.AVITY_REPOSITORY_ROOT;
 });
 
 describe("operator setup", () => {
@@ -79,6 +81,56 @@ describe("operator diagnostics", () => {
       "control_plane",
     ]);
   });
+
+  it("blocks explicitly on unsupported host platform for sandbox", async () => {
+    const report = await collectDoctorReport({
+      commandProbe: async () => ({ ok: true, detail: "ok" }),
+      providerProbe: async () => ({
+        codex: { binary: true, auth: true },
+        claudeCode: { binary: true, auth: true },
+        cursorAgent: { binary: true, auth: true },
+      }),
+      serviceProbe: async () => ({ controlPlane: "running", web: "running", worker: "running" }),
+      apiProbe: async () => ({ health: true, providersStatus: true }),
+      nodeVersion: "22.6.0",
+      platform: "win32",
+    });
+
+    const sandboxCheck = report.checks.find((check) => check.id === "sandbox");
+    expect(report.readiness).toBe("blocked_operator_configuration");
+    expect(sandboxCheck?.ok).toBe(false);
+    expect(sandboxCheck?.detail).toContain("unsupported platform");
+  });
+
+  it("requires sandbox-exec on macOS and bwrap on Linux", async () => {
+    const baseDeps = {
+      commandProbe: async () => ({ ok: true, detail: "ok" }),
+      providerProbe: async () => ({
+        codex: { binary: true, auth: true },
+        claudeCode: { binary: true, auth: true },
+        cursorAgent: { binary: true, auth: true },
+      }),
+      serviceProbe: async () => ({ controlPlane: "running", web: "running", worker: "running" }) as const,
+      apiProbe: async () => ({ health: true, providersStatus: true }),
+      nodeVersion: "22.6.0",
+    };
+
+    const darwinBlocked = await collectDoctorReport({
+      ...baseDeps,
+      platform: "darwin",
+      sandboxBinaryProbe: async (binary) => ({ ok: false, detail: `${binary} missing` }),
+    });
+    const linuxReady = await collectDoctorReport({
+      ...baseDeps,
+      platform: "linux",
+      sandboxBinaryProbe: async (binary) => ({ ok: binary === "bwrap", detail: `${binary} available` }),
+    });
+
+    expect(darwinBlocked.readiness).toBe("blocked_operator_configuration");
+    expect(darwinBlocked.checks.find((check) => check.id === "sandbox")?.detail).toContain("sandbox-exec");
+    expect(linuxReady.readiness).toBe("ready");
+    expect(linuxReady.checks.find((check) => check.id === "sandbox")?.detail).toContain("bwrap");
+  });
 });
 
 describe("operator services", () => {
@@ -100,6 +152,50 @@ describe("operator services", () => {
     expect(before.controlPlane.state).toBe("stale");
     expect(logs).not.toContain("ghp_secret");
   });
+
+  it("bounds oversized log files deterministically before append", () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-operator-"));
+    const logPath = join(root, "service.log");
+    writeFileSync(logPath, "0123456789ABCDEFGHIJ", { mode: 0o600 });
+
+    boundLogFileForAppend(logPath, 8);
+
+    expect(readFileSync(logPath, "utf8")).toBe("CDEFGHIJ");
+  });
+
+  it("prepares bounded logs before spawning a service", async () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-operator-"));
+    const paths = resolveOperatorPaths({ repositoryRoot: root, operatorHome: join(root, ".operator") });
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+    writeFileSync(paths.operatorEnvPath, "AVITY_CONTROL_PLANE_URL=http://127.0.0.1:7717\n", { mode: 0o600 });
+    const prepareLogFileForAppend = vi.fn();
+    const spawnDetached = vi.fn(() => ({ pid: 12345 }));
+    const lifecycle = new OperatorServiceLifecycle(paths, {
+      isPidRunning: () => false,
+      spawnDetached,
+      terminatePid: async () => true,
+      prepareLogFileForAppend,
+    });
+
+    await lifecycle.start(["web"]);
+
+    expect(prepareLogFileForAppend).toHaveBeenCalledWith("web");
+    expect(spawnDetached).toHaveBeenCalledWith("web", expect.objectContaining({
+      AVITY_CONTROL_PLANE_URL: "http://127.0.0.1:7717",
+    }));
+  });
+});
+
+describe("operator token-file hardening", () => {
+  it("requires token file mode exactly 0600", () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-token-file-"));
+    const tokenPath = join(root, "token.txt");
+    writeFileSync(tokenPath, "secret-token\n", { mode: 0o700 });
+
+    expect(() => readProtectedTokenFromFile(tokenPath)).toThrow(/mode 0600/);
+  });
 });
 
 describe("login hardening", () => {
@@ -113,6 +209,27 @@ describe("login hardening", () => {
     expect(code).toBe(2);
     expect(errSpy.mock.calls.map((x) => x.join(" ")).join("\n")).toContain("stdin");
     expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("secret"));
+  });
+
+  it("warns with strict env parsing errors during token synchronization", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "avity-cli-login-"));
+    const repoRoot = mkdtempSync(join(tmpdir(), "avity-cli-repo-"));
+    const paths = resolveOperatorPaths({ repositoryRoot: repoRoot });
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    writeFileSync(paths.operatorEnvPath, "INVALID-LINE-WITHOUT-EQUALS\n", { mode: 0o600 });
+    const tokenFilePath = join(configDir, "token.txt");
+    writeFileSync(tokenFilePath, "sync-token-value\n", { mode: 0o600 });
+    process.env.AVITY_REPOSITORY_ROOT = repoRoot;
+    process.env.AVITY_CONFIG = join(configDir, "cli.json");
+    process.env.AVITY_DISABLE_KEYCHAIN = "1";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const code = await main(["login", "--url", "http://127.0.0.1:7717", "--token-file", tokenFilePath]);
+
+    expect(code).toBe(0);
+    const warning = warnSpy.mock.calls.map((x) => x.join(" ")).join("\n");
+    expect(warning).toContain("operator env sync skipped");
+    expect(warning).not.toContain("sync-token-value");
   });
 });
 

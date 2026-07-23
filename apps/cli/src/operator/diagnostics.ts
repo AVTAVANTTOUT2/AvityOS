@@ -49,12 +49,15 @@ export interface SandboxProbeResult {
   readonly detail: string;
 }
 
+type SandboxBinary = "sandbox-exec" | "bwrap";
+
 export interface DoctorDependencies {
   readonly commandProbe?: (tool: "node" | "pnpm" | "git" | "gh") => Promise<ToolProbeResult>;
   readonly providerProbe?: () => Promise<ProviderProbeResult>;
   readonly serviceProbe?: () => Promise<ServiceProbeResult>;
   readonly apiProbe?: () => Promise<ApiProbeResult>;
   readonly sandboxProbe?: () => Promise<SandboxProbeResult>;
+  readonly sandboxBinaryProbe?: (binary: SandboxBinary) => Promise<ToolProbeResult>;
   readonly nodeVersion?: string;
   readonly platform?: NodeJS.Platform;
 }
@@ -105,19 +108,48 @@ async function defaultApiProbe(): Promise<ApiProbeResult> {
   return { health: false, providersStatus: false };
 }
 
-async function defaultSandboxProbe(platform: NodeJS.Platform): Promise<SandboxProbeResult> {
+async function defaultSandboxBinaryProbe(binary: SandboxBinary): Promise<ToolProbeResult> {
+  try {
+    await execFileAsync(binary, ["--help"], { encoding: "utf8" });
+    return { ok: true, detail: `${binary} available` };
+  } catch (error) {
+    const probeError = error as NodeJS.ErrnoException & { code?: string | number };
+    if (probeError.code === "ENOENT") {
+      return { ok: false, detail: `${binary} not found` };
+    }
+    if (typeof probeError.code === "number") {
+      return { ok: true, detail: `${binary} available (exit ${probeError.code})` };
+    }
+    return { ok: false, detail: `${binary} probe failed (${String(probeError.code ?? "unknown")})` };
+  }
+}
+
+async function defaultSandboxProbe(
+  platform: NodeJS.Platform,
+  sandboxBinaryProbe: (binary: SandboxBinary) => Promise<ToolProbeResult>,
+): Promise<SandboxProbeResult> {
   if (platform === "darwin") {
-    const sandbox = await defaultCommandProbe("node");
+    const sandbox = await sandboxBinaryProbe("sandbox-exec");
     return {
-      ok: sandbox.ok && Boolean(process.env.PATH?.includes("/usr/bin")),
-      detail: sandbox.ok ? "sandbox-exec expected on macOS host" : "node missing",
+      ok: sandbox.ok,
+      detail: sandbox.ok
+        ? "sandbox-exec detected on macOS host"
+        : `sandbox-exec required on macOS host: ${sandbox.detail}`,
     };
   }
   if (platform === "linux") {
-    const bwrap = await defaultCommandProbe("git");
-    return { ok: bwrap.ok && Boolean(process.env.PATH), detail: bwrap.ok ? "bubblewrap expected on Linux host" : "git missing" };
+    const bwrap = await sandboxBinaryProbe("bwrap");
+    return {
+      ok: bwrap.ok,
+      detail: bwrap.ok
+        ? "bwrap detected on Linux host"
+        : `bwrap required on Linux host: ${bwrap.detail}`,
+    };
   }
-  return { ok: false, detail: `unsupported platform ${platform}` };
+  return {
+    ok: false,
+    detail: `unsupported platform ${platform}; supported platforms are darwin (sandbox-exec) and linux (bwrap)`,
+  };
 }
 
 function resolveReadiness(checks: readonly DoctorCheck[]): ReadinessState {
@@ -138,7 +170,8 @@ export async function collectDoctorReport(deps: DoctorDependencies = {}): Promis
   const apiProbe = deps.apiProbe ?? defaultApiProbe;
   const nodeVersion = deps.nodeVersion ?? process.versions.node;
   const platform = deps.platform ?? process.platform;
-  const sandboxProbe = deps.sandboxProbe ?? (() => defaultSandboxProbe(platform));
+  const sandboxBinaryProbe = deps.sandboxBinaryProbe ?? defaultSandboxBinaryProbe;
+  const sandboxProbe = deps.sandboxProbe ?? (() => defaultSandboxProbe(platform, sandboxBinaryProbe));
 
   const [node, pnpm, git, gh, sandbox, providers, services, api] = await Promise.all([
     Promise.resolve({ ok: compareVersions(nodeVersion, "22.5.0") >= 0, detail: nodeVersion }),

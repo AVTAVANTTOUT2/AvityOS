@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { E2EPreflightReport } from "@avityos/contracts";
 import { ApiError, Client, CONFIG_PATH, loadConfig, saveConfig } from "./client.js";
 import { collectDoctorReport } from "./operator/diagnostics.js";
+import { readEnvFile } from "./operator/env.js";
 import { resolveOperatorPaths, type OperatorServiceName } from "./operator/paths.js";
 import { redactText } from "./operator/redact.js";
 import { ensureOperatorSetup, mergeOperatorEnvironment, readProtectedTokenFromFile, saveOperatorEnvironment } from "./operator/setup.js";
@@ -73,6 +74,23 @@ function numberFlag(ctx: Ctx, name: string): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`--${name} must be a number`);
+  return parsed;
+}
+
+function boundedPositiveIntegerFlag(
+  ctx: Ctx,
+  name: string,
+  options: { readonly min: number; readonly max: number; readonly defaultValue: number },
+): number {
+  const value = flag(ctx, name);
+  if (value === undefined) return options.defaultValue;
+  if (!/^\d+$/.test(value)) {
+    throw new UsageError(`--${name} must be an integer between ${options.min} and ${options.max}`);
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < options.min || parsed > options.max) {
+    throw new UsageError(`--${name} must be an integer between ${options.min} and ${options.max}`);
+  }
   return parsed;
 }
 
@@ -152,7 +170,11 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
     if (!["control-plane", "web", "worker"].includes(service)) {
       throw new UsageError(`unknown service: ${service}`);
     }
-    const maxBytes = Number(flag(ctx, "max-bytes") ?? 16_384);
+    const maxBytes = boundedPositiveIntegerFlag(ctx, "max-bytes", {
+      min: 256,
+      max: 1_048_576,
+      defaultValue: 16_384,
+    });
     const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
     const lifecycle = new OperatorServiceLifecycle(paths);
     const output = lifecycle.readLogs(service, { maxBytes });
@@ -191,15 +213,11 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
     if (token) {
       const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
       try {
-        const operatorEnv = readFileSync(paths.operatorEnvPath, "utf8");
-        const parsed = operatorEnv.split(/\r?\n/).filter(Boolean).reduce<Record<string, string>>((acc, line) => {
-          const [key, ...rest] = line.split("=");
-          if (key) acc[key] = rest.join("=");
-          return acc;
-        }, {});
+        const parsed = readEnvFile(paths.operatorEnvPath);
         saveOperatorEnvironment(paths, mergeOperatorEnvironment(parsed, { AVITY_API_TOKEN: token }));
-      } catch {
-        // operator setup may not exist yet; CLI config remains source of truth.
+      } catch (error) {
+        const reason = redactText(error instanceof Error ? error.message : "unknown error");
+        console.warn(`warning: operator env sync skipped (${reason})`);
       }
     }
     console.log(`saved credentials to ${CONFIG_PATH}`);

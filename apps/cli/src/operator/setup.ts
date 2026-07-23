@@ -124,7 +124,7 @@ export function mergeOperatorEnvironment(
 
 export function readProtectedTokenFromFile(path: string): string {
   const mode = statSync(path).mode & 0o777;
-  if ((mode & 0o077) !== 0) {
+  if (mode !== 0o600) {
     throw new Error(`token file ${path} must have mode 0600`);
   }
   return readFileSync(path, "utf8").trim();
