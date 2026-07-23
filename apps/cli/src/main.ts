@@ -13,7 +13,97 @@ import { ensureOperatorSetup, mergeOperatorEnvironment, readProtectedTokenFromFi
 import { OperatorServiceLifecycle } from "./operator/services.js";
 import { createExternalLiveFixture } from "./operator/fixture.js";
 import { prepareLiveCampaign, runLiveCampaign } from "./operator/campaign.js";
-import { createCampaignReportWriter } from "./operator/campaign-report.js";
+import {
+  createCampaignReportWriter,
+  createCampaignStateStore,
+} from "./operator/campaign-report.js";
+
+interface ProviderStatusReasonView {
+  code: string;
+  category: string;
+  message: string;
+  tools: string[];
+  environmentVariables: string[];
+  remediation: string[];
+}
+
+interface ProviderStatusEntryView {
+  name: string;
+  kind: string;
+  real: boolean;
+  registered: boolean;
+  status: string;
+  reasons: ProviderStatusReasonView[];
+  workspaceEdits: boolean;
+  missionRoutable: boolean;
+  routedRoles: string[];
+}
+
+interface ProviderStatusCheckView {
+  key: string;
+  status: string;
+  detail: string;
+  reasons: ProviderStatusReasonView[];
+}
+
+interface ProviderStatusReportView {
+  schemaVersion: number;
+  generatedAt: string;
+  executionMode: string;
+  campaign: {
+    faultInjection: {
+      enabled: boolean;
+      provider: string | null;
+      category: string | null;
+    };
+  };
+  providers: ProviderStatusEntryView[];
+  checks: ProviderStatusCheckView[];
+  note: string;
+}
+
+function reasonCategory(
+  reasons: readonly ProviderStatusReasonView[],
+  code: string,
+): string {
+  return reasons.find((reason) => reason.code === code)?.category ?? "ready";
+}
+
+function formatProviderStatusHuman(report: ProviderStatusReportView): string {
+  const providerBlocks = report.providers.map((provider) => {
+    const binary = provider.kind === "cli"
+      ? reasonCategory(provider.reasons, "binary_missing")
+      : "n/a";
+    const auth = reasonCategory(provider.reasons, "auth_missing");
+    const sandbox = provider.kind === "cli"
+      ? (provider.registered ? "ready" : "blocked_missing_tool")
+      : "n/a";
+    return [
+      provider.name,
+      `  binary: ${binary}`,
+      `  sandbox: ${sandbox}`,
+      `  auth: ${auth}`,
+      `  workspace_edits: ${provider.workspaceEdits ? "yes" : "no"}`,
+      `  registered: ${provider.registered ? "yes" : "no"}`,
+      `  status: ${provider.status}`,
+      `  reachable_roles: ${provider.routedRoles.length ? provider.routedRoles.join(", ") : "(none)"}`,
+    ].join("\n");
+  });
+  const checks = report.checks.map((check) =>
+    `${check.key}: ${check.status} — ${check.detail}`
+  );
+  return [
+    `execution mode: ${report.executionMode}`,
+    `fault injection: ${report.campaign.faultInjection.enabled ? "enabled" : "disabled"}`,
+    "",
+    ...providerBlocks,
+    "",
+    "checks:",
+    ...checks,
+    "",
+    report.note,
+  ].join("\n");
+}
 
 /**
  * The `avity` CLI. Human output by default; pass --json anywhere for
@@ -709,10 +799,14 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       out(ctx, items, (rows: Record<string, unknown>[]) => table(rows, ["name", "healthy", "default"]));
     },
     status: async (ctx) => {
-      const { items } = await ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/providers");
-      out(ctx, items, (rows: Record<string, unknown>[]) =>
-        rows.map((r) => `${r.name}: ${r.healthy ? "healthy" : "unhealthy"}; models: ${(r.models as string[]).join(", ")}`).join("\n"),
-      );
+      const report = await ctx.client.get<ProviderStatusReportView>("/v1/providers/status");
+      out(ctx, report, (payload: ProviderStatusReportView) => formatProviderStatusHuman(payload));
+      if (
+        report.providers.some((provider) => provider.status !== "ready")
+        || report.checks.some((check) => check.status !== "ready")
+      ) {
+        throw new Error("provider status blocked: one or more providers or checks are not ready");
+      }
     },
   },
 
@@ -767,14 +861,21 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       }
       const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
       const reportWriter = createCampaignReportWriter({
+        operatorRoot: paths.rootDir,
         reportsDir: paths.reportsDir,
         repositoryRoot: paths.repositoryRoot,
         retentionCount: campaignRetentionCount(),
+      });
+      const stateStore = createCampaignStateStore({
+        operatorRoot: paths.rootDir,
+        reportsDir: paths.reportsDir,
+        repositoryRoot: paths.repositoryRoot,
       });
       const dependencies = {
         api: ctx.client,
         collectDoctor: () => collectCliDoctorReport(ctx.client),
         reportWriter,
+        stateStore,
         configuration: campaignConfiguration(),
         confirmProject: interactiveProjectConfirmation,
       };
@@ -929,6 +1030,7 @@ commands:
   run list [--project <id>] | logs <run-id> | pause|resume|cancel <mission-id>
   intervention list | answer <id> [key=answer...|--decision approved|rejected]
   provider list | status
+  providers status                      alias of provider status
   e2e preflight [--project <id>]        live E2E readiness (runnability only)
   e2e fixture create --path <path> [--remote <github-url>]
                                         create local external fixture repository
@@ -948,7 +1050,8 @@ export async function main(argv: string[]): Promise<number> {
     console.log(USAGE);
     return command ? 0 : 2;
   }
-  const entry = commands[command];
+  const commandName = command === "providers" ? "provider" : command;
+  const entry = commands[commandName];
   if (!entry) {
     console.error(`unknown command: ${command}\n\n${USAGE}`);
     return 2;
