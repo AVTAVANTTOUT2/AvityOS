@@ -27,6 +27,7 @@ export function decideFallback(ctx: FallbackContext): FallbackDecision {
   switch (ctx.category) {
     case "auth":
     case "policy_denied":
+    case "sandbox_unavailable":
     case "invalid_request":
       return {
         action: "escalate_user",

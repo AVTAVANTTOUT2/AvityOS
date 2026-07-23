@@ -613,4 +613,71 @@ describe("getCachedGitHubReadiness", () => {
       "git@github.com:acme/b.git",
     ]);
   });
+
+  it("evicts a rejected detection instead of replaying it for the whole TTL", async () => {
+    let attempts = 0;
+    // A runner that rejects (rather than returning success:false) on its first
+    // use and succeeds afterwards. detectGitHubReadiness normally swallows
+    // failures, but an injected runner that throws makes the returned promise
+    // reject, which must not be cached.
+    const run: CommandRunner = async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("transient detection failure");
+      }
+      return { success: true, stdout: "" };
+    };
+    const now = 5_000;
+    const target = {
+      repoPath: "/repo-flaky",
+      remoteUrl: "git@github.com:acme/flaky.git",
+    };
+
+    const first = getCachedGitHubReadiness(target, () => now, run);
+    await expect(first).rejects.toThrow("transient detection failure");
+
+    // The rejected promise must have been evicted, so a second call within the
+    // TTL runs a fresh detection instead of replaying the cached rejection.
+    const second = getCachedGitHubReadiness(target, () => now, run);
+    expect(second).not.toBe(first);
+    await expect(second).resolves.toMatchObject({ gitAvailable: true });
+  });
+
+  it("does not evict a newer detection when an older rejected promise settles", async () => {
+    const target = {
+      repoPath: "/repo-race",
+      remoteUrl: "git@github.com:acme/race.git",
+    };
+
+    let rejectFirst: (reason: unknown) => void = () => {};
+    const first = getCachedGitHubReadiness(
+      target,
+      () => 1_000,
+      () =>
+        new Promise<CommandResult>((_resolve, reject) => {
+          rejectFirst = reject;
+        }),
+    );
+
+    // A second detection after the TTL replaces the cache entry before the
+    // first promise rejects.
+    const second = getCachedGitHubReadiness(
+      target,
+      () => 1_000 + 30_001,
+      async () => ({ success: true, stdout: "" }),
+    );
+    expect(second).not.toBe(first);
+
+    // Now let the first (older, evicted) promise reject. Its eviction guard
+    // must leave the newer cached entry untouched.
+    rejectFirst(new Error("late failure"));
+    await expect(first).rejects.toThrow("late failure");
+    await second;
+
+    const third = getCachedGitHubReadiness(target, () => 1_000 + 30_001, async () => ({
+      success: true,
+      stdout: "",
+    }));
+    expect(third).toBe(second);
+  });
 });

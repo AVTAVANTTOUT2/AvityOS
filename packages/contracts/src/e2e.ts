@@ -201,5 +201,41 @@ export const E2EPreflightReport = z
         message: "readiness does not match scenario statuses",
       });
     }
+
+    // Provider counts are honesty signals: a real-provider count that does not
+    // match the provider list, or a duplicated provider name, could understate
+    // fixture-only usage or double-count a real adapter. Pin both to the array.
+    const actualRealProviderCount = report.providers.filter(
+      (provider) => provider.real,
+    ).length;
+
+    if (report.realProviderCount !== actualRealProviderCount) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["realProviderCount"],
+        message: "realProviderCount does not match providers",
+      });
+    }
+
+    const actualRealWorkspaceEditorCount = report.providers.filter(
+      (provider) => provider.real && provider.workspaceEdits,
+    ).length;
+
+    if (report.realWorkspaceEditorCount !== actualRealWorkspaceEditorCount) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["realWorkspaceEditorCount"],
+        message: "realWorkspaceEditorCount does not match providers",
+      });
+    }
+
+    const providerNames = report.providers.map((provider) => provider.name);
+    if (new Set(providerNames).size !== providerNames.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["providers"],
+        message: "provider names must be unique",
+      });
+    }
   });
 export type E2EPreflightReport = z.infer<typeof E2EPreflightReport>;

@@ -4,7 +4,7 @@ All AI execution flows through `ProviderAdapter` v1
 (`packages/providers/src/types.ts`): honest capabilities, model discovery,
 streamed run events, cancellation, usage, and a closed set of normalized
 failures (`auth`, quota/rate limit, network, invalid request, context,
-tool/agent/policy failure, unknown).
+tool/agent/policy failure, `sandbox_unavailable`, unknown).
 
 ## Runtime adapters
 
@@ -66,14 +66,30 @@ AvityOS OS sandbox** (`sandboxCommand`), whose boundary is **fail-closed**:
 | `command` | names in `AVITY_COMMAND_ENV_ALLOWLIST` | _(none)_ | Operator-defined allowlist only. |
 
 Missing required auth → `healthy() === false` and `startRun` emits
-`category: "auth"` with a clear message. Sandbox unavailable → normalized error,
-never ambient execution. There is **no** fallback to the real HOME.
+`category: "auth"` with a clear message. Sandbox unavailable →
+`category: "sandbox_unavailable"` (fail-closed, not retryable), never ambient
+execution and never a silent fallback to an unsandboxed spawn. There is **no**
+fallback to the real HOME.
+
+### Unit vs integration tests for the command adapter
+
+| Suite | Depends on Bubblewrap / `sandbox-exec`? | What it proves |
+| --- | --- | --- |
+| Hermetic unit (`providers.test.ts` — `command adapter (hermetic unit)`) | **No** — injects a test-only `SandboxLauncher` / `ProcessSpawner` | stdout/stderr, exit 0 / non-zero → `agent_crash`, timeout, cancel, env allowlist, credential retention, spawn failure, **no unsandboxed fallback**, deterministic `sandbox_unavailable` |
+| OS isolation integration (`command adapter sandbox isolation (integration)`) | **Yes** — skipped with an explicit reason when the primitive is absent | Real throwaway HOME, real-HOME read denial, write confinement, network deny |
+| CLI smoke | **Yes** when exercising binaries under sandbox | Binary can *start*; not auth proof |
+
+On Linux CI, Bubblewrap is installed and exercised before `pnpm -r test`
+(`.github/workflows/ci-linux.yml`). On macOS CI, `sandbox-exec` is expected from
+the runner image. A local Linux host without Bubblewrap must still pass the
+hermetic unit suite and must fail closed in production wiring.
 
 ### What tests actually prove
 
 | Claim | Evidence |
 | --- | --- |
-| Generic sandbox isolation (throwaway HOME, env allowlist, write confinement, default no network) | Unit tests using local probes (`printenv`, `sh`, `node`) — **not** a vendor CLI |
+| Generic sandbox isolation (throwaway HOME, env allowlist, write confinement, default no network) | Integration tests using local probes (`printenv`, `sh`, `node`) under the real OS sandbox — **not** a vendor CLI; skipped when the primitive is absent |
+| Hermetic command-adapter behaviour (exit codes, env filtering, timeout, cancel, sandbox_unavailable) | Unit tests with an injected sandbox/process double — no Bubblewrap/`sandbox-exec` required |
 | Fail-closed read boundary (real-HOME/`/tmp`/second-repo/external-file/cross-provider-cred reads denied by **content**; workspace + HOME reads allowed; declared `readablePaths` granted, adjacent sibling still denied) | `packages/policy` sandbox tests on `sandbox-exec` (macOS) and Bubblewrap (Linux) |
 | Per-provider auth policy construction / isolation | `cli-auth` + control-plane provider tests |
 | Binary can start under sandbox | Optional smoke: `codex`/`claude`/`cursor-agent`/`node` `--version` when installed; skipped with reason if missing |

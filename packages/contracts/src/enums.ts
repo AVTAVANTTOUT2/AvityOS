@@ -60,6 +60,12 @@ export const ProviderErrorCategory = z.enum([
   "tool_failure",
   "agent_crash",
   "policy_denied",
+  /**
+   * The host cannot provide the required OS sandbox primitive (`sandbox-exec`
+   * on macOS, Bubblewrap on Linux). Fail-closed: the CLI agent must not run
+   * with ambient authority. Not retryable.
+   */
+  "sandbox_unavailable",
   "unknown",
 ]);
 export type ProviderErrorCategory = z.infer<typeof ProviderErrorCategory>;
