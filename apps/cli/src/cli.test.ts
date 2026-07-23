@@ -311,6 +311,47 @@ describe("avity CLI", () => {
     expect(store.getProject(project.id)?.status).not.toBe("paused");
   });
 
+  it("requeues a blocked mission when run resume is requested", async () => {
+    const project = store.createProject({
+      name: "CLI mission resume",
+      description: "",
+      repoPath: null,
+      repoRemoteUrl: null,
+      autonomyProfile: "supervised",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "Retry after approval",
+      role: "backend",
+      contract: {
+        objective: "Retry the approved mission through the scheduler",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        acceptanceCriteria: ["mission is requeued"],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 60,
+        expectedArtifacts: [],
+        escalationConditions: [],
+      },
+      priority: 50,
+      dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "seed ready mission");
+    store.transitionMission(mission.id, "blocked", "operator approval required");
+
+    const resumed = await run("run", "resume", mission.id, "--json");
+
+    expect(resumed.code, resumed.err || resumed.out).toBe(0);
+    expect(JSON.parse(resumed.out)).toMatchObject({ id: mission.id, state: "ready" });
+  });
+
   it("surfaces API errors with exit code 1", async () => {
     const missing = await run("project", "show", "prj_does_not_exist");
     expect(missing.code).toBe(1);
