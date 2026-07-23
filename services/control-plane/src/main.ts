@@ -4,6 +4,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type ProviderAdapter } from "@avityos/providers";
+import {
+  applyCampaignFaultInjection,
+  resolveCampaignFault,
+  type CampaignFaultConfig,
+} from "./campaign-fault.js";
 import { openDatabase } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
 import {
@@ -13,6 +18,7 @@ import {
   resolveExecutionMode,
 } from "./provider-policy.js";
 import { buildProviders, parseModelMap, parseRoleProviderMap } from "./providers.js";
+import { buildProviderStatus } from "./provider-status.js";
 import { buildServer, DEFAULT_ALLOWED_ORIGINS } from "./server.js";
 import { Store } from "./store.js";
 
@@ -45,7 +51,7 @@ async function main(): Promise<void> {
   const store = new Store(db);
 
   const executionMode = resolveExecutionMode(process.env);
-  const providers: Map<string, ProviderAdapter> = buildProviders(process.env);
+  const baseProviders: Map<string, ProviderAdapter> = buildProviders(process.env);
 
   // Explicit chains are validated fail-closed: naming `fake` in production is a
   // hard error, never a silent drop. The implicit default only offers the
@@ -59,9 +65,9 @@ async function main(): Promise<void> {
   if (process.env.AVITY_PROVIDER_CHAIN) {
     const requested = process.env.AVITY_PROVIDER_CHAIN.split(",").map((s) => s.trim()).filter(Boolean);
     assertProviderChainAllowed(executionMode, requested);
-    providerChain = requested.filter((name) => providers.has(name));
+    providerChain = requested.filter((name) => baseProviders.has(name));
   } else {
-    providerChain = defaultChainOrder.filter((name) => providers.has(name));
+    providerChain = defaultChainOrder.filter((name) => baseProviders.has(name));
   }
 
   const defaultModels = parseModelMap(process.env.AVITY_DEFAULT_MODELS);
@@ -72,6 +78,16 @@ async function main(): Promise<void> {
     if (!reviewModels.has(FIXTURE_PROVIDER_ID)) reviewModels.set(FIXTURE_PROVIDER_ID, "fake:review-approve");
     if (!brainModels.has(FIXTURE_PROVIDER_ID)) brainModels.set(FIXTURE_PROVIDER_ID, "fake:plan");
   }
+
+  const campaignFault: CampaignFaultConfig | null = resolveCampaignFault(
+    process.env,
+    executionMode,
+    new Set(baseProviders.keys()),
+  );
+  const providers: Map<string, ProviderAdapter> = applyCampaignFaultInjection(
+    baseProviders,
+    campaignFault,
+  );
 
   const engine = new Engine(
     store,
@@ -93,6 +109,16 @@ async function main(): Promise<void> {
   );
   engine.start();
 
+  const providerStatus = buildProviderStatus({
+    env: process.env,
+    executionMode,
+    providers: engine.providers,
+    defaultModels,
+    reviewModels,
+    routing: engine.getProviderRoutingSnapshot(),
+    campaignFault,
+  });
+
   const allowedOrigins = process.env.AVITY_ALLOWED_ORIGINS
     ? process.env.AVITY_ALLOWED_ORIGINS.split(",").map((s) => s.trim())
     : [...DEFAULT_ALLOWED_ORIGINS];
@@ -103,6 +129,7 @@ async function main(): Promise<void> {
     version: VERSION,
     apiToken: loadOrCreateApiToken(),
     allowedOrigins,
+    providerStatus,
   });
 
   const shutdown = async () => {

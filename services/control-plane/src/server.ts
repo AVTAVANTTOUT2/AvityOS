@@ -24,6 +24,7 @@ import { realpathSync } from "node:fs";
 import { buildE2EPreflight } from "./e2e-preflight.js";
 import type { Engine } from "./engine.js";
 import { getCachedGitHubReadiness } from "./github-readiness.js";
+import type { ProviderStatusReport } from "./provider-status.js";
 import { ProjectValidationError, validateRepositoryConfiguration } from "./project-validation.js";
 import { newId, now, StoreConflictError, type Store } from "./store.js";
 
@@ -38,6 +39,8 @@ export interface ServerOptions {
   missionCommandPolicy?: CommandPolicy;
   /** Explicit browser-origin allowlist. Never use a wildcard in production. */
   allowedOrigins?: readonly string[];
+  /** Startup snapshot of provider readiness without vendor probes. */
+  providerStatus?: ProviderStatusReport;
 }
 
 /**
@@ -801,6 +804,13 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       });
     }
     return { items };
+  });
+
+  app.get("/v1/providers/status", async (_req, reply) => {
+    if (!opts.providerStatus) {
+      return apiError(reply, 503, "conflict", "provider status snapshot is not available");
+    }
+    return opts.providerStatus;
   });
 
   // Secret-free readiness preflight for the chantier-4 live E2E campaign.

@@ -14,6 +14,21 @@ import {
 import { TeamRole, type TeamRole as TeamRoleName } from "@avityos/contracts";
 import { fakeProviderAllowed, FIXTURE_PROVIDER_ID, resolveExecutionMode } from "./provider-policy.js";
 
+export const KNOWN_PROVIDER_IDS = [
+  "codex",
+  "claude-code",
+  "cursor",
+  "command",
+  "openai",
+  "anthropic",
+  "deepseek",
+  FIXTURE_PROVIDER_ID,
+] as const;
+
+export function parseModelList(value: string | undefined): string[] {
+  return (value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 /**
  * Runtime provider registration from environment configuration. Only
  * providers with credentials/config present are registered; the fake
@@ -47,8 +62,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
     providers.set(FIXTURE_PROVIDER_ID, new FakeProviderAdapter());
   }
 
-  const models = (value: string | undefined): string[] =>
-    (value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const models = parseModelList;
 
   if (env.OPENAI_API_KEY) {
     providers.set(
