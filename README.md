@@ -354,6 +354,7 @@ pnpm audit --audit-level high
 - [Security](docs/SECURITY.md) — trust model, controls and limitations
 - [Local development](docs/LOCAL-DEVELOPMENT.md) — environment and commands
 - [Live E2E campaign (operator)](docs/LIVE-E2E-CAMPAIGN.md) — real-provider campaign runbook
+- [Live E2E evidence (2026-07-23)](docs/LIVE-E2E-EVIDENCE-2026-07-23.md) — verified campaign results and remaining gaps
 - [Deployment](docs/DEPLOYMENT.md) and
   [backup/restore](docs/BACKUP-RESTORE.md) — operations
 - [Runbooks](docs/RUNBOOKS.md) — failure handling
