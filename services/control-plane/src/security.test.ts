@@ -270,7 +270,10 @@ describe("E2E preflight endpoint", () => {
           expect(args).not.toContain("origin");
           return { success: true, stdout: "" };
         }
-        if (command === "gh" && args.includes("--repo") && args.includes("acme/preflight-target")) {
+        if (
+          command === "gh" &&
+          args.slice(0, 3).join(" ") === "repo view acme/preflight-target"
+        ) {
           if (args.includes("viewerPermission")) {
             return { success: true, stdout: "WRITE\n" };
           }

@@ -147,7 +147,7 @@ export async function detectGitHubReadiness(
     repositoryReadable = (
       await run(
         "gh",
-        ["repo", "view", "--repo", repoSlug, "--json", "nameWithOwner"],
+        ["repo", "view", repoSlug, "--json", "nameWithOwner"],
         target.repoPath,
       )
     ).success;
@@ -157,7 +157,6 @@ export async function detectGitHubReadiness(
       [
         "repo",
         "view",
-        "--repo",
         repoSlug,
         "--json",
         "viewerPermission",
