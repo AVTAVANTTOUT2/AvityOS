@@ -35,6 +35,23 @@ export function normalizeHttpStatus(status: number, retryAfterHeader: string | n
   return { category: "unknown" };
 }
 
+async function readJsonResponse<T>(
+  response: Response,
+  signal: AbortSignal,
+): Promise<
+  | { state: "ok"; body: T }
+  | { state: "aborted" }
+  | { state: "failed"; error: unknown }
+> {
+  try {
+    return { state: "ok", body: await response.json() as T };
+  } catch (error) {
+    return signal.aborted
+      ? { state: "aborted" }
+      : { state: "failed", error };
+  }
+}
+
 /**
  * Adapter for OpenAI-compatible chat-completions APIs. Covers OpenAI itself
  * and DeepSeek (and any compatible endpoint) purely through configuration —
@@ -135,10 +152,20 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         return;
       }
 
-      const body = (await res.json()) as {
+      const parsed = await readJsonResponse<{
         choices?: { message?: { content?: string | null; reasoning_content?: string | null } }[];
         usage?: { prompt_tokens?: number; completion_tokens?: number };
-      };
+      }>(res, controller.signal);
+      if (parsed.state === "aborted") return;
+      if (parsed.state === "failed") {
+        yield {
+          type: "error",
+          category: "transient_network",
+          message: `response JSON failed: ${String(parsed.error)}`,
+        };
+        return;
+      }
+      const body = parsed.body;
       const message = body.choices?.[0]?.message;
       const content = message?.content?.trim() ? message.content : "";
       const reasoning = message?.reasoning_content?.trim() ? message.reasoning_content : "";
@@ -245,10 +272,20 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
         };
         return;
       }
-      const body = (await res.json()) as {
+      const parsed = await readJsonResponse<{
         output?: { type?: string; content?: { type?: string; text?: string }[] }[];
         usage?: { input_tokens?: number; output_tokens?: number };
-      };
+      }>(res, controller.signal);
+      if (parsed.state === "aborted") return;
+      if (parsed.state === "failed") {
+        yield {
+          type: "error",
+          category: "transient_network",
+          message: `response JSON failed: ${String(parsed.error)}`,
+        };
+        return;
+      }
+      const body = parsed.body;
       const text = (body.output ?? [])
         .flatMap((item) => item.content ?? [])
         .filter((content) => content.type === "output_text")
@@ -337,10 +374,20 @@ export class AnthropicAdapter implements ProviderAdapter {
         return;
       }
 
-      const body = (await res.json()) as {
+      const parsed = await readJsonResponse<{
         content?: { type: string; text?: string }[];
         usage?: { input_tokens?: number; output_tokens?: number };
-      };
+      }>(res, controller.signal);
+      if (parsed.state === "aborted") return;
+      if (parsed.state === "failed") {
+        yield {
+          type: "error",
+          category: "transient_network",
+          message: `response JSON failed: ${String(parsed.error)}`,
+        };
+        return;
+      }
+      const body = parsed.body;
       const text = (body.content ?? [])
         .filter((b) => b.type === "text")
         .map((b) => b.text ?? "")

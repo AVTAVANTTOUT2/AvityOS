@@ -432,6 +432,68 @@ describe("http error normalization", () => {
   });
 });
 
+describe("http adapter cancellation", () => {
+  it.each([
+    [
+      "OpenAI-compatible",
+      (fetchImpl: typeof fetch) => new OpenAICompatibleAdapter("compatible", {
+        baseUrl: "https://api.example/v1",
+        apiKey: "k",
+        fetchImpl,
+      }),
+    ],
+    [
+      "OpenAI Responses",
+      (fetchImpl: typeof fetch) => new OpenAIResponsesAdapter({
+        baseUrl: "https://api.example/v1",
+        apiKey: "k",
+        fetchImpl,
+      }),
+    ],
+    [
+      "Anthropic",
+      (fetchImpl: typeof fetch) => new AnthropicAdapter({
+        baseUrl: "https://api.example",
+        apiKey: "k",
+        fetchImpl,
+      }),
+    ],
+  ])("consumes an abort while %s is reading the response body", async (_name, createAdapter) => {
+    let bodyReadStarted!: () => void;
+    const bodyReading = new Promise<void>((resolve) => {
+      bodyReadStarted = resolve;
+    });
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => {
+        bodyReadStarted();
+        const signal = init?.signal;
+        await new Promise<never>((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    }) as Response) as typeof fetch;
+    const run = createAdapter(fetchImpl).startRun({
+      runId: "http-abort",
+      model: "model",
+      systemPrompt: "",
+      userPrompt: "",
+    });
+    const drained = drain(run.events);
+    await bodyReading;
+
+    await run.cancel();
+
+    await expect(drained).resolves.toEqual([]);
+  });
+});
+
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
