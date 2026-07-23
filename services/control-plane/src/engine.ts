@@ -2,7 +2,12 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { TeamRole, type Mission, type Project } from "@avityos/contracts";
+import {
+  TeamRole,
+  type Mission,
+  type Project,
+  type ProviderErrorCategory,
+} from "@avityos/contracts";
 import {
   decideCorrection,
   decideFallback,
@@ -38,12 +43,13 @@ import { BrainPipeline } from "./brain.js";
 import {
   effectiveBrainProviderChain,
   effectiveProviderChainForRole,
-  selectDistinctReviewerProvider,
+  reviewerProviderChain,
   uniqueProviderChain,
 } from "./provider-routing.js";
 import { StoreConflictError, type Store } from "./store.js";
 
 const execFileAsync = promisify(execFile);
+const REVIEW_BLOCK_REASON_PREFIX = "independent review unavailable:";
 
 export interface EngineConfig {
   maxConcurrentRuns: number;
@@ -1269,6 +1275,29 @@ export class Engine {
 
   // ── independent review ───────────────────────────────────────────────────
 
+  private blockIndependentReview(
+    mission: Mission,
+    category: string,
+    reason: string,
+    expectedPauseGeneration: number,
+  ): void {
+    const current = this.store.getMission(mission.id);
+    if (!current || current.state !== "review_required") return;
+    this.store.transitionMission(
+      mission.id,
+      "blocked",
+      `${REVIEW_BLOCK_REASON_PREFIX} ${reason}`,
+      "engine",
+      expectedPauseGeneration,
+    );
+    this.store.createApproval(
+      mission.projectId,
+      mission.id,
+      `Independent review blocked: ${category}`,
+      `${reason}. Fix the reviewer provider, then approve to retry independent review; reject to cancel the mission.`,
+    );
+  }
+
   /**
    * Genuine independent review: a separate reviewer run with a distinct
    * identity (dedicated review model; a different provider from the author
@@ -1297,18 +1326,20 @@ export class Engine {
     const authorProvider = authorRun?.providerId ?? this.defaultProvider;
     // Historical behaviour: reviewer selection uses the global chain only.
     const reviewChain = uniqueProviderChain(this.providerChain);
-    const reviewerProvider = selectDistinctReviewerProvider(
+    const reviewerProviders = reviewerProviderChain(
       reviewChain,
       new Set(this.providers.keys()),
       authorProvider,
     );
-    const adapter = this.providers.get(reviewerProvider);
-    if (!adapter) {
-      this.store.createApproval(project.id, missionId, "No reviewer available", "Configure a review provider.");
+    if (reviewerProviders.length === 0) {
+      this.blockIndependentReview(
+        mission,
+        "unavailable",
+        "no configured reviewer provider is available",
+        pauseGeneration,
+      );
       return;
     }
-    const reviewModel =
-      this.reviewModels.get(reviewerProvider) ?? this.defaultModels.get(reviewerProvider) ?? "default";
 
     let diff = "";
     if (mission.worktreePath && mission.branchName && project.repoPath) {
@@ -1324,89 +1355,210 @@ export class Engine {
     const checkpoints = this.store.listCheckpoints(missionId);
     const evidence = checkpoints.map((c) => `${c.kind}: ${c.status} (${c.detail.slice(0, 120)})`).join("\n");
 
-    const run = this.store.createRun({
-      projectId: project.id,
-      missionId,
-      providerId: reviewerProvider,
-      model: reviewModel,
-      expectedPauseGeneration: pauseGeneration,
-    });
-    this.store.transitionRun(run.id, "starting", {}, pauseGeneration);
-    this.store.appendRunLog(
-      run.id,
-      `independent review by ${reviewerProvider}/${reviewModel} (author: ${authorProvider})\n`,
-      pauseGeneration,
-    );
-
-    const handle = adapter.startRun({
-      runId: run.id,
-      model: reviewModel,
-      systemPrompt:
-        "You are an independent reviewer. You did not author this change. " +
-        "Verify the diff against the requirements and evidence. " +
-        "End your answer with exactly 'VERDICT: APPROVE' or 'VERDICT: REJECT'.",
-      userPrompt: [
-        `Mission: ${mission.title}`,
-        `Acceptance criteria:\n${mission.contract.acceptanceCriteria.join("\n") || "(from objective)"}`,
-        `Project brain:\n${formatBrainContext(this.store.listBrainEntries(project.id)) || "(no recorded decisions)"}`,
-        `Check evidence:\n${evidence || "(none)"}`,
-        `Diff:\n${diff || "(no file changes)"}`,
-      ].join("\n\n"),
-      ...(mission.worktreePath ? { cwd: mission.worktreePath } : {}),
-      ...(mission.worktreePath && project.repoPath
-        ? { sandboxReadablePaths: [project.repoPath] }
-        : {}),
-      timeoutMs: 300_000,
-    });
-    this.activeRuns.set(run.id, handle);
-    this.store.transitionRun(run.id, "running", {}, pauseGeneration);
-
     let resultText: string | null = null;
-    try {
-      for await (const ev of handle.events) {
-        if (this.fencePausedWork(project.id, missionId, "reviewer event", pauseGeneration)) break;
-        if (ev.type === "output") this.store.appendRunLog(run.id, ev.text, pauseGeneration);
-        if (ev.type === "usage") {
-          this.store.recordUsage({
-            projectId: project.id,
-            runId: run.id,
-            providerId: reviewerProvider,
-            model: reviewModel,
-            inputTokens: ev.inputTokens,
-            outputTokens: ev.outputTokens,
-            costUsd: ev.costUsd,
-            expectedPauseGeneration: pauseGeneration,
-          });
-        }
-        if (ev.type === "completed") resultText = ev.resultText;
-        if (ev.type === "error") {
-          this.store.appendRunLog(run.id, `review error(${ev.category}): ${ev.message}\n`, pauseGeneration);
-        }
-      }
-    } finally {
-      this.activeRuns.delete(run.id);
-    }
+    let reviewRunId: string | null = null;
+    let reviewerIdx = 0;
+    let attempt = 0;
 
-    if (this.stopped) return;
-    // Fence a reviewer that finished after the project was paused: its verdict
-    // must not create a checkpoint, approve or integrate the paused mission.
-    if (this.fencePausedWork(project.id, missionId, "late reviewer verdict", pauseGeneration)) {
-      if (["running", "starting"].includes(this.store.getRun(run.id)?.state ?? "")) {
-        this.store.transitionRun(run.id, "failed", { exitReason: "fenced: project paused during review" });
-      }
-      return;
-    }
+    while (resultText === null) {
+      if (this.stopped) return;
+      if (this.fencePausedWork(project.id, missionId, "review continuation", pauseGeneration)) return;
+      if (this.store.getMission(missionId)?.state !== "review_required") return;
 
-    if (resultText === null) {
-      this.store.transitionRun(run.id, "failed", { exitReason: "reviewer did not complete" }, pauseGeneration);
-      this.failValidation(
-        this.store.getMission(missionId)!,
-        "independent review run failed",
+      const reviewerProvider = reviewerProviders[reviewerIdx];
+      const adapter = reviewerProvider
+        ? this.providers.get(reviewerProvider)
+        : undefined;
+      if (!reviewerProvider || !adapter) {
+        this.blockIndependentReview(
+          mission,
+          "unavailable",
+          "no reviewer remains in the configured fallback chain",
+          pauseGeneration,
+        );
+        return;
+      }
+      const reviewModel =
+        this.reviewModels.get(reviewerProvider) ??
+        this.defaultModels.get(reviewerProvider) ??
+        "default";
+      const run = this.store.createRun({
+        projectId: project.id,
+        missionId,
+        providerId: reviewerProvider,
+        model: reviewModel,
+        expectedPauseGeneration: pauseGeneration,
+      });
+      this.store.transitionRun(run.id, "starting", {}, pauseGeneration);
+      this.store.appendRunLog(
+        run.id,
+        `independent review by ${reviewerProvider}/${reviewModel} (author: ${authorProvider})\n`,
         pauseGeneration,
       );
-      return;
+
+      const handle = adapter.startRun({
+        runId: run.id,
+        model: reviewModel,
+        systemPrompt:
+          "You are an independent reviewer. You did not author this change. " +
+          "Verify the diff against the requirements and evidence. " +
+          "End your answer with exactly 'VERDICT: APPROVE' or 'VERDICT: REJECT'.",
+        userPrompt: [
+          `Mission: ${mission.title}`,
+          `Acceptance criteria:\n${mission.contract.acceptanceCriteria.join("\n") || "(from objective)"}`,
+          `Project brain:\n${formatBrainContext(this.store.listBrainEntries(project.id)) || "(no recorded decisions)"}`,
+          `Check evidence:\n${evidence || "(none)"}`,
+          `Diff:\n${diff || "(no file changes)"}`,
+        ].join("\n\n"),
+        ...(mission.worktreePath ? { cwd: mission.worktreePath } : {}),
+        ...(mission.worktreePath && project.repoPath
+          ? { sandboxReadablePaths: [project.repoPath] }
+          : {}),
+        timeoutMs: 300_000,
+      });
+      this.activeRuns.set(run.id, handle);
+      this.store.transitionRun(run.id, "running", {}, pauseGeneration);
+
+      let outcome:
+        | { kind: "completed"; result: string }
+        | {
+            kind: "error";
+            category: ProviderErrorCategory;
+            retryAfterMs: number | null;
+          }
+        | null = null;
+      try {
+        for await (const ev of handle.events) {
+          if (this.fencePausedWork(project.id, missionId, "reviewer event", pauseGeneration)) break;
+          if (ev.type === "output") this.store.appendRunLog(run.id, ev.text, pauseGeneration);
+          if (ev.type === "usage") {
+            this.store.recordUsage({
+              projectId: project.id,
+              runId: run.id,
+              providerId: reviewerProvider,
+              model: reviewModel,
+              inputTokens: ev.inputTokens,
+              outputTokens: ev.outputTokens,
+              costUsd: ev.costUsd,
+              expectedPauseGeneration: pauseGeneration,
+            });
+          }
+          if (ev.type === "completed") {
+            outcome = { kind: "completed", result: ev.resultText };
+          }
+          if (ev.type === "error") {
+            outcome = {
+              kind: "error",
+              category: ev.category,
+              retryAfterMs: ev.retryAfterMs ?? null,
+            };
+            this.store.appendRunLog(
+              run.id,
+              `review error(${ev.category}): ${ev.message}\n`,
+              pauseGeneration,
+            );
+          }
+        }
+      } catch (err) {
+        outcome = {
+          kind: "error",
+          category: "agent_crash",
+          retryAfterMs: null,
+        };
+        this.store.appendRunLog(
+          run.id,
+          `review error(agent_crash): ${String(err).slice(0, 500)}\n`,
+          pauseGeneration,
+        );
+      } finally {
+        this.activeRuns.delete(run.id);
+      }
+
+      if (this.stopped) return;
+      // Fence a reviewer that finished after the project was paused: its
+      // verdict must not approve or integrate the paused mission.
+      if (this.fencePausedWork(project.id, missionId, "late reviewer verdict", pauseGeneration)) {
+        if (["running", "starting"].includes(this.store.getRun(run.id)?.state ?? "")) {
+          this.store.transitionRun(run.id, "failed", {
+            exitReason: "fenced: project paused during review",
+          });
+        }
+        return;
+      }
+
+      if (outcome?.kind === "completed") {
+        this.store.transitionRun(
+          run.id,
+          "succeeded",
+          { exitReason: "review completed" },
+          pauseGeneration,
+        );
+        resultText = outcome.result;
+        reviewRunId = run.id;
+        break;
+      }
+
+      const category = outcome?.kind === "error"
+        ? outcome.category
+        : "agent_crash";
+      this.store.transitionRun(
+        run.id,
+        "failed",
+        {
+          exitReason: "reviewer did not complete",
+          errorCategory: category,
+        },
+        pauseGeneration,
+      );
+      const decision = decideFallback({
+        category,
+        attempt,
+        maxRetries: this.config.maxProviderRetries,
+        retryAfterMs:
+          outcome?.kind === "error" ? outcome.retryAfterMs : null,
+        maxWaitMs: this.config.maxWaitMs,
+        // Reviewer identity is explicitly configured per provider. Do not
+        // silently substitute an arbitrary authoring model for review.
+        alternateModelsAvailable: false,
+        alternateProvidersAllowed:
+          this.config.allowProviderSwitch &&
+          reviewerIdx < reviewerProviders.length - 1,
+      });
+      this.store.appendEvent(
+        "provider.fallback",
+        { projectId: project.id, missionId, runId: run.id },
+        {
+          phase: "review",
+          provider: reviewerProvider,
+          category,
+          action: decision.action,
+          waitMs: decision.waitMs,
+          reason: decision.reason,
+        },
+      );
+
+      switch (decision.action) {
+        case "wait_for_reset":
+        case "retry_backoff":
+          attempt += 1;
+          await sleep(decision.waitMs);
+          continue;
+        case "switch_provider":
+          reviewerIdx += 1;
+          attempt = 0;
+          continue;
+        case "switch_model":
+        case "pause_lower_priority":
+        case "escalate_user":
+          this.blockIndependentReview(
+            mission,
+            category,
+            decision.reason,
+            pauseGeneration,
+          );
+          return;
+      }
     }
-    this.store.transitionRun(run.id, "succeeded", { exitReason: "review completed" }, pauseGeneration);
 
     const approved = /VERDICT:\s*APPROVE/i.test(resultText) && !/VERDICT:\s*REJECT/i.test(resultText);
     this.store.upsertCheckpoint(
@@ -1422,12 +1574,12 @@ export class Engine {
       approved ? "fact" : "risk",
       `Independent review: ${approved ? "approved" : "rejected"} — ${mission.title.slice(0, 60)}`,
       resultText.slice(0, 2000),
-      [`mission:${missionId}`, `run:${run.id}`],
+      [`mission:${missionId}`, `run:${reviewRunId}`],
       pauseGeneration,
     );
 
     if (approved) {
-      this.store.transitionMission(missionId, "approved", `independent review approved (run ${run.id})`, "engine", pauseGeneration);
+      this.store.transitionMission(missionId, "approved", `independent review approved (run ${reviewRunId})`, "engine", pauseGeneration);
       await this.integrateMission(missionId, pauseGeneration);
     } else {
       this.failValidation(
@@ -1496,7 +1648,16 @@ export class Engine {
     }
     if (approval.decision === "approved") {
       if (mission.state === "blocked") {
-        this.store.transitionMission(mission.id, "ready", "unblocked by user approval");
+        if (mission.stateReason?.startsWith(REVIEW_BLOCK_REASON_PREFIX)) {
+          this.store.transitionMission(
+            mission.id,
+            "review_required",
+            "independent review retry approved by user",
+          );
+          void this.reviewMission(mission.id);
+        } else {
+          this.store.transitionMission(mission.id, "ready", "unblocked by user approval");
+        }
       } else if (mission.state === "failed") {
         this.store.updateMissionMeta(mission.id, { correctionAttempts: 0 });
         this.store.transitionMission(mission.id, "retrying", "user granted more attempts");

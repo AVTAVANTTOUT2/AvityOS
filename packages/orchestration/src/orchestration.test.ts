@@ -83,6 +83,11 @@ describe("mission state machine", () => {
     expect(canTransitionMission("paused", "proposed")).toBe(true);
   });
 
+  it("can resume an independently validated result at review after a reviewer block", () => {
+    expect(canTransitionMission("review_required", "blocked")).toBe(true);
+    expect(canTransitionMission("blocked", "review_required")).toBe(true);
+  });
+
   it("every transition targets a declared state", () => {
     for (const targets of Object.values(MISSION_TRANSITIONS)) {
       for (const t of targets) expect(MissionState.options).toContain(t);
@@ -167,8 +172,21 @@ describe("fallback policy", () => {
     alternateProvidersAllowed: true,
   };
 
-  it("never retries auth, policy, or sandbox-unavailable errors", () => {
-    expect(decideFallback({ ...base, category: "auth" }).action).toBe("escalate_user");
+  it("switches provider immediately for auth without retrying the same provider", () => {
+    expect(decideFallback({ ...base, category: "auth" })).toMatchObject({
+      action: "switch_provider",
+      waitMs: 0,
+    });
+    expect(
+      decideFallback({
+        ...base,
+        category: "auth",
+        alternateProvidersAllowed: false,
+      }).action,
+    ).toBe("escalate_user");
+  });
+
+  it("never retries policy or sandbox-unavailable errors", () => {
     expect(decideFallback({ ...base, category: "policy_denied" }).action).toBe("escalate_user");
     expect(decideFallback({ ...base, category: "sandbox_unavailable" }).action).toBe(
       "escalate_user",

@@ -77,7 +77,10 @@ Missing required auth → `healthy() === false` and `startRun` emits
 `category: "auth"` with a clear message. Sandbox unavailable →
 `category: "sandbox_unavailable"` (fail-closed, not retryable), never ambient
 execution and never a silent fallback to an unsandboxed spawn. There is **no**
-fallback to the real HOME.
+fallback to the real HOME. An authentication error is never retried on the same
+provider or model; when an explicit provider fallback exists, the engine skips
+immediately to it. Without an allowed alternative, the mission blocks for the
+operator.
 
 ### Unit vs integration tests for the command adapter
 

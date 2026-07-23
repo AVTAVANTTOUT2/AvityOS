@@ -80,10 +80,28 @@ export function selectDistinctReviewerProvider(
   availableProviders: ReadonlySet<string>,
   authorProvider: string,
 ): string {
-  return (
-    chain.find(
-      (provider) =>
-        provider !== authorProvider && availableProviders.has(provider),
-    ) ?? authorProvider
+  return reviewerProviderChain(
+    chain,
+    availableProviders,
+    authorProvider,
+  )[0] ?? authorProvider;
+}
+
+/**
+ * Ordered reviewer fallback chain. Every configured provider distinct from the
+ * author is tried first; the author's provider is retained only as the final
+ * fallback (or the sole reviewer in a single-provider deployment).
+ */
+export function reviewerProviderChain(
+  chain: readonly string[],
+  availableProviders: ReadonlySet<string>,
+  authorProvider: string,
+): string[] {
+  const distinct = uniqueProviderChain(chain).filter(
+    (provider) =>
+      provider !== authorProvider && availableProviders.has(provider),
   );
+  return availableProviders.has(authorProvider)
+    ? [...distinct, authorProvider]
+    : distinct;
 }

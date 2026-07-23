@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   effectiveProviderChainForRole,
+  reviewerProviderChain,
   selectDistinctReviewerProvider,
   uniqueProviderChain,
 } from "./provider-routing.js";
@@ -45,5 +46,15 @@ describe("provider-routing", () => {
       "codex",
     );
     expect(selected).toBe("anthropic");
+  });
+
+  it("orders every distinct reviewer before the author fallback", () => {
+    expect(
+      reviewerProviderChain(
+        ["codex", "claude-code", "cursor", "claude-code"],
+        new Set(["codex", "claude-code", "cursor"]),
+        "codex",
+      ),
+    ).toEqual(["claude-code", "cursor", "codex"]);
   });
 });
