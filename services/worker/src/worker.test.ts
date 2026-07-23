@@ -149,6 +149,38 @@ describe("runner", () => {
     expect(state).toBe("succeeded");
     await rm(scratch, { recursive: true, force: true });
   });
+
+  it("runs package scripts through their sandboxed Node shebang runtime", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "avity-runner-npm-"));
+    await writeFile(
+      join(workspace, "package.json"),
+      JSON.stringify({
+        private: true,
+        scripts: {
+          check: "node -e \"process.stdout.write('npm-check-ok')\"",
+        },
+      }),
+    );
+    const output: string[] = [];
+    let state = "";
+    try {
+      const handle = runCommand(
+        ["npm", "run", "check"],
+        workspace,
+        {
+          onOutput: (text) => output.push(text),
+          onExit: (result) => {
+            state = result.state;
+          },
+        },
+      );
+      await handle.done;
+      expect(state, output.join("")).toBe("succeeded");
+      expect(output.join("")).toContain("npm-check-ok");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("worker <-> control plane integration", () => {
