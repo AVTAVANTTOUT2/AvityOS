@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:operator": "vitest run src/operator/operator.test.ts --no-file-parallelism"
   },
   "dependencies": {
     "@avityos/contracts": "workspace:*"

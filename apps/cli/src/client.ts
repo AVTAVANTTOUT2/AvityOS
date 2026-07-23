@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -57,7 +57,9 @@ export function saveConfig(config: CliConfig): void {
   const diskConfig = usesKeychain()
     ? { ...config, apiToken: undefined }
     : config;
-  writeFileSync(CONFIG_PATH, `${JSON.stringify(diskConfig, null, 2)}\n`, { mode: 0o600 });
+  const tmpPath = `${CONFIG_PATH}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmpPath, `${JSON.stringify(diskConfig, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmpPath, CONFIG_PATH);
   chmodSync(CONFIG_PATH, 0o600);
 }
 
