@@ -19,6 +19,7 @@ export const MISSION_TRANSITIONS: Readonly<Record<MissionState, readonly Mission
   integrated: ["completed", "failed", "paused"],
   completed: [],
   paused: [
+    "proposed",
     "ready",
     "assigned",
     "running",

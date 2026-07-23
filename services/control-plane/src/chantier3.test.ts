@@ -373,6 +373,63 @@ describe("chantier 3: atomic pause and resume", () => {
     expect(store.getProject(project.id)!.status).toBe("paused");
   });
 
+  it("preserves proposed dependency gates across pause and resume", async () => {
+    const project = store.createProject({
+      name: "Dependency pause",
+      description: "",
+      repoPath: null,
+      repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const contract = {
+      objective: "Preserve mission ordering across operator pauses",
+      rationale: "",
+      context: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      acceptanceCriteria: ["dependent work does not start early"],
+      requiredChecks: [],
+      checkCommands: {},
+      budgetUsd: null,
+      timeoutSeconds: 60,
+      expectedArtifacts: [],
+      escalationConditions: [],
+    };
+    const prerequisite = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "Prerequisite",
+      role: "backend",
+      contract,
+      priority: 60,
+      dependsOn: [],
+    });
+    const dependent = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "Dependent",
+      role: "qa",
+      contract,
+      priority: 50,
+      dependsOn: [prerequisite.id],
+    });
+    expect(store.getMission(dependent.id)!.state).toBe("proposed");
+
+    await engine.pauseProject(project.id, { reason: "operator checkpoint", actor: "test" });
+    expect(store.getMission(dependent.id)!.state).toBe("paused");
+    await engine.resumeProject(project.id, { actor: "test" });
+
+    expect(store.getMission(prerequisite.id)!.state).toBe("proposed");
+    expect(store.getMission(dependent.id)!.state).toBe("proposed");
+    expect(store.listDependencies(project.id)).toContainEqual({
+      missionId: dependent.id,
+      dependsOnMissionId: prerequisite.id,
+    });
+  });
+
   it("resumes once and treats a second resume as idempotent", async () => {
     const project = store.createProject({
       name: "Resume", description: "", repoPath: null, repoRemoteUrl: null, autonomyProfile: "supervised",
