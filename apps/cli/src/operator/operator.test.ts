@@ -18,6 +18,7 @@ afterEach(() => {
   delete process.env.AVITY_CONFIG;
   delete process.env.AVITY_DISABLE_KEYCHAIN;
   delete process.env.AVITY_REPOSITORY_ROOT;
+  delete process.env.AVITY_OPERATOR_HOME;
 });
 
 describe("operator setup", () => {
@@ -186,6 +187,50 @@ describe("operator services", () => {
       AVITY_CONTROL_PLANE_URL: "http://127.0.0.1:7717",
     }));
   });
+
+  it("start → status running → stop → status stopped for worker with credentials", async () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-operator-"));
+    const paths = resolveOperatorPaths({ repositoryRoot: root, operatorHome: join(root, ".operator") });
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      paths.operatorEnvPath,
+      [
+        "AVITY_CONTROL_PLANE_URL=http://127.0.0.1:7717",
+        "AVITY_API_TOKEN=test-api-token",
+        "AVITY_WORKER_ID=wrk_test",
+        "AVITY_WORKER_TOKEN=tok_test",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+
+    const livePids = new Set<number>();
+    let nextPid = 40_000;
+    const lifecycle = new OperatorServiceLifecycle(paths, {
+      isPidRunning: (pid) => livePids.has(pid),
+      spawnDetached: () => {
+        const pid = nextPid++;
+        livePids.add(pid);
+        return { pid };
+      },
+      terminatePid: async (pid) => {
+        livePids.delete(pid);
+        return true;
+      },
+    });
+
+    await lifecycle.start(["worker"]);
+    const started = await lifecycle.status();
+    expect(started.worker.state).toBe("running");
+    expect(started.worker.pid).toBeTypeOf("number");
+
+    await lifecycle.stop(["worker"]);
+    const stopped = await lifecycle.status();
+    expect(stopped.worker.state).toBe("stopped");
+    expect(stopped.worker.pid).toBeNull();
+  });
 });
 
 describe("operator token-file hardening", () => {
@@ -214,12 +259,14 @@ describe("login hardening", () => {
   it("warns with strict env parsing errors during token synchronization", async () => {
     const configDir = mkdtempSync(join(tmpdir(), "avity-cli-login-"));
     const repoRoot = mkdtempSync(join(tmpdir(), "avity-cli-repo-"));
-    const paths = resolveOperatorPaths({ repositoryRoot: repoRoot });
+    const operatorHome = join(repoRoot, ".operator");
+    const paths = resolveOperatorPaths({ repositoryRoot: repoRoot, operatorHome });
     mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
     writeFileSync(paths.operatorEnvPath, "INVALID-LINE-WITHOUT-EQUALS\n", { mode: 0o600 });
     const tokenFilePath = join(configDir, "token.txt");
     writeFileSync(tokenFilePath, "sync-token-value\n", { mode: 0o600 });
     process.env.AVITY_REPOSITORY_ROOT = repoRoot;
+    process.env.AVITY_OPERATOR_HOME = operatorHome;
     process.env.AVITY_CONFIG = join(configDir, "cli.json");
     process.env.AVITY_DISABLE_KEYCHAIN = "1";
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
