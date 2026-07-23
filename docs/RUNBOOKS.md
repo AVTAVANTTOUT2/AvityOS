@@ -1,5 +1,19 @@
 # Runbooks
 
+## Live E2E campaign blocked or failed
+
+1. Read the operator runbook: [LIVE-E2E-CAMPAIGN.md](./LIVE-E2E-CAMPAIGN.md).
+2. `avity doctor` — host tools, sandbox, provider binaries/auth.
+3. `avity provider status` — effective routing, reviewer/fallback gaps.
+4. `avity e2e preflight --project <id>` — per-scenario `ready` vs blocked.
+5. `avity e2e live prepare --project <id>` — archived report under
+   `~/.avity/operator/reports/`; no remote mutation.
+6. If `run` fails after confirmation, inspect `avity run logs <run_id>`,
+   `avity intervention list`, and service logs (`avity logs --service worker`).
+
+Remember: `ready` ≠ `passed`; never put secrets on the CLI; `fake` is forbidden
+in production/campaign evidence paths.
+
 ## Control plane won't start
 
 1. `node --version` — must be ≥ 22.5 (`node:sqlite`).

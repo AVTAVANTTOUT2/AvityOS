@@ -35,6 +35,19 @@ pnpm licenses:check # 446-package license policy on the current lock install
 gitleaks detect --source . --redact
 ```
 
+## Campagne live E2E (opérateur)
+
+Pour une campagne réelle avec providers authentifiés, dépôt fixture externe et
+GitHub (sans merge automatique), suivre le runbook dédié :
+
+- [docs/LIVE-E2E-CAMPAIGN.md](./LIVE-E2E-CAMPAIGN.md)
+
+Commandes clés : `avity setup`, `avity doctor`, `avity provider status`,
+`avity e2e preflight --project <id>`, `avity e2e live prepare|run --project <id>`.
+
+Rappel : `ready` signifie *runnable*, pas *passed* ; `prepare` est non mutant ;
+`run` exige une confirmation explicite du project id.
+
 ## Environment
 
 Copy `.env.example` if you need to override defaults; never commit values.

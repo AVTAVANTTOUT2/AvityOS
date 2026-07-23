@@ -232,6 +232,21 @@ A fixture-only environment reports `readiness: incomplete` and
 live run — it only tells the operator what a live campaign still needs.
 `ready` means the scenario can be attempted, never that it passed.
 
+### Operator campaign commands
+
+End-to-end operator flow (prepare is GET-only; run mutates after confirmation):
+
+```sh
+avity doctor
+avity provider status
+avity e2e preflight --project <id>
+avity e2e live prepare --project <id>
+avity e2e live run --project <id> [--confirm-project <id>]
+```
+
+Full golden-path checklist, troubleshooting, launchd setup, and credential
+placement: [LIVE-E2E-CAMPAIGN.md](./LIVE-E2E-CAMPAIGN.md).
+
 ## Adding a provider
 
 1. Implement `ProviderAdapter` and declare capabilities conservatively.
