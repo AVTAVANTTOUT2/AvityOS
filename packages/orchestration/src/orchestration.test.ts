@@ -78,6 +78,11 @@ describe("mission state machine", () => {
     expect(() => assertProjectTransition("archived", "paused")).toThrow(IllegalTransitionError);
   });
 
+  it("can restore a dependency-gated proposed mission after pause", () => {
+    expect(canTransitionMission("proposed", "paused")).toBe(true);
+    expect(canTransitionMission("paused", "proposed")).toBe(true);
+  });
+
   it("every transition targets a declared state", () => {
     for (const targets of Object.values(MISSION_TRANSITIONS)) {
       for (const t of targets) expect(MissionState.options).toContain(t);

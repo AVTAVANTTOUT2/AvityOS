@@ -2610,7 +2610,10 @@ function resumeMissionTarget(fromState: MissionState): MissionState {
     case "retrying":
       return "ready";
     case "proposed":
-      return "ready";
+      // A proposed mission may still be waiting on dependency completion.
+      // Restoring it as ready bypasses the scheduler's dependency gate after
+      // any project pause/resume cycle.
+      return "proposed";
     case "ready":
       return "ready";
     case "result_submitted":
