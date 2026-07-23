@@ -770,7 +770,9 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       out(ctx, items, (rows: { text: string }[]) => rows.map((r) => r.text).join(""));
     },
     pause: async (ctx) => missionTransition(ctx, "paused"),
-    resume: async (ctx) => missionTransition(ctx, "running"),
+    // Requeue through the scheduler so assignment and execution are not
+    // skipped. A direct `running` transition is also illegal from `blocked`.
+    resume: async (ctx) => missionTransition(ctx, "ready"),
     cancel: async (ctx) => missionTransition(ctx, "cancelled"),
   },
 
