@@ -13,7 +13,7 @@ import {
 } from "@avityos/git";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import { openDatabase, type DB } from "./db.js";
-import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
+import { DEFAULT_ENGINE_CONFIG, Engine, parseFinalReviewVerdict } from "./engine.js";
 import { Store } from "./store.js";
 
 /** node script used as a real check: AVITY.md must exist and be defect-free. */
@@ -84,6 +84,20 @@ async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
 let db: DB;
 let store: Store;
 let engine: Engine;
+
+describe("review verdict parsing", () => {
+  it("uses the final explicit verdict when provider output includes quoted instructions", () => {
+    expect(
+      parseFinalReviewVerdict(
+        "Instruction: end with VERDICT: APPROVE or VERDICT: REJECT.\nEvidence passes.\nVERDICT: APPROVE",
+      ),
+    ).toBe("approve");
+    expect(
+      parseFinalReviewVerdict("Initial thought: VERDICT: APPROVE\nFinding discovered.\nVERDICT: REJECT"),
+    ).toBe("reject");
+    expect(parseFinalReviewVerdict("No explicit decision")).toBeNull();
+  });
+});
 
 beforeEach(() => {
   db = openDatabase(":memory:");
