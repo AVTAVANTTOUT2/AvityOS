@@ -348,25 +348,30 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
           ),
   );
 
-  const effectiveChains = [
-    brainChain,
-    ...missionRoleChains.map((route) => route.providers),
-  ];
-  const hasCrossProviderFallback = effectiveChains.some((chain) => {
-    const realAvailableEditors = chain.filter(
-      (provider) =>
-        provider !== FIXTURE_PROVIDER &&
-        inputs.providers.get(provider)?.capabilities().workspaceEdits === true,
-    );
-    return new Set(realAvailableEditors).size >= 2;
-  });
+  const hasBrainFallback =
+    new Set(brainChain.filter((provider) => provider !== FIXTURE_PROVIDER))
+      .size >= 2;
+  const hasMissionFallback = missionRoleChains.some(
+    (route) =>
+      new Set(
+        route.providers.filter(
+          (provider) =>
+            provider !== FIXTURE_PROVIDER &&
+            inputs.providers.get(provider)?.capabilities().workspaceEdits ===
+              true,
+        ),
+      ).size >= 2,
+  );
+  const hasCrossProviderFallback = hasBrainFallback || hasMissionFallback;
 
   scenarios.push(
     hasCrossProviderFallback
       ? ready(
           "cross_provider_fallback",
           "Real cross-provider fallback",
-          "At least one effective brain or mission-role chain contains two registered real workspace editors.",
+          hasBrainFallback
+            ? "The effective brain chain contains at least two registered real reasoning providers."
+            : "An effective mission-role chain contains at least two registered real workspace editors.",
         )
       : realEditors.length >= 2
         ? blocked(

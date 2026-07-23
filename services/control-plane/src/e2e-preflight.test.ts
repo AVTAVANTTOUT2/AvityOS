@@ -374,6 +374,20 @@ describe("buildE2EPreflight", () => {
     );
   });
 
+  it("readies reasoning fallback with two registered text-only brain providers", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        providers: providersFrom([
+          ["fake", true],
+          ["anthropic", false],
+          ["openai", false],
+        ]),
+        providerChain: ["anthropic", "openai", "fake"],
+      }),
+    );
+    expect(statusOf(report, "cross_provider_fallback")).toBe("ready");
+  });
+
   it("keeps mission fallback blocked with one editor and one text-only provider", () => {
     const report = buildE2EPreflight(
       inputs({
@@ -382,7 +396,10 @@ describe("buildE2EPreflight", () => {
           ["codex", true],
           ["anthropic", false],
         ]),
-        providerChain: ["codex", "anthropic", "fake"],
+        providerChain: ["fake"],
+        roleProviderChains: new Map([
+          ["backend", ["codex", "anthropic"]],
+        ]),
         missionRoles: ["backend"],
       }),
     );

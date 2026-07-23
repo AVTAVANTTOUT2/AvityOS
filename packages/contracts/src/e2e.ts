@@ -515,14 +515,14 @@ export const E2EPreflightReport = z
     );
     rejectUnsupportedReadyClaim(
       "cross_provider_fallback",
-      [
-        report.effectiveRouting.brainChain,
-        ...missionChains,
-      ].some(
-        (chain) =>
-          new Set(chain.filter(isRealEditor)).size >= 2,
-      ),
-      "ready fallback requires two registered real workspace editors in one effective chain",
+      new Set(
+        report.effectiveRouting.brainChain.filter(isRealRegistered),
+      ).size >= 2 ||
+        missionChains.some(
+          (chain) =>
+            new Set(chain.filter(isRealEditor)).size >= 2,
+        ),
+      "ready fallback requires two real brain providers or two real workspace editors in one mission chain",
     );
     rejectUnsupportedReadyClaim(
       "branch_push",

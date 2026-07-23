@@ -421,27 +421,88 @@ describe("contracts", () => {
     ).toBe(false);
   });
 
-  it("rejects a ready fallback backed by only one real workspace editor", () => {
+  it("accepts reasoning fallback with two registered text-only providers in the brain chain", () => {
     const base = validPreflightReport();
-    const textOnlyProviders = base.providers.map((provider) =>
-      ["claude-code", "cursor", "anthropic"].includes(provider.name)
-        ? { ...provider, workspaceEdits: false }
-        : provider,
-    );
+    const providers = base.providers.map((provider) => ({
+      ...provider,
+      workspaceEdits: false,
+    }));
+    const blockedKeys = new Set<E2EScenarioKey>([
+      "codex_mission",
+      "claude_code_mission",
+      "cursor_mission",
+      "bounded_correction_after_rejection",
+    ]);
     const scenarios = base.scenarios.map((item) =>
-      item.key === "claude_code_mission" || item.key === "cursor_mission"
+      blockedKeys.has(item.key)
         ? scenario(item.key, "blocked_product_gap")
         : item,
     );
     expect(
       E2EPreflightReport.safeParse({
         ...base,
-        providers: textOnlyProviders,
-        realWorkspaceEditorCount: 1,
+        providers,
+        realWorkspaceEditorCount: 0,
         scenarios,
         readiness: "blocked_product_gap",
-        readyCount: 8,
-        blockedCount: 2,
+        readyCount: 6,
+        blockedCount: 4,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects mission fallback with one editor and one text-only provider", () => {
+    const base = validPreflightReport();
+    const providers = base.providers.map((provider) => {
+      if (provider.name === "codex") {
+        return {
+          ...provider,
+          inGlobalChain: false,
+          routedRoles: ["backend", "frontend", "orchestrator"],
+        };
+      }
+      if (provider.name === "anthropic") {
+        return {
+          ...provider,
+          workspaceEdits: false,
+          inGlobalChain: true,
+          routedRoles: ["backend", "frontend", "orchestrator"],
+        };
+      }
+      return {
+        ...provider,
+        workspaceEdits: false,
+        inGlobalChain: false,
+        routedRoles: [],
+      };
+    });
+    const scenarios = base.scenarios.map((item) =>
+      item.key === "claude_code_mission" || item.key === "cursor_mission"
+        ? scenario(item.key, "blocked_product_gap")
+        : item.key === "reviewer_distinct_from_author"
+          ? scenario(item.key, "blocked_operator_configuration")
+          : item,
+    );
+    expect(
+      E2EPreflightReport.safeParse({
+        ...base,
+        providers,
+        realWorkspaceEditorCount: 1,
+        effectiveRouting: {
+          globalChain: ["anthropic"],
+          brainChain: ["anthropic"],
+          reviewerChain: ["anthropic"],
+          missionRoleChains: base.effectiveRouting.missionRoleChains.map(
+            (route) => ({
+              ...route,
+              providers: ["codex", "anthropic"],
+            }),
+          ),
+        },
+        scenarios,
+        readiness: "blocked_product_gap",
+        readyCount: 7,
+        blockedCount: 3,
       }).success,
     ).toBe(false);
   });
