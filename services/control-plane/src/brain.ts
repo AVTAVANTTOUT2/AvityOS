@@ -702,6 +702,9 @@ export class BrainPipeline {
         userPrompt: prompts.userPrompt,
         ...(input.project.repoPath ? { cwd: input.project.repoPath } : {}),
         timeoutMs: this.config.stepTimeoutMs,
+        // Plan/architecture JSON is large; HTTP adapters default high, but make
+        // the brain intent explicit so reasoning models keep room for content.
+        maxOutputTokens: input.step === "plan" || input.step === "architecture" ? 16_384 : 8_192,
       });
       this.activeHandles.set(run.id, handle);
 

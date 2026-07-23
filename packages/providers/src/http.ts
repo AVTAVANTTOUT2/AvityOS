@@ -108,7 +108,9 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           },
           body: JSON.stringify({
             model: input.model,
-            max_tokens: input.maxOutputTokens ?? 4096,
+            // DeepSeek v4 reasoning models spend completion budget on
+            // reasoning_content; 4k frequently truncates the final JSON plan.
+            max_tokens: input.maxOutputTokens ?? 16_384,
             messages: [
               { role: "system", content: input.systemPrompt },
               { role: "user", content: input.userPrompt },
@@ -134,10 +136,15 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       }
 
       const body = (await res.json()) as {
-        choices?: { message?: { content?: string } }[];
+        choices?: { message?: { content?: string | null; reasoning_content?: string | null } }[];
         usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
-      const text = body.choices?.[0]?.message?.content ?? "";
+      const message = body.choices?.[0]?.message;
+      const content = message?.content?.trim() ? message.content : "";
+      const reasoning = message?.reasoning_content?.trim() ? message.reasoning_content : "";
+      // Prefer visible content; fall back to reasoning when the model only emits
+      // structured output inside reasoning_content (DeepSeek v4 reasoners).
+      const text = content || reasoning;
       yield { type: "output", text };
       yield {
         type: "usage",

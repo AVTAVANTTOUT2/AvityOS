@@ -72,10 +72,12 @@ class RecordingFake extends FakeProviderAdapter {
   readonly systemPrompts: string[] = [];
   readonly userPrompts: string[] = [];
   readonly workingDirectories: (string | undefined)[] = [];
+  readonly maxOutputTokens: (number | undefined)[] = [];
   override startRun(input: Parameters<FakeProviderAdapter["startRun"]>[0]) {
     this.systemPrompts.push(input.systemPrompt);
     this.userPrompts.push(input.userPrompt);
     this.workingDirectories.push(input.cwd);
+    this.maxOutputTokens.push(input.maxOutputTokens);
     return super.startRun(input);
   }
 }
@@ -156,6 +158,7 @@ describe("AI brain pipeline", () => {
       .filter(Boolean);
     expect(steps).toEqual(["analysis", "architecture", "plan"]);
     expect(recording.workingDirectories).toEqual([repo, repo, repo]);
+    expect(recording.maxOutputTokens).toEqual([8_192, 16_384, 16_384]);
     // the prompt carries the real repository snapshot, never its secrets
     expect(recording.userPrompts[0]).toContain("README.md");
     expect(recording.userPrompts.join()).not.toContain("do-not-leak-me");
