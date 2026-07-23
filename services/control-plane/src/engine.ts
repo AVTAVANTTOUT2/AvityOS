@@ -606,7 +606,11 @@ export class Engine {
     );
     const eligibleProviders = orderedProviderChain.filter((name) => {
       const adapter = this.providers.get(name);
-      return adapter && (!worktreePath || adapter.capabilities().workspaceEdits);
+      return adapter && (
+        !worktreePath ||
+        mission.contract.workspaceChangesRequired === false ||
+        adapter.capabilities().workspaceEdits
+      );
     });
     if (eligibleProviders.length === 0) {
       this.store.transitionMission(
@@ -852,15 +856,33 @@ export class Engine {
     }
 
     // 1) path-scope enforcement on actual changed files
+    let changedFilesForMission: string[] = [];
     if (mission.worktreePath && mission.branchName && project.repoPath) {
-      const changed = await worktreeChangedFiles(mission.worktreePath, project.repoPath, project.defaultBranch, mission.branchName);
+      changedFilesForMission = await worktreeChangedFiles(
+        mission.worktreePath,
+        project.repoPath,
+        project.defaultBranch,
+        mission.branchName,
+      );
       if (this.fencePausedWork(project.id, missionId, "validation path scan", pauseGeneration)) return;
-      if ((mission.contract.workspaceChangesRequired ?? true) && changed.length === 0) {
+      if ((mission.contract.workspaceChangesRequired ?? true) && changedFilesForMission.length === 0) {
         this.store.upsertCheckpoint(project.id, missionId, "policy", "failed", "coding mission produced no file changes", pauseGeneration);
         this.failValidation(mission, "validation failed: coding mission produced no file changes", pauseGeneration);
         return;
       }
-      for (const file of changed) {
+      if (mission.contract.workspaceChangesRequired === false && changedFilesForMission.length > 0) {
+        const detail = `read-only mission modified ${changedFilesForMission.length} file(s)`;
+        this.store.upsertCheckpoint(project.id, missionId, "policy", "failed", detail, pauseGeneration);
+        this.store.appendAudit(
+          project.id,
+          "policy",
+          "mission.read_only_violation",
+          `${missionId}: ${changedFilesForMission.join(", ")}`,
+        );
+        this.failValidation(mission, `validation failed: ${detail}`, pauseGeneration);
+        return;
+      }
+      for (const file of changedFilesForMission) {
         const verdict = isPathAllowed(
           mission.worktreePath,
           mission.contract.allowedPaths,
@@ -879,7 +901,9 @@ export class Engine {
         missionId,
         "policy",
         "passed",
-        changed.length ? `${changed.length} changed file(s) within contract paths` : "no file changes",
+        changedFilesForMission.length
+          ? `${changedFilesForMission.length} changed file(s) within contract paths`
+          : "no file changes",
         pauseGeneration,
       );
 
@@ -967,7 +991,7 @@ export class Engine {
           });
           this.store.appendAudit(project.id, "engine", "git.commit", `${missionId}: ${commit}`);
         }
-        if (project.repoRemoteUrl) {
+        if (changedFilesForMission.length > 0 && project.repoRemoteUrl) {
           try {
             const published = await publishGitHubPullRequest({
               repoPath: project.repoPath,
@@ -1005,7 +1029,7 @@ export class Engine {
             );
             return;
           }
-        } else {
+        } else if (changedFilesForMission.length > 0) {
           this.store.upsertPullRequest({
             projectId: project.id,
             missionId,
@@ -1519,10 +1543,15 @@ function buildSystemPrompt(
     `Forbidden paths: ${mission.contract.forbiddenPaths.join(", ") || "none"}`,
     `Required checks: ${mission.contract.requiredChecks.join(", ") || "repository policy checks"}`,
     `Expected artifacts: ${mission.contract.expectedArtifacts.join(", ") || "none declared"}`,
+    mission.contract.workspaceChangesRequired === false
+      ? "This is a read-only mission. Do not create, modify, delete, stage, or commit repository files."
+      : "Repository file changes are required. The mission fails if it produces no scoped diff.",
     `Project brain (durable decisions, risks and prior evidence):\n${formatBrainContext(brain) || "(empty)"}`,
     ...mission.contract.context.map((entry) => `Context: ${entry}`),
     "Work only inside the provided working directory.",
-    "Inspect the repository and its architecture rules before editing. Keep the worktree clean and make only mission-scoped changes.",
+    mission.contract.workspaceChangesRequired === false
+      ? "Inspect the repository and its architecture rules without altering the worktree."
+      : "Inspect the repository and its architecture rules before editing. Keep the worktree clean and make only mission-scoped changes.",
     "Produce a complete, verifiable result. Do not claim completion without evidence.",
   ].join("\n");
 }

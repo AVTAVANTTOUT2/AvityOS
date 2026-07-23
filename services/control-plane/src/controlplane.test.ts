@@ -395,6 +395,82 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     expect(store.verifyAuditChain()).toBe(true);
   });
 
+  it("reviews a read-only repository mission without creating a commit or pull request", async () => {
+    const project = store.createProject({
+      name: "ReadOnly", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Inspect the repository baseline", role: "qa",
+      contract: {
+        objective: "Inspect the repository without modifying it",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: ["**/.env", "**/secrets/**"],
+        acceptanceCriteria: ["the repository baseline was inspected"],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 120,
+        expectedArtifacts: [],
+        workspaceChangesRequired: false,
+      },
+      priority: 50, dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+
+    expect(store.getMission(mission.id)!.state).toBe("completed");
+    expect(
+      store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "policy")?.detail,
+    ).toBe("no file changes");
+    expect(
+      await git(repo, "rev-list", "--count", `main..${store.getMission(mission.id)!.branchName}`),
+    ).toBe("0\n");
+    expect(store.listPullRequests(project.id)).toHaveLength(0);
+  });
+
+  it("rejects repository edits made by a read-only mission", async () => {
+    ({ store, engine } = makeEngine(db, "fake:code"));
+    const project = store.createProject({
+      name: "ReadOnlyViolation", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Inspect without edits", role: "qa",
+      contract: {
+        objective: "Inspect the repository without modifying it",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        acceptanceCriteria: ["inspection only"],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 120,
+        expectedArtifacts: [],
+        workspaceChangesRequired: false,
+      },
+      priority: 50, dependsOn: [], maxCorrectionAttempts: 0,
+    });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+    await engine.executeMission(mission.id);
+
+    expect(store.getMission(mission.id)!.state).toBe("failed");
+    expect(
+      store.listCheckpoints(mission.id).find((checkpoint) => checkpoint.kind === "policy")?.detail,
+    ).toContain("read-only mission modified");
+    expect(store.listPullRequests(project.id)).toHaveLength(0);
+  });
+
   it("blocks a mission whose .avity/worktrees is redirected outside the repo via a symlink", async () => {
     ({ store, engine } = makeEngine(db, "fake:code"));
     // Redirect <repo>/.avity/worktrees to an external directory before any run.
