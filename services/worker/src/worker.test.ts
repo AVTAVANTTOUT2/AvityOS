@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -361,6 +361,80 @@ describe("worker credential persistence", () => {
       expect(output).not.toContain("tok_should_not_leak");
       expect(output).not.toContain("AVITY_WORKER_TOKEN");
       expect(fileContent).toContain("tok_should_not_leak");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when credentials file contains invalid JSON", async () => {
+    let enrollCalls = 0;
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-invalid-json-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      await writeFile(credentialsPath, "{not-json", { mode: CREDENTIAL_FILE_MODE });
+      await expect(() =>
+        resolveWorkerCredentials(
+          { workerId: undefined, workerToken: undefined, credentialsPath },
+          {
+            enroll: async () => {
+              enrollCalls += 1;
+              return { id: "wrk_should_not_enroll", token: "tok_should_not_enroll" };
+            },
+          },
+          () => undefined,
+        ),
+      ).rejects.toThrow(new RegExp(`credentials file .*${credentialsPath}`));
+      expect(enrollCalls).toBe(0);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when credentials file schema is incomplete", async () => {
+    let enrollCalls = 0;
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-invalid-schema-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      await writeFile(credentialsPath, `${JSON.stringify({ workerId: "wrk_only_id" })}\n`, { mode: CREDENTIAL_FILE_MODE });
+      await expect(() =>
+        resolveWorkerCredentials(
+          { workerId: undefined, workerToken: undefined, credentialsPath },
+          {
+            enroll: async () => {
+              enrollCalls += 1;
+              return { id: "wrk_should_not_enroll", token: "tok_should_not_enroll" };
+            },
+          },
+          () => undefined,
+        ),
+      ).rejects.toThrow(new RegExp(`credentials file .*${credentialsPath}`));
+      expect(enrollCalls).toBe(0);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when credentials file permissions are not owner-only", async () => {
+    let enrollCalls = 0;
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-unsafe-mode-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      await writeFile(credentialsPath, `${JSON.stringify({ workerId: "wrk_mode", workerToken: "tok_mode" })}\n`, { mode: CREDENTIAL_FILE_MODE });
+      await chmod(credentialsPath, 0o644);
+
+      await expect(() =>
+        resolveWorkerCredentials(
+          { workerId: undefined, workerToken: undefined, credentialsPath },
+          {
+            enroll: async () => {
+              enrollCalls += 1;
+              return { id: "wrk_should_not_enroll", token: "tok_should_not_enroll" };
+            },
+          },
+          () => undefined,
+        ),
+      ).rejects.toThrow(new RegExp(`credentials file .*${credentialsPath}`));
+      expect(enrollCalls).toBe(0);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

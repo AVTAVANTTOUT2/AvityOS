@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { runCommand, type RunnerHandle } from "./runner.js";
 
 export interface WorkerConfig {
@@ -42,6 +42,21 @@ interface Lease {
 
 export const CREDENTIAL_FILE_MODE = 0o600;
 
+export class WorkerCredentialsFileError extends Error {
+  constructor(
+    readonly credentialsPath: string,
+    readonly reason: "invalid_json" | "invalid_schema" | "unsafe_permissions",
+    detail: string,
+  ) {
+    super(`invalid worker credentials file at ${credentialsPath}: ${detail}`);
+    this.name = "WorkerCredentialsFileError";
+  }
+}
+
+function formatOctal(mode: number): string {
+  return `0o${mode.toString(8).padStart(3, "0")}`;
+}
+
 export function createEnrollmentMessages(workerId: string, credentialsPath?: string): string[] {
   if (credentialsPath) {
     return [`enrolled as ${workerId}`, `worker credentials stored at ${credentialsPath}`];
@@ -51,12 +66,43 @@ export function createEnrollmentMessages(workerId: string, credentialsPath?: str
 
 export async function loadWorkerCredentialsFromFile(credentialsPath: string): Promise<WorkerCredentials | null> {
   try {
+    const fileMode = (await stat(credentialsPath)).mode & 0o777;
+    if (fileMode !== CREDENTIAL_FILE_MODE) {
+      throw new WorkerCredentialsFileError(
+        credentialsPath,
+        "unsafe_permissions",
+        `expected permissions ${formatOctal(CREDENTIAL_FILE_MODE)} but found ${formatOctal(fileMode)}; fix with chmod 600`,
+      );
+    }
+
     const raw = await readFile(credentialsPath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<WorkerCredentials>;
-    if (typeof parsed.workerId !== "string" || parsed.workerId.length === 0) return null;
-    if (typeof parsed.workerToken !== "string" || parsed.workerToken.length === 0) return null;
+    let parsed: Partial<WorkerCredentials>;
+    try {
+      parsed = JSON.parse(raw) as Partial<WorkerCredentials>;
+    } catch {
+      throw new WorkerCredentialsFileError(
+        credentialsPath,
+        "invalid_json",
+        "invalid JSON payload; rewrite the file with a valid enrollment record",
+      );
+    }
+    if (typeof parsed.workerId !== "string" || parsed.workerId.length === 0) {
+      throw new WorkerCredentialsFileError(
+        credentialsPath,
+        "invalid_schema",
+        "missing non-empty workerId field",
+      );
+    }
+    if (typeof parsed.workerToken !== "string" || parsed.workerToken.length === 0) {
+      throw new WorkerCredentialsFileError(
+        credentialsPath,
+        "invalid_schema",
+        "missing non-empty workerToken field",
+      );
+    }
     return { workerId: parsed.workerId, workerToken: parsed.workerToken };
   } catch (error) {
+    if (error instanceof WorkerCredentialsFileError) throw error;
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
