@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { WorkerAgent } from "./agent.js";
+import { resolveWorkerCredentials, WorkerAgent } from "./agent.js";
 
 async function main(): Promise<void> {
   const config = {
@@ -8,6 +8,7 @@ async function main(): Promise<void> {
     pollMs: Number(process.env.AVITY_WORKER_POLL_MS ?? 1000),
     capabilities: (process.env.AVITY_WORKER_CAPABILITIES ?? "shell,git,node").split(","),
     maxConcurrentRuns: Number(process.env.AVITY_WORKER_MAX_CONCURRENT_RUNS ?? 4),
+    credentialsPath: process.env.AVITY_WORKER_CREDENTIALS_PATH,
     ...(process.env.AVITY_API_TOKEN ? { apiToken: process.env.AVITY_API_TOKEN } : {}),
     ...(process.env.AVITY_WORKER_ID ? { workerId: process.env.AVITY_WORKER_ID } : {}),
     ...(process.env.AVITY_WORKER_TOKEN ? { workerToken: process.env.AVITY_WORKER_TOKEN } : {}),
@@ -25,18 +26,27 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const agent = new WorkerAgent(config);
-  if (!config.workerId || !config.workerToken) {
-    const { id, token } = await agent.enroll();
-    console.log(`enrolled as ${id}`);
-    console.log(`export AVITY_WORKER_ID=${id}`);
-    console.log(`export AVITY_WORKER_TOKEN=${token}  # shown once; store it securely`);
-  }
-  agent.start();
+  const enrollmentAgent = new WorkerAgent(config);
+  const credentials = await resolveWorkerCredentials(
+    {
+      workerId: config.workerId,
+      workerToken: config.workerToken,
+      credentialsPath: config.credentialsPath,
+    },
+    enrollmentAgent,
+    (line) => console.log(line),
+  );
+
+  const runtimeAgent = new WorkerAgent({
+    ...config,
+    workerId: credentials.workerId,
+    workerToken: credentials.workerToken,
+  });
+  runtimeAgent.start();
   console.log(`AvityOS worker polling ${config.controlPlaneUrl} every ${config.pollMs}ms`);
 
   const shutdown = async () => {
-    await agent.stop();
+    await runtimeAgent.stop();
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

@@ -353,6 +353,7 @@ pnpm audit --audit-level high
 - [Git workflow](docs/GIT-WORKFLOW.md) — branch, worktree and PR discipline
 - [Security](docs/SECURITY.md) — trust model, controls and limitations
 - [Local development](docs/LOCAL-DEVELOPMENT.md) — environment and commands
+- [Live E2E campaign (operator)](docs/LIVE-E2E-CAMPAIGN.md) — real-provider campaign runbook
 - [Deployment](docs/DEPLOYMENT.md) and
   [backup/restore](docs/BACKUP-RESTORE.md) — operations
 - [Runbooks](docs/RUNBOOKS.md) — failure handling

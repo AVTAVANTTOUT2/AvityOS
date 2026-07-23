@@ -2,9 +2,23 @@
 useDefault = true
 
 [allowlist]
-description = "Exact non-secret strings used by the redaction unit test"
+description = "Exact non-secret fixture strings used by the redaction and credential-rejection unit tests"
 regexTarget = "match"
 regexes = [
+  # Redaction unit test (control-plane contracts): deliberately secret-shaped
+  # but non-secret constants asserted to be redacted/rejected.
   '''key=sk-abcdefghijklmnop1234''',
   '''token=sk-abcdefghijklmnop1234''',
+  # contracts.test.ts "rejects common credential formats" — synthetic patterns
+  # whose whole purpose is to prove the contract rejects credential shapes.
+  '''ghp_abcdefghijklmnopqrstuvwxyz1234567890''',
+  '''github_pat_abcdefghijklmnopqrstuvwxyz_1234567890''',
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.signature123''',
+  '''glpat-abcdefghijklmnopqrst''',
+  # operator/campaign redaction tests — fake tokens asserted to be redacted or
+  # never persisted.
+  '''ghp_abc123secret''',
+  '''ghp_secret''',
+  '''ghp_should_never_be_persisted''',
+  '''sk-live-secret''',
 ]

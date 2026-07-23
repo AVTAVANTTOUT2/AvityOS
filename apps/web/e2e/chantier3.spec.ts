@@ -137,6 +137,28 @@ test("answers a grouped clarification then pauses and resumes atomically", async
       pauseState = { ...pausePaused };
       return route.fulfill({ json: pauseState });
     }
+    if (url.pathname === "/v1/e2e/preflight") {
+      return route.fulfill({
+        json: {
+          schemaVersion: 2,
+          generatedAt: new Date().toISOString(),
+          readiness: "ready",
+          usesFakeFixtureOnly: true,
+          realProviderCount: 0,
+          realWorkspaceEditorCount: 0,
+          readyCount: 1,
+          blockedCount: 0,
+          scenarios: [{
+            key: "no_autonomous_merge",
+            title: "No autonomous merge",
+            status: "ready",
+            detail: "Guaranteed by design.",
+            reasons: [],
+          }],
+          note: "Preflight mock for browser test.",
+        },
+      });
+    }
     if (url.pathname === `/v1/projects/${project.id}/resume` && method === "POST") {
       resumeCalled = true;
       projectStatus = "active";

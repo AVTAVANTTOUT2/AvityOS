@@ -1,6 +1,109 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { createInterface } from "node:readline/promises";
+import type { E2EPreflightReport } from "@avityos/contracts";
 import { ApiError, Client, CONFIG_PATH, loadConfig, saveConfig } from "./client.js";
+import { collectDoctorReport } from "./operator/diagnostics.js";
+import { readEnvFile } from "./operator/env.js";
+import { resolveOperatorPaths, type OperatorServiceName } from "./operator/paths.js";
+import { redactText } from "./operator/redact.js";
+import { ensureOperatorSetup, mergeOperatorEnvironment, readProtectedTokenFromFile, saveOperatorEnvironment } from "./operator/setup.js";
+import { OperatorServiceLifecycle } from "./operator/services.js";
+import { createExternalLiveFixture } from "./operator/fixture.js";
+import { prepareLiveCampaign, runLiveCampaign } from "./operator/campaign.js";
+import {
+  createCampaignReportWriter,
+  createCampaignStateStore,
+} from "./operator/campaign-report.js";
+
+interface ProviderStatusReasonView {
+  code: string;
+  category: string;
+  message: string;
+  tools: string[];
+  environmentVariables: string[];
+  remediation: string[];
+}
+
+interface ProviderStatusEntryView {
+  name: string;
+  kind: string;
+  real: boolean;
+  registered: boolean;
+  status: string;
+  reasons: ProviderStatusReasonView[];
+  workspaceEdits: boolean;
+  missionRoutable: boolean;
+  routedRoles: string[];
+}
+
+interface ProviderStatusCheckView {
+  key: string;
+  status: string;
+  detail: string;
+  reasons: ProviderStatusReasonView[];
+}
+
+interface ProviderStatusReportView {
+  schemaVersion: number;
+  generatedAt: string;
+  executionMode: string;
+  campaign: {
+    faultInjection: {
+      enabled: boolean;
+      provider: string | null;
+      category: string | null;
+    };
+  };
+  providers: ProviderStatusEntryView[];
+  checks: ProviderStatusCheckView[];
+  note: string;
+}
+
+function reasonCategory(
+  reasons: readonly ProviderStatusReasonView[],
+  code: string,
+): string {
+  return reasons.find((reason) => reason.code === code)?.category ?? "ready";
+}
+
+function formatProviderStatusHuman(report: ProviderStatusReportView): string {
+  const providerBlocks = report.providers.map((provider) => {
+    const binary = provider.kind === "cli"
+      ? reasonCategory(provider.reasons, "binary_missing")
+      : "n/a";
+    const auth = reasonCategory(provider.reasons, "auth_missing");
+    const sandbox = provider.kind === "cli"
+      ? (provider.registered ? "ready" : "blocked_missing_tool")
+      : "n/a";
+    return [
+      provider.name,
+      `  binary: ${binary}`,
+      `  sandbox: ${sandbox}`,
+      `  auth: ${auth}`,
+      `  workspace_edits: ${provider.workspaceEdits ? "yes" : "no"}`,
+      `  registered: ${provider.registered ? "yes" : "no"}`,
+      `  status: ${provider.status}`,
+      `  reachable_roles: ${provider.routedRoles.length ? provider.routedRoles.join(", ") : "(none)"}`,
+    ].join("\n");
+  });
+  const checks = report.checks.map((check) =>
+    `${check.key}: ${check.status} — ${check.detail}`
+  );
+  return [
+    `execution mode: ${report.executionMode}`,
+    `fault injection: ${report.campaign.faultInjection.enabled ? "enabled" : "disabled"}`,
+    "",
+    ...providerBlocks,
+    "",
+    "checks:",
+    ...checks,
+    "",
+    report.note,
+  ].join("\n");
+}
 
 /**
  * The `avity` CLI. Human output by default; pass --json anywhere for
@@ -12,6 +115,13 @@ interface Ctx {
   client: Client;
   json: boolean;
   args: string[];
+}
+
+class UsageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UsageError";
+  }
 }
 
 function out(ctx: Ctx, data: unknown, human: (d: never) => string): void {
@@ -32,8 +142,7 @@ function table(rows: Record<string, unknown>[], columns: string[]): string {
 function requireArg(ctx: Ctx, index: number, name: string): string {
   const value = ctx.args[index];
   if (!value) {
-    console.error(`missing required argument: <${name}>`);
-    process.exit(2);
+    throw new UsageError(`missing required argument: <${name}>`);
   }
   return value;
 }
@@ -62,9 +171,175 @@ function numberFlag(ctx: Ctx, name: string): number | undefined {
   return parsed;
 }
 
+function boundedPositiveIntegerFlag(
+  ctx: Ctx,
+  name: string,
+  options: { readonly min: number; readonly max: number; readonly defaultValue: number },
+): number {
+  const value = flag(ctx, name);
+  if (value === undefined) return options.defaultValue;
+  if (!/^\d+$/.test(value)) {
+    throw new UsageError(`--${name} must be an integer between ${options.min} and ${options.max}`);
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < options.min || parsed > options.max) {
+    throw new UsageError(`--${name} must be an integer between ${options.min} and ${options.max}`);
+  }
+  return parsed;
+}
+
 type Handler = (ctx: Ctx) => Promise<void>;
 
+function resolveRepositoryRoot(): string {
+  const fromConfig = dirname(dirname(dirname(CONFIG_PATH)));
+  return process.env.AVITY_REPOSITORY_ROOT ?? process.cwd() ?? fromConfig;
+}
+
+function setupRunner(): { run: (command: string, args: readonly string[], options?: { cwd?: string }) => { exitCode: number; stdout: string; stderr: string } } {
+  return {
+    run(command, args, options) {
+      try {
+        const stdout = execFileSync(command, [...args], { cwd: options?.cwd, encoding: "utf8", stdio: "pipe" });
+        return { exitCode: 0, stdout, stderr: "" };
+      } catch (error) {
+        const details = error as { status?: number; stdout?: string; stderr?: string };
+        return {
+          exitCode: details.status ?? 1,
+          stdout: details.stdout ?? "",
+          stderr: details.stderr ?? "",
+        };
+      }
+    },
+  };
+}
+
+function selectedServices(ctx: Ctx): OperatorServiceName[] {
+  const service = flag(ctx, "service");
+  if (!service || service === "all") return ["control-plane", "web", "worker"];
+  if (service === "control-plane" || service === "web" || service === "worker") return [service];
+  throw new UsageError(`unknown service: ${service} (allowed: control-plane|web|worker|all)`);
+}
+
+async function collectCliDoctorReport(client: Client) {
+  const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+  const lifecycle = new OperatorServiceLifecycle(paths);
+  return collectDoctorReport({
+    serviceProbe: async () => {
+      const status = await lifecycle.status();
+      return {
+        controlPlane: status.controlPlane.state,
+        web: status.web.state,
+        worker: status.worker.state,
+      };
+    },
+    apiProbe: async () => {
+      try {
+        const health = await client.get<{ status: string }>("/v1/health");
+        await client.get<{ version: number; items: unknown[] }>("/v1/providers/status");
+        return { health: health.status === "ok", providersStatus: true };
+      } catch {
+        return { health: false, providersStatus: false };
+      }
+    },
+  });
+}
+
+function campaignRetentionCount(): number {
+  const raw = process.env.AVITY_E2E_REPORT_RETENTION ?? "20";
+  if (!/^\d+$/.test(raw)) {
+    throw new UsageError("AVITY_E2E_REPORT_RETENTION must be an integer between 1 and 1000");
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 1_000) {
+    throw new UsageError("AVITY_E2E_REPORT_RETENTION must be an integer between 1 and 1000");
+  }
+  return parsed;
+}
+
+function campaignConfiguration() {
+  const config = loadConfig();
+  return {
+    cliVersion: "0.1.0",
+    controlPlaneUrl: config.controlPlaneUrl,
+    environment: {
+      AVITY_EXECUTION_MODE: process.env.AVITY_EXECUTION_MODE,
+      AVITY_PROVIDER_CHAIN: process.env.AVITY_PROVIDER_CHAIN,
+      AVITY_BRAIN_PROVIDER_CHAIN: process.env.AVITY_BRAIN_PROVIDER_CHAIN,
+      AVITY_REVIEWER_PROVIDER_CHAIN: process.env.AVITY_REVIEWER_PROVIDER_CHAIN,
+      AVITY_CAMPAIGN_FAULT_PROVIDER: process.env.AVITY_CAMPAIGN_FAULT_PROVIDER,
+      AVITY_CAMPAIGN_FAULT_CATEGORY: process.env.AVITY_CAMPAIGN_FAULT_CATEGORY,
+      AVITY_API_TOKEN: process.env.AVITY_API_TOKEN,
+    },
+  };
+}
+
+async function interactiveProjectConfirmation(projectId: string): Promise<string | undefined> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return undefined;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await prompt.question(
+      `Type the exact project id "${projectId}" to authorize objective submission: `,
+    );
+  } finally {
+    prompt.close();
+  }
+}
+
 const commands: Record<string, Handler | Record<string, Handler>> = {
+  setup: async (ctx) => {
+    const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+    const config = loadConfig();
+    const result = await ensureOperatorSetup({
+      paths,
+      runner: setupRunner(),
+      force: hasFlag(ctx, "force"),
+      env: { ...process.env, ...(config.apiToken ? { AVITY_API_TOKEN: config.apiToken } : {}) },
+    });
+    out(ctx, result, (payload: typeof result) =>
+      `setup complete\nreadiness: ${payload.readiness}\ncreated: ${payload.created.length}\npreserved: ${payload.preserved.length}`,
+    );
+  },
+
+  start: async (ctx) => {
+    const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+    const lifecycle = new OperatorServiceLifecycle(paths);
+    const services = selectedServices(ctx);
+    await lifecycle.start(services);
+    out(ctx, { started: services }, (payload: { started: string[] }) => `started: ${payload.started.join(", ")}`);
+  },
+
+  stop: async (ctx) => {
+    const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+    const lifecycle = new OperatorServiceLifecycle(paths);
+    const services = selectedServices(ctx);
+    await lifecycle.stop(services);
+    out(ctx, { stopped: services }, (payload: { stopped: string[] }) => `stopped: ${payload.stopped.join(", ")}`);
+  },
+
+  restart: async (ctx) => {
+    const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+    const lifecycle = new OperatorServiceLifecycle(paths);
+    const services = selectedServices(ctx);
+    await lifecycle.restart(services);
+    out(ctx, { restarted: services }, (payload: { restarted: string[] }) => `restarted: ${payload.restarted.join(", ")}`);
+  },
+
+  logs: async (ctx) => {
+    const service = (flag(ctx, "service") ?? "control-plane") as OperatorServiceName;
+    if (!["control-plane", "web", "worker"].includes(service)) {
+      throw new UsageError(`unknown service: ${service}`);
+    }
+    const maxBytes = boundedPositiveIntegerFlag(ctx, "max-bytes", {
+      min: 256,
+      max: 1_048_576,
+      defaultValue: 16_384,
+    });
+    const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+    const lifecycle = new OperatorServiceLifecycle(paths);
+    const output = lifecycle.readLogs(service, { maxBytes });
+    out(ctx, { service, logs: output }, (payload: { logs: string }) => payload.logs);
+  },
+
   init: async () => {
     const config = loadConfig();
     saveConfig(config);
@@ -74,47 +349,87 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
   login: async (ctx) => {
     const config = loadConfig();
     const url = flag(ctx, "url");
-    const token = flag(ctx, "token");
+    const tokenFlag = flag(ctx, "token");
+    const tokenFromStdin = hasFlag(ctx, "token-stdin");
+    const tokenFile = flag(ctx, "token-file");
+    const tokenSources = [tokenFlag ? 1 : 0, tokenFromStdin ? 1 : 0, tokenFile ? 1 : 0].reduce((sum, value) => sum + value, 0);
+    if (tokenFlag) {
+      throw new UsageError("legacy --token is refused; use --token-stdin or --token-file <0600-path>");
+    }
+    if (tokenSources > 1) {
+      throw new UsageError("only one token source is allowed: --token-stdin OR --token-file");
+    }
+    let token: string | undefined;
+    if (tokenFromStdin) {
+      token = readFileSync(0, "utf8").trim();
+      if (!token) throw new UsageError("stdin token is empty");
+    } else if (tokenFile) {
+      token = readProtectedTokenFromFile(tokenFile);
+    }
     if (url) config.controlPlaneUrl = url;
     if (token) config.apiToken = token;
     saveConfig(config);
+    if (token) {
+      const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+      try {
+        const parsed = readEnvFile(paths.operatorEnvPath);
+        saveOperatorEnvironment(paths, mergeOperatorEnvironment(parsed, { AVITY_API_TOKEN: token }));
+      } catch (error) {
+        const reason = redactText(error instanceof Error ? error.message : "unknown error");
+        console.warn(`warning: operator env sync skipped (${reason})`);
+      }
+    }
     console.log(`saved credentials to ${CONFIG_PATH}`);
   },
 
   doctor: async (ctx) => {
-    const checks: Record<string, unknown>[] = [];
-    const nodeOk = Number(process.versions.node.split(".")[0]) >= 22;
-    checks.push({ check: "node >= 22 (node:sqlite)", ok: nodeOk, detail: process.versions.node });
-    try {
-      execFileSync("git", ["--version"], { stdio: "pipe" });
-      checks.push({ check: "git available", ok: true, detail: "" });
-    } catch {
-      checks.push({ check: "git available", ok: false, detail: "git not found in PATH" });
+    const report = await collectCliDoctorReport(ctx.client);
+    out(ctx, report, (payload: typeof report) => {
+      const labels: Record<string, string> = {
+        control_plane: "control plane reachable",
+      };
+      const rows = payload.checks.map((check) => ({
+        check: labels[check.id] ?? check.id,
+        ok: check.ok,
+        detail: check.detail,
+      }));
+      return `readiness: ${payload.readiness}\n${table(rows, ["check", "ok", "detail"])}`;
+    });
+    if (["blocked_missing_tool", "blocked_operator_configuration"].includes(report.readiness)) {
+      throw new Error(`doctor blocked: ${report.readiness}`);
     }
-    try {
-      const health = await ctx.client.get<{ status: string; version: string }>("/v1/health");
-      checks.push({ check: "control plane reachable", ok: health.status === "ok", detail: `v${health.version}` });
-    } catch (err) {
-      checks.push({ check: "control plane reachable", ok: false, detail: String((err as Error).message) });
-    }
-    out(ctx, checks, (c: Record<string, unknown>[]) => table(c, ["check", "ok", "detail"]));
-    if (checks.some((c) => !c.ok)) process.exit(1);
   },
 
   status: async (ctx) => {
-    const [projects, approvals, runs] = await Promise.all([
-      ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/projects"),
-      ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/approvals?status=open"),
-      ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/runs"),
-    ]);
-    const active = runs.items.filter((r) => ["queued", "starting", "running"].includes(r.state as string));
-    const data = {
-      projects: projects.items.length,
-      activeRuns: active.length,
-      openInterventions: approvals.items.length,
-    };
+    const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+    const lifecycle = new OperatorServiceLifecycle(paths);
+    const serviceStatus = await lifecycle.status();
+    let controlPlaneSummary = { projects: 0, activeRuns: 0, openInterventions: 0 };
+    try {
+      const [projects, approvals, runs] = await Promise.all([
+        ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/projects"),
+        ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/approvals?status=open"),
+        ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/runs"),
+      ]);
+      const active = runs.items.filter((r) => ["queued", "starting", "running"].includes(r.state as string));
+      controlPlaneSummary = {
+        projects: projects.items.length,
+        activeRuns: active.length,
+        openInterventions: approvals.items.length,
+      };
+    } catch {
+      // Keep service status output even if control plane is down.
+    }
+    const data = { services: serviceStatus, ...controlPlaneSummary };
     out(ctx, data, (d: typeof data) =>
-      `projects: ${d.projects}\nactive runs: ${d.activeRuns}\nopen interventions: ${d.openInterventions}`,
+      [
+        `control-plane: ${d.services.controlPlane.state}${d.services.controlPlane.pid ? ` (pid ${d.services.controlPlane.pid})` : ""}`,
+        `web: ${d.services.web.state}${d.services.web.pid ? ` (pid ${d.services.web.pid})` : ""}`,
+        `worker: ${d.services.worker.state}${d.services.worker.pid ? ` (pid ${d.services.worker.pid})` : ""}`,
+        `projects: ${d.projects}`,
+        `active runs: ${d.activeRuns}`,
+        `open interventions: ${d.openInterventions}`,
+      ].join("\n"),
     );
   },
 
@@ -484,44 +799,43 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       out(ctx, items, (rows: Record<string, unknown>[]) => table(rows, ["name", "healthy", "default"]));
     },
     status: async (ctx) => {
-      const { items } = await ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/providers");
-      out(ctx, items, (rows: Record<string, unknown>[]) =>
-        rows.map((r) => `${r.name}: ${r.healthy ? "healthy" : "unhealthy"}; models: ${(r.models as string[]).join(", ")}`).join("\n"),
-      );
+      const report = await ctx.client.get<ProviderStatusReportView>("/v1/providers/status");
+      out(ctx, report, (payload: ProviderStatusReportView) => formatProviderStatusHuman(payload));
+      if (
+        report.providers.some((provider) => provider.status !== "ready")
+        || report.checks.some((check) => check.status !== "ready")
+      ) {
+        throw new Error("provider status blocked: one or more providers or checks are not ready");
+      }
     },
   },
 
-  e2e: {
-    preflight: async (ctx) => {
-      interface Report {
-        readiness: string;
-        usesFakeFixtureOnly: boolean;
-        realProviderCount: number;
-        readyCount: number;
-        blockedCount: number;
-        note: string;
-        github: {
-          gitAvailable: boolean;
-          ghAvailable: boolean;
-          credentialHintAvailable: boolean;
-          ghAuthenticated: boolean;
-          repositoryReadable: boolean;
-          repositoryPushDryRunSucceeded: boolean;
-          repositoryWriteRoleObserved: boolean;
-        };
-        scenarios: { key: string; title: string; status: string; detail: string; requires: string[] }[];
-      }
+  e2e: async (ctx) => {
+    const [subcommand, action] = ctx.args;
+    if (subcommand === "preflight") {
       const projectId = flag(ctx, "project");
       const path = projectId
         ? `/v1/e2e/preflight?projectId=${encodeURIComponent(projectId)}`
         : "/v1/e2e/preflight";
-      const report = await ctx.client.get<Report>(path);
-      out(ctx, report, (r: Report) => {
-        const rows = r.scenarios.map((s) => ({
-          scenario: s.key,
-          status: s.status,
-          detail: s.requires.length ? `${s.detail} (needs: ${s.requires.join(", ")})` : s.detail,
-        }));
+      const report = await ctx.client.get<E2EPreflightReport>(path);
+      out(ctx, report, (r: E2EPreflightReport) => {
+        const rows = r.scenarios.map((scenario) => {
+          const requirements = [
+            ...new Set(
+              scenario.reasons.flatMap((reason) => [
+                ...reason.tools,
+                ...reason.environmentVariables,
+              ]),
+            ),
+          ];
+          return {
+            scenario: scenario.key,
+            status: scenario.status,
+            detail: requirements.length
+              ? `${scenario.detail} (needs: ${requirements.join(", ")})`
+              : scenario.detail,
+          };
+        });
         return [
           `readiness: ${r.readiness} (${r.readyCount} ready, ${r.blockedCount} blocked)`,
           `real providers: ${r.realProviderCount}${r.usesFakeFixtureOnly ? " (fake fixture only)" : ""}`,
@@ -538,7 +852,107 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
           r.note,
         ].join("\n");
       });
-    },
+      return;
+    }
+    if (subcommand === "live" && (action === "prepare" || action === "run")) {
+      const projectId = flag(ctx, "project");
+      if (!projectId) {
+        throw new UsageError("missing required argument: --project <id>");
+      }
+      const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+      const reportWriter = createCampaignReportWriter({
+        operatorRoot: paths.rootDir,
+        reportsDir: paths.reportsDir,
+        repositoryRoot: paths.repositoryRoot,
+        retentionCount: campaignRetentionCount(),
+      });
+      const stateStore = createCampaignStateStore({
+        operatorRoot: paths.rootDir,
+        reportsDir: paths.reportsDir,
+        repositoryRoot: paths.repositoryRoot,
+      });
+      const dependencies = {
+        api: ctx.client,
+        collectDoctor: () => collectCliDoctorReport(ctx.client),
+        reportWriter,
+        stateStore,
+        configuration: campaignConfiguration(),
+        confirmProject: interactiveProjectConfirmation,
+      };
+      const allowFaultInjection = hasFlag(ctx, "allow-fault-injection");
+      const result = action === "prepare"
+        ? await prepareLiveCampaign(
+            { projectId, allowFaultInjection },
+            dependencies,
+          )
+        : await runLiveCampaign(
+            {
+              projectId,
+              allowFaultInjection,
+              isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+              confirmedProjectId: flag(ctx, "confirm-project"),
+              pullRequestPolicy: (() => {
+                const value = flag(ctx, "pr-policy") ?? "draft";
+                if (value !== "draft" && value !== "ready-for-review") {
+                  throw new UsageError("--pr-policy must be draft or ready-for-review");
+                }
+                return value;
+              })(),
+              maxPolls: boundedPositiveIntegerFlag(ctx, "max-polls", {
+                min: 1,
+                max: 1_000,
+                defaultValue: 150,
+              }),
+              pollIntervalMs: boundedPositiveIntegerFlag(ctx, "poll-interval-ms", {
+                min: 1,
+                max: 60_000,
+                defaultValue: 2_000,
+              }),
+            },
+            dependencies,
+          );
+      const payload = {
+        ok: result.ok,
+        reportPath: result.reportPath,
+        report: result.report,
+      };
+      out(
+        ctx,
+        payload,
+        (data: typeof payload) => [
+          `campaign: ${data.report.campaignId}`,
+          `readiness: ${data.report.readiness.status}`,
+          `result: ${data.report.campaign.result}`,
+          `report: ${data.reportPath ?? "(not written)"}`,
+          ...data.report.recommendations.map((recommendation) => `action: ${recommendation}`),
+        ].join("\n"),
+      );
+      if (!result.ok) {
+        throw new Error(
+          `${action} did not succeed: readiness=${result.report.readiness.status}, result=${result.report.campaign.result}`,
+        );
+      }
+      return;
+    }
+    if (subcommand === "fixture" && action === "create") {
+      const fixturePath = flag(ctx, "path");
+      if (!fixturePath) {
+        throw new UsageError("missing required argument: --path <path>");
+      }
+      const remote = flag(ctx, "remote");
+      const result = createExternalLiveFixture({
+        path: fixturePath,
+        ...(remote ? { remote } : {}),
+      });
+      out(
+        ctx,
+        result,
+        (payload: typeof result) =>
+          `fixture created at ${payload.path}\nbranch: ${payload.branch}\nremote: ${payload.remote ?? "(none)"}`,
+      );
+      return;
+    }
+    throw new UsageError("unknown e2e command (expected: preflight | fixture create | live prepare|run)");
   },
 
   worker: {
@@ -594,9 +1008,13 @@ usage: avity <command> [subcommand] [args] [--json]
 
 commands:
   init                                  write default config
-  login --url <url> [--token <token>]   configure control plane access
-  doctor                                environment and connectivity checks
-  status                                global summary
+  login --url <url> [--token-stdin|--token-file <path>]
+                                        configure control plane access
+  setup [--force]                       secure local operator bootstrap
+  start|stop|restart [--service <name>] manage detached services
+  status                                local service + control plane summary
+  logs [--service <name>] [--max-bytes <n>]
+  doctor                                stable host and readiness diagnostics
   project create <name> [--objective <text>] [--criterion <text> ...]
          [--repo <path> --remote <github-url> --branch <name>]
          [--autonomy <profile> --budget <usd> --warn-at <percent>]
@@ -612,7 +1030,14 @@ commands:
   run list [--project <id>] | logs <run-id> | pause|resume|cancel <mission-id>
   intervention list | answer <id> [key=answer...|--decision approved|rejected]
   provider list | status
+  providers status                      alias of provider status
   e2e preflight [--project <id>]        live E2E readiness (runnability only)
+  e2e fixture create --path <path> [--remote <github-url>]
+                                        create local external fixture repository
+  e2e live prepare|run --project <id> [--confirm-project <id>]
+                                        prepare or execute a public-API live campaign
+       [--pr-policy draft|ready-for-review] [--allow-fault-injection]
+       [--max-polls <n>] [--poll-interval-ms <n>]
   worker list | enroll <name> | revoke <id>
   pr list [--project <id>] | show <id>
 `;
@@ -625,7 +1050,8 @@ export async function main(argv: string[]): Promise<number> {
     console.log(USAGE);
     return command ? 0 : 2;
   }
-  const entry = commands[command];
+  const commandName = command === "providers" ? "provider" : command;
+  const entry = commands[commandName];
   if (!entry) {
     console.error(`unknown command: ${command}\n\n${USAGE}`);
     return 2;
@@ -645,10 +1071,14 @@ export async function main(argv: string[]): Promise<number> {
     await handler(ctx);
     return 0;
   } catch (err) {
+    if (err instanceof UsageError) {
+      console.error(`usage error: ${redactText(err.message)}`);
+      return 2;
+    }
     if (err instanceof ApiError) {
       console.error(`error (${err.code}): ${err.message}`);
     } else {
-      console.error(`error: ${(err as Error).message}`);
+      console.error(`error: ${redactText((err as Error).message)}`);
     }
     return 1;
   }

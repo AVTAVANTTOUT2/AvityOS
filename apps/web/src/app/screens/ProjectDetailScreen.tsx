@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Bot, Brain, ChevronLeft, Clock, Folder, GitBranch, Pause, Pencil, Play, TrendingUp, Zap,
 } from "lucide-react";
-import { api, type ApiClarification, type ApiProjectPauseState } from "../../lib/api";
+import { api, type ApiClarification, type ApiE2EPreflightReport, type ApiE2EScenarioStatus, type ApiProjectPauseState } from "../../lib/api";
 import { useData } from "../../lib/data";
 import { BrainPanel } from "../components/BrainPanel";
 import { ClarificationPanel } from "../components/ClarificationPanel";
@@ -25,11 +25,71 @@ const HEALTH_BADGES: Record<string, { label: string; className: string }> = {
   blocked: { label: "Bloqué", className: "bg-red-50 text-red-600" },
 };
 
+const PREFLIGHT_STATUS_LABELS: Record<ApiE2EScenarioStatus, string> = {
+  ready: "Prêt",
+  blocked_operator_configuration: "Config. opérateur",
+  blocked_missing_tool: "Outil manquant",
+  blocked_missing_credentials: "Credentials",
+  blocked_product_gap: "Lacune produit",
+};
+
+function preflightBadgeClass(status: ApiE2EScenarioStatus): string {
+  if (status === "ready") return "bg-green-50 text-green-700";
+  if (status === "blocked_missing_credentials") return "bg-red-50 text-red-600";
+  return "bg-orange-50 text-orange-700";
+}
+
+function PreflightPanel({ report }: { report: ApiE2EPreflightReport }) {
+  return (
+    <Glass className="p-5">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide">
+            Préparation campagne live
+          </div>
+          <p className="text-[10px] text-[#74716B] mt-1 leading-relaxed">
+            Indique si une tentative semble <strong className="font-medium text-[#202124]">runnable</strong>.
+            Ce n&apos;est pas une preuve qu&apos;une campagne a <strong className="font-medium text-[#202124]">réussi</strong>.
+          </p>
+        </div>
+        <span className={cn("text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide flex-shrink-0", preflightBadgeClass(report.readiness))}>
+          {PREFLIGHT_STATUS_LABELS[report.readiness]}
+        </span>
+      </div>
+      <div className="text-[10px] text-[#74716B] mb-3">
+        {report.readyCount} prêt{report.readyCount === 1 ? "" : "s"} · {report.blockedCount} bloqué{report.blockedCount === 1 ? "" : "s"}
+        {report.usesFakeFixtureOnly && (
+          <span className="ml-2 text-amber-700 font-medium">· fixture fake uniquement</span>
+        )}
+      </div>
+      <div className="space-y-2 max-h-64 overflow-y-auto">
+        {report.scenarios.map((scenario) => (
+          <div key={scenario.key} className="rounded-xl bg-[#F7F4EE] px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-[#202124]">{scenario.title}</span>
+              <span className={cn("text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase", preflightBadgeClass(scenario.status))}>
+                {PREFLIGHT_STATUS_LABELS[scenario.status]}
+              </span>
+            </div>
+            <p className="text-[10px] text-[#74716B] mt-1">{scenario.detail}</p>
+            {scenario.reasons[0] && (
+              <p className="text-[9px] text-[#74716B] mt-1">{scenario.reasons[0].remediation[0]}</p>
+            )}
+          </div>
+        ))}
+      </div>
+      <p className="text-[9px] text-[#74716B] mt-3">{report.note}</p>
+    </Glass>
+  );
+}
+
 export function ProjectDetailScreen({ projectId, onBack }: { projectId: number | string; onBack: () => void }) {
   const { projects: PROJECTS, agents: AGENTS, prs: PRS, kanban, actions, mode, refresh } = useData();
   const [tab, setTab] = useState("overview");
   const [editing, setEditing] = useState(false);
   const [clarification, setClarification] = useState<ApiClarification | null>(null);
+  const [preflight, setPreflight] = useState<ApiE2EPreflightReport | null>(null);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
   const [pauseState, setPauseState] = useState<ApiProjectPauseState | null>(null);
   const [pauseBusy, setPauseBusy] = useState(false);
   const [pauseFeedback, setPauseFeedback] = useState<string | null>(null);
@@ -37,6 +97,8 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
   useEffect(() => {
     if (!p || mode !== "live") {
       setClarification(null);
+      setPreflight(null);
+      setPreflightError(null);
       setPauseState(null);
       return;
     }
@@ -54,6 +116,23 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
         setPauseState(null);
       }
     });
+    void api.getE2EPreflight(String(p.id))
+      .then((preflightReport) => {
+        if (cancelled) return;
+        if (!Array.isArray(preflightReport?.scenarios)) {
+          setPreflight(null);
+          setPreflightError("réponse preflight invalide");
+          return;
+        }
+        setPreflight(preflightReport);
+        setPreflightError(null);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPreflight(null);
+          setPreflightError((err as Error).message);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -199,8 +278,17 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
                 }}
               />
             )}
+            {mode === "live" && preflight && <PreflightPanel report={preflight} />}
+            {mode === "live" && preflightError && (
+              <Glass className="p-4 text-[11px] text-red-600">
+                Préparation campagne indisponible : {preflightError}
+              </Glass>
+            )}
             <Glass className="p-5">
               <div className="text-[10px] font-semibold text-[#74716B] uppercase tracking-wide mb-3">Configuration persistée</div>
+              <p className="text-[10px] text-[#74716B] mb-3">
+                Lecture seule — modifiez via « Modifier » (persisté côté control plane).
+              </p>
               <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-[10px]">
                 <dt className="text-[#74716B]">Objectif</dt><dd className="text-[#202124]">{p.goal}</dd>
                 <dt className="text-[#74716B]">Critères d'acceptation</dt>

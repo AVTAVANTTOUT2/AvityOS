@@ -12,6 +12,7 @@
     "build": "pnpm -r build",
     "dev": "pnpm --filter @avityos/web dev",
     "test": "pnpm -r test",
+    "test:cli:operator": "pnpm --filter @avityos/cli test:operator",
     "typecheck": "pnpm -r typecheck",
     "verify": "pnpm -r build && pnpm -r test && pnpm -r typecheck",
     "verify:full": "pnpm verify && pnpm --filter @avityos/web test:e2e && swift test --package-path apps/macos",

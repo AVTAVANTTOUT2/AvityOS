@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG, clearGitHubReadinessCache, getCachedGitHubReadiness } from "@avityos/control-plane";
+import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG, clearGitHubReadinessCache, getCachedGitHubReadiness, buildProviderStatus } from "@avityos/control-plane";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 
 // Point the CLI at an isolated config before importing it.
@@ -40,7 +40,20 @@ beforeAll(async () => {
     success: false,
     stdout: "",
   }));
-  app = await buildServer({ store, engine, version: "test" });
+  app = await buildServer({
+    store,
+    engine,
+    version: "test",
+    providerStatus: buildProviderStatus({
+      env: {},
+      executionMode: "test",
+      providers,
+      defaultModels: new Map([["fake", "fake:succeed"]]),
+      reviewModels: new Map([["fake", "fake:review-approve"]]),
+      routing: engine.getProviderRoutingSnapshot(),
+      campaignFault: null,
+    }),
+  });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const address = app.server.address();
   const port = typeof address === "object" && address ? address.port : 0;
@@ -81,6 +94,20 @@ describe("avity CLI", () => {
     expect((await run()).code).toBe(2);
     expect((await run("nonsense")).code).toBe(2);
     expect((await run("help")).code).toBe(0);
+  });
+
+  it("rejects invalid --max-bytes values with usage errors", async () => {
+    const nanValue = await run("logs", "--max-bytes", "NaN");
+    expect(nanValue.code).toBe(2);
+    expect(nanValue.err).toContain("--max-bytes must be");
+
+    const negativeValue = await run("logs", "--max-bytes", "-1");
+    expect(negativeValue.code).toBe(2);
+    expect(negativeValue.err).toContain("--max-bytes must be");
+
+    const fractionalValue = await run("logs", "--max-bytes", "12.5");
+    expect(fractionalValue.code).toBe(2);
+    expect(fractionalValue.err).toContain("--max-bytes must be");
   });
 
   it("doctor reports healthy environment", async () => {
@@ -191,6 +218,30 @@ describe("avity CLI", () => {
     const providers = await run("provider", "list", "--json");
     expect(JSON.parse(providers.out)[0].name).toBe("fake");
 
+    const status = await run("providers", "status", "--json");
+    expect(status.code).toBe(1);
+    const report = JSON.parse(status.out) as {
+      schemaVersion: number;
+      providers: { name: string; status: string; reasons: { code: string }[] }[];
+      checks: { key: string; status: string }[];
+      note: string;
+    };
+    expect(report.schemaVersion).toBe(1);
+    expect(report.providers.some((provider) => provider.name === "fake")).toBe(true);
+    expect(report.checks.map((check) => check.key)).toEqual(
+      expect.arrayContaining(["mission_editor", "distinct_reviewer", "cross_provider_fallback"]),
+    );
+    expect(report.note).toMatch(/never runs provider health/i);
+    expect(status.out).not.toMatch(/sk-|ghp_|Bearer /i);
+
+    const human = await run("provider", "status");
+    expect(human.code).toBe(1);
+    expect(human.out).toContain("codex");
+    expect(human.out).toContain("binary:");
+    expect(human.out).toContain("auth:");
+    expect(human.out).toContain("workspace_edits:");
+    expect(human.out).toContain("reachable_roles:");
+
     const enrolled = await run("worker", "enroll", "test-worker", "--json");
     const worker = JSON.parse(enrolled.out) as { id: string; token: string };
     expect(worker.token.length).toBeGreaterThan(20);
@@ -263,14 +314,20 @@ describe("avity CLI", () => {
       note: string;
     };
     expect(report.usesFakeFixtureOnly).toBe(true);
-    expect(report.readiness).toBe("incomplete");
+    expect(report.readiness).toBe("blocked_missing_tool");
     expect(report.scenarios).toHaveLength(10);
     const planning = report.scenarios.find((s) => s.key === "real_planning")!;
     expect(planning.status).toBe("blocked_missing_credentials");
     const merge = report.scenarios.find((s) => s.key === "no_autonomous_merge")!;
     expect(merge.status).toBe("ready");
     for (const scenario of report.scenarios) {
-      expect(["ready", "blocked_missing_credentials", "blocked_configuration"]).toContain(scenario.status);
+      expect([
+        "ready",
+        "blocked_operator_configuration",
+        "blocked_missing_tool",
+        "blocked_missing_credentials",
+        "blocked_product_gap",
+      ]).toContain(scenario.status);
     }
     expect(report.note).toMatch(/never guarantees/i);
   });

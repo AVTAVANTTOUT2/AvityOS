@@ -163,6 +163,90 @@ export interface ApiProvider {
   default: boolean;
 }
 
+export type ApiE2EScenarioStatus =
+  | "ready"
+  | "blocked_operator_configuration"
+  | "blocked_missing_tool"
+  | "blocked_missing_credentials"
+  | "blocked_product_gap";
+
+export interface ApiE2EReadinessReason {
+  code: string;
+  category: ApiE2EScenarioStatus;
+  message: string;
+  tools: string[];
+  environmentVariables: string[];
+  remediation: string[];
+}
+
+export interface ApiE2EScenarioReport {
+  key: string;
+  title: string;
+  status: ApiE2EScenarioStatus;
+  detail: string;
+  reasons: ApiE2EReadinessReason[];
+}
+
+export interface ApiE2EPreflightReport {
+  schemaVersion: number;
+  generatedAt: string;
+  readiness: ApiE2EScenarioStatus;
+  usesFakeFixtureOnly: boolean;
+  realProviderCount: number;
+  realWorkspaceEditorCount: number;
+  readyCount: number;
+  blockedCount: number;
+  scenarios: ApiE2EScenarioReport[];
+  note: string;
+}
+
+export interface ApiProviderStatusReason {
+  code: string;
+  category: Exclude<ApiE2EScenarioStatus, "ready">;
+  message: string;
+  tools: string[];
+  environmentVariables: string[];
+  remediation: string[];
+}
+
+export interface ApiProviderStatusEntry {
+  name: string;
+  kind: "fixture" | "http" | "cli";
+  real: boolean;
+  registered: boolean;
+  status: ApiE2EScenarioStatus;
+  reasons: ApiProviderStatusReason[];
+  workspaceEdits: boolean;
+  inGlobalChain: boolean;
+  missionRoutable: boolean;
+  routedRoles: string[];
+  defaultModelConfigured: boolean;
+  reviewModelConfigured: boolean;
+}
+
+export interface ApiProviderStatusCheck {
+  key: "mission_editor" | "distinct_reviewer" | "cross_provider_fallback";
+  status: ApiE2EScenarioStatus;
+  detail: string;
+  reasons: ApiProviderStatusReason[];
+}
+
+export interface ApiProviderStatusReport {
+  schemaVersion: number;
+  generatedAt: string;
+  executionMode: string;
+  campaign: {
+    faultInjection: {
+      enabled: boolean;
+      provider: string | null;
+      category: string | null;
+    };
+  };
+  providers: ApiProviderStatusEntry[];
+  checks: ApiProviderStatusCheck[];
+  note: string;
+}
+
 export interface ApiPr {
   id: string;
   projectId: string;
@@ -245,6 +329,14 @@ export const api = {
   clarification: (id: string) => request<ApiClarification>("GET", `/v1/clarifications/${id}`),
   events: (afterSeq = 0) => request<{ items: ApiEvent[] }>("GET", `/v1/events?afterSeq=${afterSeq}`),
   providers: () => request<{ items: ApiProvider[] }>("GET", "/v1/providers"),
+  getProvidersStatus: () => request<ApiProviderStatusReport>("GET", "/v1/providers/status"),
+  getE2EPreflight: (projectId?: string) =>
+    request<ApiE2EPreflightReport>(
+      "GET",
+      projectId
+        ? `/v1/e2e/preflight?projectId=${encodeURIComponent(projectId)}`
+        : "/v1/e2e/preflight",
+    ),
   brainState: (projectId: string) => request<ApiBrainState>("GET", `/v1/projects/${projectId}/brain/state`),
   pauseState: (projectId: string) => request<ApiProjectPauseState>("GET", `/v1/projects/${projectId}/pause`),
   prs: () => request<{ items: ApiPr[] }>("GET", "/v1/prs"),

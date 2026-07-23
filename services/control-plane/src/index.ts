@@ -9,6 +9,12 @@ export {
   type ServerOptions,
 } from "./server.js";
 export { buildProviders, parseModelMap } from "./providers.js";
+export { buildProviderStatus, type ProviderStatusReport } from "./provider-status.js";
+export {
+  applyCampaignFaultInjection,
+  resolveCampaignFault,
+  type CampaignFaultConfig,
+} from "./campaign-fault.js";
 export {
   ProjectValidationError,
   validateRepositoryConfiguration,

@@ -1,5 +1,9 @@
 import { hostname } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { runCommand, type RunnerHandle } from "./runner.js";
+
+type RunCommand = typeof runCommand;
 
 export interface WorkerConfig {
   controlPlaneUrl: string;
@@ -14,6 +18,27 @@ export interface WorkerConfig {
   /** Explicit development escape hatch; never enable for a remote worker. */
   allowInsecureTransport?: boolean;
   fetchImpl?: typeof fetch;
+  /**
+   * Test seam only: overrides the subprocess runner. Production always uses the
+   * default sandboxed {@link runCommand}; this never introduces a non-sandboxed
+   * execution path in a real worker.
+   */
+  runCommandImpl?: RunCommand;
+}
+
+export interface WorkerCredentials {
+  workerId: string;
+  workerToken: string;
+}
+
+interface Enroller {
+  enroll: () => Promise<{ id: string; token: string }>;
+}
+
+interface CredentialResolutionInput {
+  workerId?: string;
+  workerToken?: string;
+  credentialsPath?: string;
 }
 
 interface Lease {
@@ -21,6 +46,111 @@ interface Lease {
   command: string[];
   cwd: string;
   leaseToken: string;
+}
+
+export const CREDENTIAL_FILE_MODE = 0o600;
+
+export class WorkerCredentialsFileError extends Error {
+  constructor(
+    readonly credentialsPath: string,
+    readonly reason: "invalid_json" | "invalid_schema" | "unsafe_permissions",
+    detail: string,
+  ) {
+    super(`invalid worker credentials file at ${credentialsPath}: ${detail}`);
+    this.name = "WorkerCredentialsFileError";
+  }
+}
+
+function formatOctal(mode: number): string {
+  return `0o${mode.toString(8).padStart(3, "0")}`;
+}
+
+export function createEnrollmentMessages(workerId: string, credentialsPath?: string): string[] {
+  if (credentialsPath) {
+    return [`enrolled as ${workerId}`, `worker credentials stored at ${credentialsPath}`];
+  }
+  return [`enrolled as ${workerId}`];
+}
+
+export async function loadWorkerCredentialsFromFile(credentialsPath: string): Promise<WorkerCredentials | null> {
+  try {
+    const fileMode = (await stat(credentialsPath)).mode & 0o777;
+    if (fileMode !== CREDENTIAL_FILE_MODE) {
+      throw new WorkerCredentialsFileError(
+        credentialsPath,
+        "unsafe_permissions",
+        `expected permissions ${formatOctal(CREDENTIAL_FILE_MODE)} but found ${formatOctal(fileMode)}; fix with chmod 600`,
+      );
+    }
+
+    const raw = await readFile(credentialsPath, "utf8");
+    let parsed: Partial<WorkerCredentials>;
+    try {
+      parsed = JSON.parse(raw) as Partial<WorkerCredentials>;
+    } catch {
+      throw new WorkerCredentialsFileError(
+        credentialsPath,
+        "invalid_json",
+        "invalid JSON payload; rewrite the file with a valid enrollment record",
+      );
+    }
+    if (typeof parsed.workerId !== "string" || parsed.workerId.length === 0) {
+      throw new WorkerCredentialsFileError(
+        credentialsPath,
+        "invalid_schema",
+        "missing non-empty workerId field",
+      );
+    }
+    if (typeof parsed.workerToken !== "string" || parsed.workerToken.length === 0) {
+      throw new WorkerCredentialsFileError(
+        credentialsPath,
+        "invalid_schema",
+        "missing non-empty workerToken field",
+      );
+    }
+    return { workerId: parsed.workerId, workerToken: parsed.workerToken };
+  } catch (error) {
+    if (error instanceof WorkerCredentialsFileError) throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function persistWorkerCredentialsAtomically(
+  credentialsPath: string,
+  credentials: WorkerCredentials,
+): Promise<void> {
+  const parentDir = dirname(credentialsPath);
+  const tmpPath = join(parentDir, `.${basename(credentialsPath)}.${process.pid}.${Date.now()}.tmp`);
+  await mkdir(parentDir, { recursive: true, mode: 0o700 });
+  const payload = `${JSON.stringify(credentials)}\n`;
+  await writeFile(tmpPath, payload, { mode: CREDENTIAL_FILE_MODE });
+  await rename(tmpPath, credentialsPath);
+}
+
+export async function resolveWorkerCredentials(
+  input: CredentialResolutionInput,
+  enroller: Enroller,
+  log: (line: string) => void,
+): Promise<WorkerCredentials> {
+  if (input.workerId && input.workerToken) {
+    return { workerId: input.workerId, workerToken: input.workerToken };
+  }
+
+  if (input.credentialsPath) {
+    const persisted = await loadWorkerCredentialsFromFile(input.credentialsPath);
+    if (persisted) return persisted;
+  }
+
+  const enrolled = await enroller.enroll();
+  const resolved = { workerId: enrolled.id, workerToken: enrolled.token };
+  if (input.credentialsPath) {
+    await persistWorkerCredentialsAtomically(input.credentialsPath, resolved);
+  }
+  for (const line of createEnrollmentMessages(resolved.workerId, input.credentialsPath)) {
+    log(line);
+  }
+  return resolved;
 }
 
 /**
@@ -119,15 +249,31 @@ export class WorkerAgent {
       return res.ok ? ((await res.json()) as Record<string, unknown>) : {};
     };
 
-    const handle = runCommand(
+    // Serialize streamed output and make the terminal exit report wait for the
+    // full output drain. Without this, a fast command's exit POST (which flips
+    // the terminal to succeeded/failed) can overtake the fire-and-forget output
+    // POST, so an observer that waits for the terminal state then reads the logs
+    // sees them empty. Chaining also preserves chunk ordering. A dropped chunk
+    // must never block exit reporting, so per-chunk failures are swallowed.
+    let outputDrain: Promise<void> = Promise.resolve();
+    const run = this.config.runCommandImpl ?? runCommand;
+    const handle = run(
       lease.command,
       lease.cwd,
       {
-        onOutput: async (text) => {
-          const ack = await post(`/v1/terminals/${lease.id}/output`, { text, leaseToken: lease.leaseToken });
-          if (ack.cancelRequested) handle.cancel();
+        onOutput: (text) => {
+          outputDrain = outputDrain.then(async () => {
+            try {
+              const ack = await post(`/v1/terminals/${lease.id}/output`, { text, leaseToken: lease.leaseToken });
+              if (ack.cancelRequested) handle.cancel();
+            } catch {
+              // best-effort streaming; keep draining so exit is never blocked
+            }
+          });
+          return outputDrain;
         },
         onExit: async ({ exitCode, state }) => {
+          await outputDrain;
           await post(`/v1/terminals/${lease.id}/exit`, { exitCode, state, leaseToken: lease.leaseToken });
           this.active.delete(lease.id);
         },

@@ -12,6 +12,7 @@ describe("execution mode resolution", () => {
   it("honours an explicit AVITY_EXECUTION_MODE", () => {
     expect(resolveExecutionMode({ AVITY_EXECUTION_MODE: "test" })).toBe("test");
     expect(resolveExecutionMode({ AVITY_EXECUTION_MODE: "demo" })).toBe("demo");
+    expect(resolveExecutionMode({ AVITY_EXECUTION_MODE: "campaign" })).toBe("campaign");
     expect(resolveExecutionMode({ AVITY_EXECUTION_MODE: "production" })).toBe("production");
   });
 
@@ -34,6 +35,7 @@ describe("fake provider authorization", () => {
   it("permits the fixture only in test and demo", () => {
     expect(fakeProviderAllowed("test")).toBe(true);
     expect(fakeProviderAllowed("demo")).toBe(true);
+    expect(fakeProviderAllowed("campaign")).toBe(false);
     expect(fakeProviderAllowed("production")).toBe(false);
   });
 
@@ -70,6 +72,14 @@ describe("buildProviders fixture gating", () => {
     // Even after a real provider "fails", there is no fixture in the registry
     // to route to — the fallback surface simply does not contain it.
     expect([...providers.keys()]).not.toContain(FIXTURE_PROVIDER_ID);
+  });
+
+  it("never registers fake in campaign mode", () => {
+    const providers = buildProviders({
+      AVITY_EXECUTION_MODE: "campaign",
+      AVITY_CODEX_BIN: "codex",
+    });
+    expect(providers.has(FIXTURE_PROVIDER_ID)).toBe(false);
   });
 
   it("does not register fake by default (unset env → production)", () => {

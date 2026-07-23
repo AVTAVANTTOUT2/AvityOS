@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,8 +6,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG } from "@avityos/control-plane";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import type { FastifyInstance } from "fastify";
-import { runCommand } from "./runner.js";
-import { WorkerAgent } from "./agent.js";
+import { runCommand, type RunnerCallbacks, type RunnerHandle } from "./runner.js";
+import {
+  CREDENTIAL_FILE_MODE,
+  createEnrollmentMessages,
+  loadWorkerCredentialsFromFile,
+  persistWorkerCredentialsAtomically,
+  resolveWorkerCredentials,
+  WorkerAgent,
+} from "./agent.js";
 
 async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -277,5 +284,230 @@ describe("worker transport policy", () => {
       pollMs: 1000,
       capabilities: ["shell"],
     })).toThrow(/require HTTPS/);
+  });
+});
+
+describe("worker credential persistence", () => {
+  it("persists first enrollment with mode 0600", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-creds-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      await persistWorkerCredentialsAtomically(credentialsPath, {
+        workerId: "wrk_123",
+        workerToken: "tok_secret",
+      });
+
+      const loaded = await loadWorkerCredentialsFromFile(credentialsPath);
+      const fileMode = (await stat(credentialsPath)).mode & 0o777;
+      expect(loaded).toEqual({ workerId: "wrk_123", workerToken: "tok_secret" });
+      expect(fileMode).toBe(CREDENTIAL_FILE_MODE);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses persisted credentials on restart without re-enrollment", async () => {
+    let enrollCalls = 0;
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-restart-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      const first = await resolveWorkerCredentials(
+        { workerId: undefined, workerToken: undefined, credentialsPath },
+        {
+          enroll: async () => {
+            enrollCalls += 1;
+            return { id: "wrk_reuse", token: "tok_reuse" };
+          },
+        },
+        () => undefined,
+      );
+      expect(first).toEqual({ workerId: "wrk_reuse", workerToken: "tok_reuse" });
+      expect(enrollCalls).toBe(1);
+
+      const second = await resolveWorkerCredentials(
+        { workerId: undefined, workerToken: undefined, credentialsPath },
+        {
+          enroll: async () => {
+            enrollCalls += 1;
+            return { id: "wrk_new", token: "tok_new" };
+          },
+        },
+        () => undefined,
+      );
+      expect(second).toEqual({ workerId: "wrk_reuse", workerToken: "tok_reuse" });
+      expect(enrollCalls).toBe(1);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("never logs token material to output", async () => {
+    const lines: string[] = [];
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-logs-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      const resolved = await resolveWorkerCredentials(
+        { workerId: undefined, workerToken: undefined, credentialsPath },
+        {
+          enroll: async () => ({ id: "wrk_safe", token: "tok_should_not_leak" }),
+        },
+        (line) => lines.push(line),
+      );
+      const messages = createEnrollmentMessages(resolved.workerId, credentialsPath);
+      lines.push(...messages);
+
+      const fileContent = await readFile(credentialsPath, "utf8");
+      const output = lines.join("\n");
+      expect(output).not.toContain("tok_should_not_leak");
+      expect(output).not.toContain("AVITY_WORKER_TOKEN");
+      expect(fileContent).toContain("tok_should_not_leak");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when credentials file contains invalid JSON", async () => {
+    let enrollCalls = 0;
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-invalid-json-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      await writeFile(credentialsPath, "{not-json", { mode: CREDENTIAL_FILE_MODE });
+      await expect(() =>
+        resolveWorkerCredentials(
+          { workerId: undefined, workerToken: undefined, credentialsPath },
+          {
+            enroll: async () => {
+              enrollCalls += 1;
+              return { id: "wrk_should_not_enroll", token: "tok_should_not_enroll" };
+            },
+          },
+          () => undefined,
+        ),
+      ).rejects.toThrow(new RegExp(`credentials file .*${credentialsPath}`));
+      expect(enrollCalls).toBe(0);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when credentials file schema is incomplete", async () => {
+    let enrollCalls = 0;
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-invalid-schema-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      await writeFile(credentialsPath, `${JSON.stringify({ workerId: "wrk_only_id" })}\n`, { mode: CREDENTIAL_FILE_MODE });
+      await expect(() =>
+        resolveWorkerCredentials(
+          { workerId: undefined, workerToken: undefined, credentialsPath },
+          {
+            enroll: async () => {
+              enrollCalls += 1;
+              return { id: "wrk_should_not_enroll", token: "tok_should_not_enroll" };
+            },
+          },
+          () => undefined,
+        ),
+      ).rejects.toThrow(new RegExp(`credentials file .*${credentialsPath}`));
+      expect(enrollCalls).toBe(0);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when credentials file permissions are not owner-only", async () => {
+    let enrollCalls = 0;
+    const tempRoot = await mkdtemp(join(tmpdir(), "avity-worker-unsafe-mode-"));
+    const credentialsPath = join(tempRoot, "worker-credentials.json");
+    try {
+      await writeFile(credentialsPath, `${JSON.stringify({ workerId: "wrk_mode", workerToken: "tok_mode" })}\n`, { mode: CREDENTIAL_FILE_MODE });
+      await chmod(credentialsPath, 0o644);
+
+      await expect(() =>
+        resolveWorkerCredentials(
+          { workerId: undefined, workerToken: undefined, credentialsPath },
+          {
+            enroll: async () => {
+              enrollCalls += 1;
+              return { id: "wrk_should_not_enroll", token: "tok_should_not_enroll" };
+            },
+          },
+          () => undefined,
+        ),
+      ).rejects.toThrow(new RegExp(`credentials file .*${credentialsPath}`));
+      expect(enrollCalls).toBe(0);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("worker output/exit ordering", () => {
+  // Regression for the empty-log flake: the worker must not report a terminal's
+  // exit (which flips its state to succeeded/failed) before every streamed
+  // output chunk has been persisted. This mirrors the real runner's callback
+  // shape — fire-and-forget onOutput, then onExit — while an injected fetch
+  // delays the /output response so an unsynchronised exit would overtake it.
+  it("persists streamed output before reporting the terminal exit", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/output")) {
+        // Simulate a slow output persistence round-trip.
+        await new Promise((r) => setTimeout(r, 50));
+        calls.push("output");
+      } else if (url.endsWith("/exit")) {
+        calls.push("exit");
+      }
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    // Faithful stand-in for the sandboxed runner: emits one chunk fire-and-forget
+    // exactly like the stdout 'data' path, then reports exit like the 'close'
+    // path. No non-sandboxed subprocess is ever spawned.
+    const fakeRunner = ((
+      _argv: readonly string[],
+      _cwd: string,
+      callbacks: RunnerCallbacks,
+    ): RunnerHandle => {
+      let resolveDone: () => void = () => undefined;
+      const done = new Promise<void>((resolve) => {
+        resolveDone = resolve;
+      });
+      void callbacks.onOutput("streamed via worker\n");
+      void Promise.resolve(
+        callbacks.onExit({ exitCode: 0, state: "succeeded" }),
+      ).then(() => resolveDone());
+      return {
+        pid: 4321,
+        done,
+        pause: () => undefined,
+        resume: () => undefined,
+        cancel: () => undefined,
+      };
+    }) as typeof runCommand;
+
+    const agent = new WorkerAgent({
+      controlPlaneUrl: "http://127.0.0.1:1",
+      name: "ordering",
+      workerId: "wrk_ordering",
+      workerToken: "tok_ordering",
+      pollMs: 10_000,
+      capabilities: ["shell"],
+      fetchImpl,
+      runCommandImpl: fakeRunner,
+    });
+
+    await agent.execute({
+      id: "term_ordering",
+      command: ["echo", "streamed via worker"],
+      cwd: "/tmp",
+      leaseToken: "lease_ordering",
+    });
+
+    // The delayed /output must land before /exit despite being fire-and-forget.
+    expect(calls).toEqual(["output", "exit"]);
   });
 });

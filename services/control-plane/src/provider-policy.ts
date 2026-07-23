@@ -13,7 +13,7 @@
 /** The deterministic fixture provider id. Real evidence never comes from it. */
 export const FIXTURE_PROVIDER_ID = "fake";
 
-export type ExecutionMode = "test" | "demo" | "production";
+export type ExecutionMode = "test" | "demo" | "campaign" | "production";
 
 export class ExecutionModeError extends Error {
   constructor(message: string) {
@@ -30,9 +30,9 @@ export class ExecutionModeError extends Error {
 export function resolveExecutionMode(env: NodeJS.ProcessEnv): ExecutionMode {
   const raw = env.AVITY_EXECUTION_MODE?.trim().toLowerCase();
   if (raw) {
-    if (raw === "test" || raw === "demo" || raw === "production") return raw;
+    if (raw === "test" || raw === "demo" || raw === "campaign" || raw === "production") return raw;
     throw new ExecutionModeError(
-      `invalid AVITY_EXECUTION_MODE=${raw}; expected one of: test, demo, production`,
+      `invalid AVITY_EXECUTION_MODE=${raw}; expected one of: test, demo, campaign, production`,
     );
   }
   if (env.NODE_ENV === "test" || env.VITEST) return "test";

@@ -4,11 +4,25 @@ Ce dossier fournit des **modèles** pour lancer automatiquement le control plane
 et le worker AvityOS via LaunchAgents utilisateur.
 
 Les fichiers `*.plist.example` **ne doivent pas** être chargés tels quels.
-Remplacez d’abord tous les placeholders (`__AVITY_ROOT__`, `__AVITY_LOG_DIR__`,
-`__HOME__`) par des chemins absolus valides, puis validez le XML avec `plutil`.
+Utilisez le générateur pour remplacer les placeholders (`__AVITY_ROOT__`,
+`__AVITY_LOG_DIR__`, `__HOME__`) avec échappement XML sûr :
 
-Cette documentation **n’installe rien automatiquement**. Aucun secret ne doit
+```sh
+node deploy/launchd/install-user-services.mjs
+plutil -lint ~/Library/LaunchAgents/com.avityos.control-plane.plist
+plutil -lint ~/Library/LaunchAgents/com.avityos.worker.plist
+```
+
+Options : `[repository-root]`, `--dry-run`, `--no-seed-env`. Le script crée
+aussi `~/.config/avityos/*.env` à partir de `env.example` (mode 0600) s’ils
+n’existent pas encore. Aucun secret n’est écrit dans les plists.
+
+Pour un remplacement manuel (déconseillé), voir la section ci-dessous.
+
+Cette documentation **n’active pas** launchd automatiquement. Aucun secret ne doit
 être placé dans les plists ni commités dans le dépôt.
+
+Campagne live opérateur : [docs/LIVE-E2E-CAMPAIGN.md](../../docs/LIVE-E2E-CAMPAIGN.md).
 
 ## Présentation
 
@@ -100,9 +114,10 @@ chmod 600 ~/.config/avityos/control-plane.env
 chmod 600 ~/.config/avityos/worker.env
 ```
 
-## Remplacement des placeholders
+## Remplacement des placeholders (manuel)
 
-Dans les copies destinées à `~/Library/LaunchAgents/`, remplacez explicitement :
+Si vous ne pouvez pas exécuter `install-user-services.mjs`, remplacez
+explicitement dans les copies destinées à `~/Library/LaunchAgents/` :
 
 | Placeholder | Exemple de valeur |
 | --- | --- |

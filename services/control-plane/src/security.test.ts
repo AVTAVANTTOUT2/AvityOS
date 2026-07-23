@@ -10,6 +10,7 @@ import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import { openDatabase } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
 import { clearGitHubReadinessCache, getCachedGitHubReadiness } from "./github-readiness.js";
+import { buildProviderStatus } from "./provider-status.js";
 import { buildServer } from "./server.js";
 import { Store } from "./store.js";
 
@@ -33,6 +34,15 @@ beforeEach(async () => {
     version: "test",
     apiToken: TOKEN,
     allowedOrigins: ["http://allowed.example"],
+    providerStatus: buildProviderStatus({
+      env: {},
+      executionMode: "test",
+      providers,
+      defaultModels: new Map([["fake", "fake:succeed"]]),
+      reviewModels: new Map([["fake", "fake:review-approve"]]),
+      routing: engine.getProviderRoutingSnapshot(),
+      campaignFault: null,
+    }),
   });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const address = app.server.address();
@@ -89,6 +99,14 @@ describe("API authentication", () => {
     await res.body?.cancel().catch(() => undefined);
     const denied = await fetch(`${baseUrl}/v1/events/stream?afterSeq=0&token=${TOKEN}`);
     expect(denied.status).toBe(401);
+  });
+
+  it("protects provider status with the same bearer token", async () => {
+    expect((await fetch(`${baseUrl}/v1/providers/status`)).status).toBe(401);
+    const ok = await fetch(`${baseUrl}/v1/providers/status`, { headers: auth });
+    expect(ok.status).toBe(200);
+    const body = await ok.json() as { note: string };
+    expect(body.note).toMatch(/never runs provider health checks/i);
   });
 });
 
@@ -305,7 +323,9 @@ describe("E2E preflight endpoint", () => {
       scenarios: { key: string; status: string }[];
     };
     expect(body.github.repositoryPushDryRunSucceeded).toBe(false);
-    expect(body.scenarios.find((s) => s.key === "branch_push")?.status).toBe("blocked_configuration");
+    expect(body.scenarios.find((s) => s.key === "branch_push")?.status).toBe(
+      "blocked_operator_configuration",
+    );
     expect(body.scenarios.find((s) => s.key === "draft_pull_request")?.status).not.toBe("ready");
   });
 });
