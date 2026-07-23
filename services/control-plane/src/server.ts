@@ -858,6 +858,17 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       providerChain: [...routing.providerChain],
       roleProviderChains: routing.roleProviderChains,
       missionRoles: routing.missionRoles,
+      providerReadiness: opts.providerStatus
+        ? new Map(
+            opts.providerStatus.providers.map((provider) => [
+              provider.name,
+              {
+                status: provider.status,
+                reasons: provider.reasons,
+              },
+            ]),
+          )
+        : undefined,
       github,
       // Derived at the boundary, never from ambient credentials: a project
       // without a configured remote is an operator-configuration gap, so the
