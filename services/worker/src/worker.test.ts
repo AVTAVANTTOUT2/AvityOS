@@ -2,18 +2,19 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/pr
 import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Engine, openDatabase, Store, buildServer, DEFAULT_ENGINE_CONFIG } from "@avityos/control-plane";
 import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 import type { FastifyInstance } from "fastify";
 import { runCommand, type RunnerCallbacks, type RunnerHandle } from "./runner.js";
 import {
   CREDENTIAL_FILE_MODE,
+  WorkerAgent,
   createEnrollmentMessages,
+  installProcessSignalAbort,
   loadWorkerCredentialsFromFile,
   persistWorkerCredentialsAtomically,
   resolveWorkerCredentials,
-  WorkerAgent,
 } from "./agent.js";
 
 async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
@@ -438,6 +439,169 @@ describe("worker credential persistence", () => {
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("worker durable lifecycle", () => {
+  function mockLeaseFetch(onPoll?: () => void): typeof fetch {
+    return (async () => {
+      onPoll?.();
+      return new Response(JSON.stringify({ lease: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  it("keeps the poll timer referenced so the event loop stays alive", async () => {
+    const created: NodeJS.Timeout[] = [];
+    const realSetInterval = globalThis.setInterval.bind(globalThis);
+    const intervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      handler: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      const handle = realSetInterval(handler, ms, ...(args as never[]));
+      created.push(handle as NodeJS.Timeout);
+      return handle;
+    }) as typeof setInterval);
+
+    const agent = new WorkerAgent({
+      controlPlaneUrl: "http://127.0.0.1:1",
+      name: "lifecycle-ref",
+      workerId: "wrk_lifecycle_ref",
+      workerToken: "tok_lifecycle_ref",
+      pollMs: 60_000,
+      capabilities: ["shell"],
+      fetchImpl: mockLeaseFetch(),
+    });
+
+    try {
+      agent.start();
+      expect(created).toHaveLength(1);
+      expect(created[0]!.hasRef()).toBe(true);
+      expect(agent.isRunning()).toBe(true);
+    } finally {
+      await agent.stop();
+      intervalSpy.mockRestore();
+    }
+    expect(agent.isRunning()).toBe(false);
+  });
+
+  it("does not resolve run() until the abort signal fires", async () => {
+    let polls = 0;
+    const agent = new WorkerAgent({
+      controlPlaneUrl: "http://127.0.0.1:1",
+      name: "lifecycle-run",
+      workerId: "wrk_lifecycle_run",
+      workerToken: "tok_lifecycle_run",
+      pollMs: 20,
+      capabilities: ["shell"],
+      fetchImpl: mockLeaseFetch(() => {
+        polls += 1;
+      }),
+    });
+    const controller = new AbortController();
+    const running = agent.run(controller.signal);
+    let settled = false;
+    void running.then(() => {
+      settled = true;
+    });
+
+    await waitFor(() => polls >= 3, 2000);
+    expect(settled).toBe(false);
+    expect(agent.isRunning()).toBe(true);
+
+    controller.abort();
+    await running;
+    expect(settled).toBe(true);
+    expect(agent.isRunning()).toBe(false);
+  });
+
+  it("executes multiple durable poll cycles on one instance", async () => {
+    let polls = 0;
+    const agent = new WorkerAgent({
+      controlPlaneUrl: "http://127.0.0.1:1",
+      name: "lifecycle-polls",
+      workerId: "wrk_lifecycle_polls",
+      workerToken: "tok_lifecycle_polls",
+      pollMs: 15,
+      capabilities: ["shell"],
+      fetchImpl: mockLeaseFetch(() => {
+        polls += 1;
+      }),
+    });
+    const controller = new AbortController();
+    const running = agent.run(controller.signal);
+    await waitFor(() => polls >= 5, 2000);
+    const observed = polls;
+    expect(observed).toBeGreaterThanOrEqual(5);
+    controller.abort();
+    await running;
+    const afterStop = polls;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(polls).toBe(afterStop);
+  });
+
+  it("stops polling, clears timers, and drains on explicit abort", async () => {
+    let polls = 0;
+    const agent = new WorkerAgent({
+      controlPlaneUrl: "http://127.0.0.1:1",
+      name: "lifecycle-stop",
+      workerId: "wrk_lifecycle_stop",
+      workerToken: "tok_lifecycle_stop",
+      pollMs: 15,
+      capabilities: ["shell"],
+      fetchImpl: mockLeaseFetch(() => {
+        polls += 1;
+      }),
+    });
+    const controller = new AbortController();
+    const running = agent.run(controller.signal);
+    await waitFor(() => polls >= 2, 2000);
+    controller.abort();
+    await running;
+    expect(agent.isRunning()).toBe(false);
+    const frozen = polls;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(polls).toBe(frozen);
+  });
+
+  it("propagates fatal start failures and leaves no residual timer", async () => {
+    const agent = new WorkerAgent({
+      controlPlaneUrl: "http://127.0.0.1:1",
+      name: "lifecycle-fatal",
+      pollMs: 20,
+      capabilities: ["shell"],
+      fetchImpl: mockLeaseFetch(),
+    });
+    const controller = new AbortController();
+    await expect(agent.run(controller.signal)).rejects.toThrow(/not enrolled/);
+    expect(agent.isRunning()).toBe(false);
+  });
+
+  it("installProcessSignalAbort aborts once on SIGTERM and is removable", () => {
+    const controller = new AbortController();
+    const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+    const fakeProcess = {
+      once(event: string, handler: (...args: unknown[]) => void) {
+        const set = listeners.get(event) ?? new Set();
+        set.add(handler);
+        listeners.set(event, set);
+        return fakeProcess;
+      },
+      off(event: string, handler: (...args: unknown[]) => void) {
+        listeners.get(event)?.delete(handler);
+        return fakeProcess;
+      },
+    } as unknown as NodeJS.Process;
+
+    const dispose = installProcessSignalAbort(controller, fakeProcess);
+    expect(listeners.get("SIGTERM")?.size).toBe(1);
+    for (const handler of listeners.get("SIGTERM") ?? []) handler();
+    expect(controller.signal.aborted).toBe(true);
+    dispose();
+    expect(listeners.get("SIGTERM")?.size ?? 0).toBe(0);
   });
 });
 

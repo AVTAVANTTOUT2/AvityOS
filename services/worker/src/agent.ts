@@ -72,6 +72,40 @@ export function createEnrollmentMessages(workerId: string, credentialsPath?: str
   return [`enrolled as ${workerId}`];
 }
 
+/**
+ * Resolve when `signal` aborts. An abort listener alone does not keep the Node
+ * event loop alive; callers must also retain a referenced lifetime handle
+ * (the worker poll timer) until stop().
+ */
+export function waitUntilAborted(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
+/**
+ * Wire SIGINT/SIGTERM to a single AbortController. Returns a disposer that
+ * removes the listeners so tests and clean shutdown leave no residual handlers.
+ */
+export function installProcessSignalAbort(
+  controller: AbortController,
+  processRef: NodeJS.Process = process,
+): () => void {
+  const onSignal = (): void => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  processRef.once("SIGINT", onSignal);
+  processRef.once("SIGTERM", onSignal);
+  return () => {
+    processRef.off("SIGINT", onSignal);
+    processRef.off("SIGTERM", onSignal);
+  };
+}
+
 export async function loadWorkerCredentialsFromFile(credentialsPath: string): Promise<WorkerCredentials | null> {
   try {
     const fileMode = (await stat(credentialsPath)).mode & 0o777;
@@ -198,10 +232,33 @@ export class WorkerAgent {
     return body;
   }
 
+  /**
+   * Begin lease polling. The interval stays referenced on purpose: unlike the
+   * control plane (kept alive by its HTTP server), the worker has no other
+   * referenced resource. Calling `unref()` empties the event loop and Node
+   * exits 0 immediately after bootstrap.
+   */
   start(): void {
     if (!this.workerId || !this.workerToken) throw new Error("worker not enrolled");
+    if (this.timer) return;
     this.timer = setInterval(() => void this.poll(), this.config.pollMs);
-    this.timer.unref?.();
+  }
+
+  isRunning(): boolean {
+    return this.timer !== null;
+  }
+
+  /**
+   * Run until `signal` aborts, then stop polling and drain active terminals.
+   * This is the durable lifecycle entrypoint used by the worker process.
+   */
+  async run(signal: AbortSignal): Promise<void> {
+    this.start();
+    try {
+      await waitUntilAborted(signal);
+    } finally {
+      await this.stop();
+    }
   }
 
   async stop(): Promise<void> {

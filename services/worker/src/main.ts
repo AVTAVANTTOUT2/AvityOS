@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-import { resolveWorkerCredentials, WorkerAgent } from "./agent.js";
+import {
+  installProcessSignalAbort,
+  resolveWorkerCredentials,
+  WorkerAgent,
+} from "./agent.js";
 
 async function main(): Promise<void> {
   const config = {
@@ -23,7 +27,8 @@ async function main(): Promise<void> {
     console.error(
       `refusing plain HTTP to non-loopback control plane ${config.controlPlaneUrl}; use https or set AVITY_ALLOW_INSECURE=1 (not recommended)`,
     );
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const enrollmentAgent = new WorkerAgent(config);
@@ -42,18 +47,25 @@ async function main(): Promise<void> {
     workerId: credentials.workerId,
     workerToken: credentials.workerToken,
   });
-  runtimeAgent.start();
+
+  const controller = new AbortController();
+  const disposeSignals = installProcessSignalAbort(controller);
   console.log(`AvityOS worker polling ${config.controlPlaneUrl} every ${config.pollMs}ms`);
 
-  const shutdown = async () => {
+  try {
+    await runtimeAgent.run(controller.signal);
+    process.exitCode = 0;
+  } catch (err) {
+    console.error("worker failed:", err);
+    process.exitCode = 1;
+    if (!controller.signal.aborted) controller.abort();
     await runtimeAgent.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  } finally {
+    disposeSignals();
+  }
 }
 
 main().catch((err) => {
   console.error("worker failed to start:", err);
-  process.exit(1);
+  process.exitCode = 1;
 });
