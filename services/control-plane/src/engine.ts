@@ -52,6 +52,14 @@ import { StoreConflictError, type Store } from "./store.js";
 const execFileAsync = promisify(execFile);
 const REVIEW_BLOCK_REASON_PREFIX = "independent review unavailable:";
 
+export function parseFinalReviewVerdict(text: string): "approve" | "reject" | null {
+  let verdict: "approve" | "reject" | null = null;
+  for (const match of text.matchAll(/VERDICT:\s*(APPROVE|REJECT)/gi)) {
+    verdict = match[1]?.toLowerCase() === "approve" ? "approve" : "reject";
+  }
+  return verdict;
+}
+
 export interface EngineConfig {
   maxConcurrentRuns: number;
   maxConcurrentRunsPerProject: number;
@@ -1575,7 +1583,7 @@ export class Engine {
       }
     }
 
-    const approved = /VERDICT:\s*APPROVE/i.test(resultText) && !/VERDICT:\s*REJECT/i.test(resultText);
+    const approved = parseFinalReviewVerdict(resultText) === "approve";
     this.store.upsertCheckpoint(
       project.id,
       missionId,
