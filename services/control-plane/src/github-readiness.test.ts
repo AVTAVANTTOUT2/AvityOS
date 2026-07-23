@@ -49,9 +49,9 @@ const PREFLIGHT_REF = `HEAD:refs/heads/${PREFLIGHT_PERMISSION_BRANCH}`;
 const pushKey = (remoteUrl: string): string =>
   `git ${hardenedGitArgs("push", "--dry-run", "--no-verify", remoteUrl, PREFLIGHT_REF).join(" ")}`;
 const PUSH_KEY = pushKey(DEMO_TARGET.remoteUrl);
-const VIEW_KEY = "gh repo view --repo acme/demo --json nameWithOwner";
+const VIEW_KEY = "gh repo view acme/demo --json nameWithOwner";
 const PERMISSION_KEY =
-  "gh repo view --repo acme/demo --json viewerPermission --jq .viewerPermission";
+  "gh repo view acme/demo --json viewerPermission --jq .viewerPermission";
 
 describe("detectGitHubReadiness", () => {
   it("reports gitAvailable false when git --version fails", async () => {
@@ -172,11 +172,11 @@ describe("detectGitHubReadiness", () => {
           success: true,
           stdout: "",
         },
-        "gh repo view --repo acme/repo --json nameWithOwner": {
+        "gh repo view acme/repo --json nameWithOwner": {
           success: true,
           stdout: "acme/repo",
         },
-        "gh repo view --repo acme/repo --json viewerPermission --jq .viewerPermission": {
+        "gh repo view acme/repo --json viewerPermission --jq .viewerPermission": {
           success: true,
           stdout: "WRITE\n",
         },
@@ -403,11 +403,11 @@ describe("detectGitHubReadiness", () => {
           "git --version": { success: true, stdout: "git version" },
           "gh --version": { success: true, stdout: "gh version" },
           "gh auth status --hostname github.com": { success: true, stdout: "" },
-          "gh repo view --repo acme/target --json nameWithOwner": {
+          "gh repo view acme/target --json nameWithOwner": {
             success: true,
             stdout: "acme/target",
           },
-          "gh repo view --repo acme/target --json viewerPermission --jq .viewerPermission":
+          "gh repo view acme/target --json viewerPermission --jq .viewerPermission":
             {
               success: true,
               stdout: "WRITE\n",
@@ -427,8 +427,7 @@ describe("detectGitHubReadiness", () => {
     );
     expect(viewCalls.length).toBeGreaterThan(0);
     for (const call of viewCalls) {
-      expect(call.args).toContain("--repo");
-      expect(call.args).toContain("acme/target");
+      expect(call.args.slice(0, 3)).toEqual(["repo", "view", "acme/target"]);
     }
   });
 
