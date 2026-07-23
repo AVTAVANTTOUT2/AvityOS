@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import * as demo from "../demo/fixtures";
-import { api, type ApiBrainState } from "../lib/api";
+import { api, type ApiBrainState, type ApiE2EPreflightReport, type ApiProviderStatusReport } from "../lib/api";
 import { DataContext, type AppData } from "../lib/data";
 import { BrainPanel } from "./components/BrainPanel";
 import { CommandPalette } from "./components/CommandPalette";
@@ -12,6 +12,7 @@ import { InterventionsScreen } from "./screens/InterventionsScreen";
 import { MissionsScreen } from "./screens/MissionsScreen";
 import { ProjectDetailScreen } from "./screens/ProjectDetailScreen";
 import { ProjectsScreen } from "./screens/ProjectsScreen";
+import { ProvidersScreen } from "./screens/ProvidersScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { TeamScreen } from "./screens/TeamScreen";
 import { TerminalsScreen } from "./screens/TerminalsScreen";
@@ -24,6 +25,7 @@ function makeData(overrides: Partial<AppData> = {}): AppData {
     kanban: demo.KANBAN,
     interventions: demo.INTERVENTIONS,
     providers: demo.PROVIDERS,
+    providersStatus: null,
     consumption: demo.CONSUMPTION,
     activity: demo.ACTIVITY_LOG,
     prs: demo.PRS,
@@ -378,5 +380,163 @@ describe("team screen resilience", () => {
   it("renders an empty state instead of crashing when no agents exist", () => {
     renderWithData(<TeamScreen />, makeData({ agents: [] as unknown as AppData["agents"] }));
     expect(screen.getByText("Aucun agent actif pour le moment.")).toBeInTheDocument();
+  });
+});
+
+function sampleProviderStatus(overrides: Partial<ApiProviderStatusReport> = {}): ApiProviderStatusReport {
+  return {
+    schemaVersion: 1,
+    generatedAt: "2026-07-23T12:00:00.000Z",
+    executionMode: "test",
+    campaign: { faultInjection: { enabled: false, provider: null, category: null } },
+    providers: [
+      {
+        name: "codex",
+        kind: "cli",
+        real: true,
+        registered: false,
+        status: "blocked_missing_credentials",
+        reasons: [{
+          code: "auth_missing",
+          category: "blocked_missing_credentials",
+          message: "codex authentication is not configured",
+          tools: [],
+          environmentVariables: ["OPENAI_API_KEY"],
+          remediation: ["Configure OPENAI_API_KEY in the protected operator environment."],
+        }],
+        workspaceEdits: true,
+        inGlobalChain: false,
+        missionRoutable: false,
+        routedRoles: [],
+        defaultModelConfigured: false,
+        reviewModelConfigured: false,
+      },
+      {
+        name: "fake",
+        kind: "fixture",
+        real: false,
+        registered: true,
+        status: "ready",
+        reasons: [],
+        workspaceEdits: true,
+        inGlobalChain: true,
+        missionRoutable: true,
+        routedRoles: ["backend"],
+        defaultModelConfigured: true,
+        reviewModelConfigured: true,
+      },
+    ],
+    checks: [
+      {
+        key: "distinct_reviewer",
+        status: "blocked_missing_credentials",
+        detail: "Fewer than two real providers are available for independent review",
+        reasons: [{
+          code: "second_reviewer_missing",
+          category: "blocked_missing_credentials",
+          message: "A second real reviewer provider is required",
+          tools: [],
+          environmentVariables: ["ANTHROPIC_API_KEY"],
+          remediation: ["Configure a second real provider for review."],
+        }],
+      },
+      {
+        key: "cross_provider_fallback",
+        status: "blocked_operator_configuration",
+        detail: "No effective chain contains two real workspace editors",
+        reasons: [{
+          code: "fallback_not_routed",
+          category: "blocked_operator_configuration",
+          message: "Fallback requires co-routed real editors",
+          tools: [],
+          environmentVariables: ["AVITY_PROVIDER_CHAIN"],
+          remediation: ["Co-route at least two real workspace editors."],
+        }],
+      },
+    ],
+    note: "Configuration snapshot only — no vendor probes.",
+    ...overrides,
+  };
+}
+
+function samplePreflight(overrides: Partial<ApiE2EPreflightReport> = {}): ApiE2EPreflightReport {
+  return {
+    schemaVersion: 2,
+    generatedAt: "2026-07-23T12:00:00.000Z",
+    readiness: "blocked_missing_credentials",
+    usesFakeFixtureOnly: true,
+    realProviderCount: 0,
+    realWorkspaceEditorCount: 0,
+    readyCount: 1,
+    blockedCount: 9,
+    scenarios: [
+      {
+        key: "real_planning",
+        title: "Planning by a real reasoning provider",
+        status: "blocked_missing_credentials",
+        detail: "No real reasoning provider is registered for the brain chain.",
+        reasons: [{
+          code: "no_real_brain_provider",
+          category: "blocked_missing_credentials",
+          message: "No real reasoning provider is registered",
+          tools: [],
+          environmentVariables: ["OPENAI_API_KEY"],
+          remediation: ["Configure credentials for a real reasoning provider."],
+        }],
+      },
+      {
+        key: "no_autonomous_merge",
+        title: "No autonomous merge",
+        status: "ready",
+        detail: "Guaranteed by design.",
+        reasons: [],
+      },
+    ],
+    note: "Preflight reports runnability only.",
+    ...overrides,
+  };
+}
+
+describe("live campaign readiness UI", () => {
+  it("surfaces blocked credentials and never renders secret values on the providers screen", () => {
+    renderWithData(
+      <ProvidersScreen onConfigure={vi.fn()} />,
+      makeData({ mode: "live", providersStatus: sampleProviderStatus() }),
+    );
+    expect(screen.getByText("Credentials manquants")).toBeInTheDocument();
+    expect(screen.getByText(/Canaux : OPENAI_API_KEY/)).toBeInTheDocument();
+    expect(screen.queryByText(/sk-/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Fixture fake uniquement/)).toBeInTheDocument();
+    expect(screen.getByText(/Reviewer distinct/)).toBeInTheDocument();
+    expect(screen.getByText(/Fallback inter-providers/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Configurer" }).every((btn) => (btn as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it("shows project preflight scenarios and distinguishes readiness from campaign success", async () => {
+    const preflightSpy = vi.spyOn(api, "getE2EPreflight").mockResolvedValue(samplePreflight());
+    const clarificationsSpy = vi.spyOn(api, "clarifications").mockResolvedValue({ items: [] });
+    const pauseSpy = vi.spyOn(api, "pauseState").mockResolvedValue({
+      projectId: String(demo.PROJECTS[0]!.id),
+      status: "active",
+      reason: null,
+      actor: null,
+      previousStatus: null,
+      generation: 0,
+      pausedAt: null,
+      resumedAt: null,
+      cancellingRunIds: [],
+    });
+    renderWithData(
+      <ProjectDetailScreen projectId={demo.PROJECTS[0]!.id} onBack={vi.fn()} />,
+      makeData({ mode: "live" }),
+    );
+    expect(await screen.findByText("Préparation campagne live")).toBeInTheDocument();
+    expect(screen.getByText(/Ce n.est pas une preuve qu.une campagne a/)).toBeInTheDocument();
+    expect(screen.getByText("Planning by a real reasoning provider")).toBeInTheDocument();
+    expect(screen.getAllByText("Credentials").length).toBeGreaterThan(0);
+    expect(screen.getByText(/fixture fake uniquement/i)).toBeInTheDocument();
+    preflightSpy.mockRestore();
+    clarificationsSpy.mockRestore();
+    pauseSpy.mockRestore();
   });
 });

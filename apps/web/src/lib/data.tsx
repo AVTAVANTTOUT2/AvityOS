@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import * as demo from "../demo/fixtures";
-import { api, eventStream, type ApiEvent, type ProjectOnboardingInput } from "./api";
+import { api, eventStream, type ApiEvent, type ApiProviderStatusReport, type ProjectOnboardingInput } from "./api";
 
 /**
  * Single data source for every screen. In live mode the control plane is the
@@ -19,6 +19,7 @@ export interface AppData {
   kanban: typeof demo.KANBAN;
   interventions: typeof demo.INTERVENTIONS;
   providers: typeof demo.PROVIDERS;
+  providersStatus: ApiProviderStatusReport | null;
   consumption: typeof demo.CONSUMPTION;
   activity: typeof demo.ACTIVITY_LOG;
   prs: typeof demo.PRS;
@@ -122,6 +123,7 @@ const demoData: Omit<AppData, "refresh" | "actions" | "mode"> = {
   kanban: demo.KANBAN,
   interventions: demo.INTERVENTIONS,
   providers: demo.PROVIDERS,
+  providersStatus: null,
   consumption: demo.CONSUMPTION,
   activity: demo.ACTIVITY_LOG,
   prs: demo.PRS,
@@ -135,6 +137,7 @@ const emptyData: Omit<AppData, "refresh" | "actions" | "mode"> = {
   kanban: Object.fromEntries(KANBAN_COLUMNS.map((column) => [column, []])) as typeof demo.KANBAN,
   interventions: [] as unknown as typeof demo.INTERVENTIONS,
   providers: [] as unknown as typeof demo.PROVIDERS,
+  providersStatus: null,
   consumption: [] as unknown as typeof demo.CONSUMPTION,
   activity: [] as unknown as typeof demo.ACTIVITY_LOG,
   prs: [] as unknown as typeof demo.PRS,
@@ -143,7 +146,7 @@ const emptyData: Omit<AppData, "refresh" | "actions" | "mode"> = {
 };
 
 async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">> {
-  const [projectsRes, runsRes, approvalsRes, eventsRes, providersRes, prsRes, terminalsRes] = await Promise.all([
+  const [projectsRes, runsRes, approvalsRes, eventsRes, providersRes, prsRes, terminalsRes, providersStatus] = await Promise.all([
     api.projects(),
     api.runs(),
     api.approvals(),
@@ -151,6 +154,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     api.providers(),
     api.prs(),
     api.terminals(),
+    api.getProvidersStatus().catch(() => null),
   ]);
 
   const projectNames = new Map(projectsRes.items.map((p) => [p.id, p.name]));
@@ -358,6 +362,7 @@ async function loadLive(): Promise<Omit<AppData, "refresh" | "actions" | "mode">
     kanban,
     interventions,
     providers,
+    providersStatus,
     consumption: consumption.length ? consumption : ([] as unknown as typeof demo.CONSUMPTION),
     activity,
     prs,
