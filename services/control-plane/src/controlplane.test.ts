@@ -527,8 +527,16 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
       priority: 50, dependsOn: [implementation.id],
     });
 
-    engine.start();
-    await waitFor(() => store.getProject(project.id)!.status === "completed", 15_000);
+    // Drive the two executions explicitly: this regression verifies Git
+    // baseline inheritance, not timer scheduling. Keeping the scheduler out
+    // also makes a failure expose the exact mission call that stalled.
+    store.transitionMission(implementation.id, "ready", "fixture prerequisite");
+    store.transitionMission(implementation.id, "assigned", "fixture prerequisite");
+    await engine.executeMission(implementation.id);
+    expect(store.getMission(implementation.id)!.state).toBe("completed");
+    store.transitionMission(verification.id, "ready", "prerequisite completed");
+    store.transitionMission(verification.id, "assigned", "prerequisite completed");
+    await engine.executeMission(verification.id);
 
     const completedImplementation = store.getMission(implementation.id)!;
     const completedVerification = store.getMission(verification.id)!;
