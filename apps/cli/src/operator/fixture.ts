@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, resolve, join } from "node:path";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 export interface FixtureCreateOptions {
   readonly path: string;
@@ -11,6 +11,20 @@ export interface FixtureCreateResult {
   readonly path: string;
   readonly branch: "main";
   readonly remote: string | null;
+}
+
+export interface FixtureCommandResult {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+export interface FixtureCommandRunner {
+  run(command: string, args: readonly string[], options?: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv }): FixtureCommandResult;
+}
+
+export interface FixtureDependencies {
+  readonly commandRunner?: FixtureCommandRunner;
 }
 
 export class FixtureError extends Error {
@@ -25,19 +39,38 @@ interface GitRunOptions {
   readonly env?: NodeJS.ProcessEnv;
 }
 
-function runGit(args: readonly string[], options?: GitRunOptions): string {
-  try {
-    return execFileSync("git", [...args], {
-      cwd: options?.cwd,
-      env: options?.env,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  } catch (error) {
-    const details = error as { stderr?: string; message?: string };
-    const stderr = typeof details.stderr === "string" ? details.stderr.trim() : "";
-    throw new FixtureError(`git command failed (${args.join(" ")}): ${stderr || details.message || "unknown error"}`);
+const defaultCommandRunner: FixtureCommandRunner = {
+  run(command, args, options) {
+    try {
+      const stdout = execFileSync(command, [...args], {
+        cwd: options?.cwd,
+        env: options?.env,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { exitCode: 0, stdout, stderr: "" };
+    } catch (error) {
+      const details = error as { status?: number; stdout?: string; stderr?: string };
+      return {
+        exitCode: details.status ?? 1,
+        stdout: details.stdout ?? "",
+        stderr: details.stderr ?? "",
+      };
+    }
+  },
+};
+
+function runGit(
+  commandRunner: FixtureCommandRunner,
+  args: readonly string[],
+  options?: GitRunOptions,
+): string {
+  const result = commandRunner.run("git", [...args], options);
+  if (result.exitCode !== 0) {
+    const stderr = result.stderr.trim();
+    throw new FixtureError(`git command failed (git ${args.join(" ")}): ${stderr || `exit code ${result.exitCode}`}`);
   }
+  return result.stdout.trim();
 }
 
 function validateGitHubRemote(remote: string): string {
@@ -54,13 +87,7 @@ function ensurePathIsCreatable(targetPath: string): void {
   if (existsSync(targetPath)) {
     throw new FixtureError(`fixture path already exists: ${targetPath}`);
   }
-  const parent = resolve(targetPath, "..");
-  mkdirSync(parent, { recursive: true });
-  const parentEntries = readdirSync(parent);
-  if (!parentEntries.includes(basename(targetPath))) {
-    return;
-  }
-  throw new FixtureError(`fixture path already exists: ${targetPath}`);
+  mkdirSync(resolve(targetPath, ".."), { recursive: true });
 }
 
 function writeFixtureFiles(repoPath: string): void {
@@ -77,40 +104,41 @@ function writeFixtureFiles(repoPath: string): void {
       type: "module",
       scripts: {
         test: "node --test test/objectives.test.js",
-        typecheck: "node scripts/typecheck.mjs",
+        lint: "node scripts/lint.mjs",
+        typecheck: "node scripts/lint.mjs",
+        acceptance: "node scripts/acceptance.mjs",
       },
     }, null, 2)}\n`,
     { mode: 0o644 },
   );
 
   writeFileSync(
-    join(repoPath, "tsconfig.json"),
-    `${JSON.stringify({
-      compilerOptions: {
-        target: "ES2022",
-        module: "ES2022",
-        strict: true,
-      },
-      include: ["src"],
-    }, null, 2)}\n`,
+    join(repoPath, "src", "objectives.ts"),
+    `export interface LiveObjective {\n  readonly mission: "normal" | "correction";\n  readonly title: string;\n  readonly acceptanceCriteria: readonly string[];\n}\n`,
     { mode: 0o644 },
   );
 
   writeFileSync(
     join(repoPath, "src", "index.ts"),
-    `export interface LiveObjective {\n  readonly mission: "normal" | "correction";\n  readonly title: string;\n  readonly acceptanceCriteria: readonly string[];\n}\n\nexport function listObjectives(): readonly LiveObjective[] {\n  return [\n    {\n      mission: "normal",\n      title: "Mission normale",\n      acceptanceCriteria: [\n        "Feature complete avec tests et preuve de validation",\n        "Aucune publication automatique ni push déclenché",\n      ],\n    },\n    {\n      mission: "correction",\n      title: "Mission rejet/correction",\n      acceptanceCriteria: [\n        "Corriger les retours reviewer sans changer le scope",\n        "Conserver l'historique local et fournir revalidation tests/typecheck",\n      ],\n    },\n  ] as const;\n}\n`,
+    `export interface LiveObjective {\n  readonly mission: "normal" | "correction";\n  readonly title: string;\n  readonly acceptanceCriteria: readonly string[];\n}\n\nexport function listObjectives(): readonly LiveObjective[] {\n  return [\n    {\n      mission: "normal",\n      title: "Mission normale",\n      acceptanceCriteria: ["Feature complete avec preuves", "Aucune publication automatique ni push declenche"],\n    },\n    {\n      mission: "correction",\n      title: "Mission rejet/correction",\n      acceptanceCriteria: [\n        "Corriger une implementation rejetee sans changer le scope",\n        "Retablir l'invariant: sortie EXACTE 'FIX: INC-<digits> <summary>'",\n      ],\n    },\n  ] as const;\n}\n`,
     { mode: 0o644 },
   );
 
   writeFileSync(
     join(repoPath, "src", "index.js"),
-    `export function listObjectives() {\n  return [\n    {\n      mission: "normal",\n      title: "Mission normale",\n      acceptanceCriteria: [\n        "Feature complete avec tests et preuve de validation",\n        "Aucune publication automatique ni push declenche",\n      ],\n    },\n    {\n      mission: "correction",\n      title: "Mission rejet/correction",\n      acceptanceCriteria: [\n        "Corriger les retours reviewer sans changer le scope",\n        "Conserver l'historique local et fournir revalidation tests/typecheck",\n      ],\n    },\n  ];\n}\n`,
+    `export function listObjectives() {\n  return [\n    {\n      mission: "normal",\n      title: "Mission normale",\n      acceptanceCriteria: [\n        "Feature complete avec preuves",\n        "Aucune publication automatique ni push declenche",\n      ],\n    },\n    {\n      mission: "correction",\n      title: "Mission rejet/correction",\n      acceptanceCriteria: [\n        "Corriger une implementation rejetee sans changer le scope",\n        "Retablir l'invariant: sortie EXACTE 'FIX: INC-<digits> <summary>'",\n      ],\n    },\n  ];\n}\n`,
+    { mode: 0o644 },
+  );
+
+  writeFileSync(
+    join(repoPath, "src", "solution.js"),
+    `export function formatCorrectionSummary(input) {\n  const issueId = String(input.issueId ?? "").trim();\n  const summary = String(input.summary ?? "").trim();\n  if (!/^INC-\\d+$/.test(issueId)) {\n    throw new Error("issueId must match INC-<digits>");\n  }\n  if (!summary) {\n    throw new Error("summary must be non-empty");\n  }\n  return \`FIX: \${issueId} \${summary}\`;\n}\n`,
     { mode: 0o644 },
   );
 
   writeFileSync(
     join(repoPath, "test", "objectives.test.js"),
-    `import test from "node:test";\nimport assert from "node:assert/strict";\n\nimport { listObjectives } from "../src/index.js";\n\ntest("fixture objectives cover normal and correction missions", () => {\n  const objectives = listObjectives();\n  assert.equal(objectives.length, 2);\n  assert.deepEqual(objectives.map((item) => item.mission), ["normal", "correction"]);\n  for (const objective of objectives) {\n    assert.ok(objective.title.length > 0);\n    assert.ok(objective.acceptanceCriteria.length >= 2);\n  }\n});\n`,
+    `import test from "node:test";\nimport assert from "node:assert/strict";\n\nimport { listObjectives } from "../src/index.js";\nimport { formatCorrectionSummary } from "../src/solution.js";\n\ntest("fixture objectives cover normal and correction missions", () => {\n  const objectives = listObjectives();\n  assert.equal(objectives.length, 2);\n  assert.deepEqual(objectives.map((item) => item.mission), ["normal", "correction"]);\n  for (const objective of objectives) {\n    assert.ok(objective.title.length > 0);\n    assert.ok(objective.acceptanceCriteria.length >= 2);\n  }\n});\n\ntest("default correction implementation satisfies acceptance invariant", () => {\n  assert.equal(\n    formatCorrectionSummary({ issueId: "INC-404", summary: "retry worker bootstrap" }),\n    "FIX: INC-404 retry worker bootstrap",\n  );\n});\n`,
     { mode: 0o644 },
   );
 
@@ -121,14 +149,20 @@ function writeFixtureFiles(repoPath: string): void {
   );
 
   writeFileSync(
-    join(repoPath, "scripts", "typecheck.mjs"),
-    `import assert from "node:assert/strict";\nimport { readFileSync } from "node:fs";\n\nconst source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");\nassert.ok(source.includes("export interface LiveObjective"), "LiveObjective interface missing");\nassert.ok(source.includes("export function listObjectives"), "listObjectives export missing");\nassert.ok(source.includes("mission: \\"normal\\""), "normal mission missing");\nassert.ok(source.includes("mission: \\"correction\\""), "correction mission missing");\n`,
+    join(repoPath, "scripts", "lint.mjs"),
+    `import { execFileSync } from "node:child_process";\n\nconst files = ["src/index.js", "src/solution.js", "test/objectives.test.js", "scripts/acceptance.mjs"];\nfor (const file of files) {\n  execFileSync(process.execPath, ["--check", file], { stdio: "pipe" });\n}\n`,
+    { mode: 0o755 },
+  );
+
+  writeFileSync(
+    join(repoPath, "scripts", "acceptance.mjs"),
+    `import assert from "node:assert/strict";\nimport { formatCorrectionSummary } from "../src/solution.js";\n\nconst actual = formatCorrectionSummary({ issueId: "INC-404", summary: "retry worker bootstrap" });\nassert.equal(actual, "FIX: INC-404 retry worker bootstrap");\n`,
     { mode: 0o755 },
   );
 
   writeFileSync(
     join(repoPath, "README.md"),
-    `# Avity Live E2E Fixture\n\nDepot fixture local pour campagne live, autonome et sans dependance externe.\n\n## Objectifs\n\n### Mission normale\n- Executer \`pnpm test\` puis \`pnpm typecheck\`.\n- Livrer une preuve locale sans push automatique.\n\n### Mission rejet/correction\n- Simuler un rejet reviewer, corriger localement, puis rerun \`pnpm test\` et \`pnpm typecheck\`.\n- Conserver un historique Git local propre et verifiable.\n\n## Contraintes\n- Aucune publication automatique (\`publish\`, \`prepublishOnly\`, \`prepare\` absents).\n- Aucun provider reel ni secret requis.\n- Usage exclusivement local.\n`,
+    `# Avity Live E2E Fixture\n\nDepot fixture local pour campagne live, autonome et sans dependance externe.\n\n## Objectifs\n\n### Mission normale\n- Executer \`pnpm test\`, \`pnpm lint\`, puis \`pnpm acceptance\`.\n- Conserver \`pnpm typecheck\` comme alias de lint syntaxique Node (pas de verification TypeScript semantique).\n- Livrer une preuve locale sans push automatique.\n\n### Mission rejet/correction\n- Le check d'acceptation exige exactement: \`FIX: INC-<digits> <summary>\`.\n- Pour provoquer un rejet deterministe, corriger \`src/solution.js\` de facon defectueuse (ex: omettre \`issueId\`) puis lancer \`pnpm acceptance\`.\n- Corriger ensuite \`src/solution.js\` pour retablir l'invariant, puis relancer \`pnpm acceptance\`, \`pnpm test\` et \`pnpm lint\`.\n\n## Contraintes\n- Aucune publication automatique (\`publish\`, \`prepublishOnly\`, \`prepare\` absents).\n- Aucun provider reel ni secret requis.\n- Usage exclusivement local.\n`,
     { mode: 0o644 },
   );
 
@@ -139,32 +173,58 @@ function writeFixtureFiles(repoPath: string): void {
   );
 }
 
-function initializeGitRepository(repoPath: string, remote: string | undefined): void {
-  runGit(["init", "-b", "main", repoPath]);
-  runGit(["-C", repoPath, "config", "--local", "user.email", "fixture-bot@example.invalid"]);
-  runGit(["-C", repoPath, "config", "--local", "user.name", "Avity Fixture Bot"]);
-  runGit(["-C", repoPath, "config", "--local", "commit.gpgSign", "false"]);
-  runGit(["-C", repoPath, "config", "--local", "core.hooksPath", ".git/hooks-disabled"]);
+function initializeGitRepository(
+  repoPath: string,
+  remote: string | undefined,
+  commandRunner: FixtureCommandRunner,
+): void {
+  runGit(commandRunner, ["init", "-b", "main", repoPath]);
+  runGit(commandRunner, ["-C", repoPath, "config", "--local", "user.email", "fixture-bot@example.invalid"]);
+  runGit(commandRunner, ["-C", repoPath, "config", "--local", "user.name", "Avity Fixture Bot"]);
+  runGit(commandRunner, ["-C", repoPath, "config", "--local", "commit.gpgSign", "false"]);
+  runGit(commandRunner, ["-C", repoPath, "config", "--local", "core.hooksPath", ".git/hooks-disabled"]);
   mkdirSync(join(repoPath, ".git", "hooks-disabled"), { recursive: true });
-  runGit(["-C", repoPath, "add", "."]);
-  runGit(["-C", repoPath, "commit", "--no-gpg-sign", "-m", "chore: initialize live e2e fixture"], {
+  runGit(commandRunner, ["-C", repoPath, "add", "."]);
+  runGit(commandRunner, ["-C", repoPath, "commit", "--no-gpg-sign", "-m", "chore: initialize live e2e fixture"], {
     env: { ...process.env, HUSKY: "0" },
   });
   if (remote) {
-    runGit(["-C", repoPath, "remote", "add", "origin", remote]);
+    runGit(commandRunner, ["-C", repoPath, "remote", "add", "origin", remote]);
   }
 }
 
-export function createExternalLiveFixture(options: FixtureCreateOptions): FixtureCreateResult {
+function rollbackNewDirectory(targetPath: string): void {
+  if (existsSync(targetPath)) {
+    rmSync(targetPath, { recursive: true, force: true });
+  }
+}
+
+export function createExternalLiveFixture(
+  options: FixtureCreateOptions,
+  dependencies?: FixtureDependencies,
+): FixtureCreateResult {
+  const commandRunner = dependencies?.commandRunner ?? defaultCommandRunner;
   const targetPath = resolve(options.path);
   ensurePathIsCreatable(targetPath);
   const remote = options.remote ? validateGitHubRemote(options.remote) : undefined;
-  mkdirSync(targetPath, { recursive: true, mode: 0o755 });
-  writeFixtureFiles(targetPath);
-  initializeGitRepository(targetPath, remote);
-  return {
-    path: targetPath,
-    branch: "main",
-    remote: remote ?? null,
-  };
+  let createdByInvocation = false;
+  try {
+    mkdirSync(targetPath, { recursive: false, mode: 0o755 });
+    createdByInvocation = true;
+    writeFixtureFiles(targetPath);
+    initializeGitRepository(targetPath, remote, commandRunner);
+    return {
+      path: targetPath,
+      branch: "main",
+      remote: remote ?? null,
+    };
+  } catch (error) {
+    if (createdByInvocation) {
+      rollbackNewDirectory(targetPath);
+    }
+    if (error instanceof FixtureError) {
+      throw error;
+    }
+    throw new FixtureError(error instanceof Error ? error.message : "fixture generation failed");
+  }
 }

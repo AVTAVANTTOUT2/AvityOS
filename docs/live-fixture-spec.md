@@ -10,13 +10,18 @@ La commande `avity e2e fixture create --path <path> [--remote <url>] [--json]` g
 - Les hooks Git et la signature GPG sont neutralises localement pour garantir un comportement deterministe en environnement CI/dev.
 - Le remote est optionnel et accepte uniquement des URLs GitHub valides (`https://github.com/...` ou `git@github.com:...` / `ssh://git@github.com/...`).
 - Aucun appel reseau n'est declenche pendant la generation.
+- Creation transactionnelle: si une etape post-creation echoue (ecriture, git init/add/commit, remote add), le repertoire cree par l'invocation est supprime.
+- Un repertoire preexistant n'est jamais supprime.
+- `--path` n'est pas limite au workspace AvityOS: la destination externe est librement choisie par l'operateur.
 
 ## Contenu genere
 
 - `src/index.ts`: objectifs deterministes pour mission normale et mission rejet/correction.
+- `src/solution.js`: implementation de reference soumise au check d'acceptation metier.
 - `test/objectives.test.js`: validation runtime des objectifs.
-- `scripts/typecheck.mjs`: verification locale de la structure source.
-- `package.json`: scripts `test` et `typecheck` uniquement (aucun script de publication).
+- `scripts/lint.mjs`: lint syntaxique natif (`node --check`) sans dependance externe.
+- `scripts/acceptance.mjs`: check metier deterministe pour rejet/correction.
+- `package.json`: scripts `test`, `lint`, `acceptance`, et `typecheck` (alias honnete de lint), sans script de publication.
 - `README.md`: procedure d'usage et objectifs des deux missions.
 
 ## UX CLI
