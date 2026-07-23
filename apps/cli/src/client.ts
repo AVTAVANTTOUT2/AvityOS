@@ -10,7 +10,8 @@ export interface CliConfig {
   requestTimeoutMs?: number;
 }
 
-export const CONFIG_PATH = process.env.AVITY_CONFIG ?? join(homedir(), ".avity", "cli.json");
+const DEFAULT_CONFIG_PATH = join(homedir(), ".avity", "cli.json");
+export const CONFIG_PATH = process.env.AVITY_CONFIG ?? DEFAULT_CONFIG_PATH;
 const KEYCHAIN_SERVICE = "com.avityos.cli";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_REQUEST_TIMEOUT_MS = 300_000;
@@ -27,6 +28,17 @@ function requestTimeoutMs(config: CliConfig): number {
 
 function usesKeychain(): boolean {
   return process.platform === "darwin" && process.env.AVITY_DISABLE_KEYCHAIN !== "1";
+}
+
+/**
+ * Resolve the config path at command execution time.
+ *
+ * Vitest and embedded callers can set AVITY_CONFIG after this module was
+ * imported. Keeping file I/O dynamic prevents those runs from mutating the
+ * operator's real ~/.avity/cli.json or Keychain-backed login state.
+ */
+export function resolveConfigPath(): string {
+  return process.env.AVITY_CONFIG ?? DEFAULT_CONFIG_PATH;
 }
 
 function loadKeychainToken(): string | undefined {
@@ -51,8 +63,9 @@ function saveKeychainToken(token: string): void {
 }
 
 export function loadConfig(): CliConfig {
+  const configPath = resolveConfigPath();
   try {
-    const config = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as CliConfig;
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as CliConfig;
     const apiToken = process.env.AVITY_API_TOKEN ?? loadKeychainToken() ?? config.apiToken;
     return { ...config, ...(apiToken ? { apiToken } : {}) };
   } catch {
@@ -65,15 +78,16 @@ export function loadConfig(): CliConfig {
 }
 
 export function saveConfig(config: CliConfig): void {
-  mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+  const configPath = resolveConfigPath();
+  mkdirSync(dirname(configPath), { recursive: true });
   if (config.apiToken && usesKeychain()) saveKeychainToken(config.apiToken);
   const diskConfig = usesKeychain()
     ? { ...config, apiToken: undefined }
     : config;
-  const tmpPath = `${CONFIG_PATH}.tmp-${process.pid}-${Date.now()}`;
+  const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmpPath, `${JSON.stringify(diskConfig, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmpPath, CONFIG_PATH);
-  chmodSync(CONFIG_PATH, 0o600);
+  renameSync(tmpPath, configPath);
+  chmodSync(configPath, 0o600);
 }
 
 export class ApiError extends Error {
