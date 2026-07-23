@@ -116,6 +116,27 @@ describe("avity CLI", () => {
     expect(out).toContain("control plane reachable");
   });
 
+  it("does not report false zero counts when the control-plane API is unavailable", async () => {
+    const previous = loadConfig();
+    try {
+      saveConfig({
+        ...previous,
+        controlPlaneUrl: "http://127.0.0.1:1",
+      });
+      const result = await run("status", "--json");
+
+      expect(result.code, result.err || result.out).toBe(0);
+      expect(JSON.parse(result.out)).toMatchObject({
+        controlPlaneApi: "unavailable",
+        projects: null,
+        activeRuns: null,
+        openInterventions: null,
+      });
+    } finally {
+      saveConfig(previous);
+    }
+  });
+
   it("drives a project from creation to completion", async () => {
     const created = await run("project", "create", "CLI Demo", "--json");
     expect(created.code).toBe(0);
@@ -141,6 +162,7 @@ describe("avity CLI", () => {
 
     const status = await run("status");
     expect(status.code).toBe(0);
+    expect(status.out).toContain("control-plane API: ready");
     expect(status.out).toContain("projects:");
 
     // the persisted brain state is exposed, fixture provenance included

@@ -410,7 +410,16 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
     const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
     const lifecycle = new OperatorServiceLifecycle(paths);
     const serviceStatus = await lifecycle.status();
-    let controlPlaneSummary = { projects: 0, activeRuns: 0, openInterventions: 0 };
+    let controlPlaneApi: "ready" | "unavailable" = "unavailable";
+    let controlPlaneSummary: {
+      projects: number | null;
+      activeRuns: number | null;
+      openInterventions: number | null;
+    } = {
+      projects: null,
+      activeRuns: null,
+      openInterventions: null,
+    };
     try {
       const [projects, approvals, runs] = await Promise.all([
         ctx.client.get<{ items: Record<string, unknown>[] }>("/v1/projects"),
@@ -423,18 +432,27 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
         activeRuns: active.length,
         openInterventions: approvals.items.length,
       };
+      controlPlaneApi = "ready";
     } catch {
-      // Keep service status output even if control plane is down.
+      // Keep process status, but never misreport an unreachable API as an
+      // empty durable store.
     }
-    const data = { services: serviceStatus, ...controlPlaneSummary };
+    const data = {
+      services: serviceStatus,
+      controlPlaneApi,
+      ...controlPlaneSummary,
+    };
+    const count = (value: number | null): string =>
+      value === null ? "unavailable" : String(value);
     out(ctx, data, (d: typeof data) =>
       [
         `control-plane: ${d.services.controlPlane.state}${d.services.controlPlane.pid ? ` (pid ${d.services.controlPlane.pid})` : ""}`,
+        `control-plane API: ${d.controlPlaneApi}`,
         `web: ${d.services.web.state}${d.services.web.pid ? ` (pid ${d.services.web.pid})` : ""}`,
         `worker: ${d.services.worker.state}${d.services.worker.pid ? ` (pid ${d.services.worker.pid})` : ""}`,
-        `projects: ${d.projects}`,
-        `active runs: ${d.activeRuns}`,
-        `open interventions: ${d.openInterventions}`,
+        `projects: ${count(d.projects)}`,
+        `active runs: ${count(d.activeRuns)}`,
+        `open interventions: ${count(d.openInterventions)}`,
       ].join("\n"),
     );
   },
