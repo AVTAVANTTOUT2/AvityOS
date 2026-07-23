@@ -1,6 +1,10 @@
 import {
   chmodSync,
+  existsSync,
+  lstatSync,
   mkdirSync,
+  readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -72,10 +76,228 @@ export interface CampaignReportWriter {
   write(report: OperatorCampaignReport): Promise<string>;
 }
 
+export interface CampaignBaselineState {
+  readonly brainRunIds: readonly string[];
+  readonly missionIds: readonly string[];
+  readonly runIds: readonly string[];
+  readonly approvalIds: readonly string[];
+  readonly clarificationIds: readonly string[];
+  readonly pullRequestIds: readonly string[];
+  readonly eventSeq: number;
+}
+
+export interface CampaignExecutionState {
+  readonly version: 1;
+  readonly status: "pending" | "terminal";
+  readonly campaignId: string;
+  readonly projectId: string;
+  readonly idempotencyKey: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly objectiveId: string | null;
+  readonly baseline: CampaignBaselineState;
+}
+
+export interface CampaignStateStore {
+  loadPending(projectId: string): CampaignExecutionState | null;
+  save(state: CampaignExecutionState): void;
+  markTerminal(projectId: string, campaignId: string, updatedAt: string): void;
+}
+
 export interface CreateCampaignReportWriterOptions {
   readonly reportsDir: string;
+  readonly operatorRoot?: string;
   readonly repositoryRoot?: string;
   readonly retentionCount: number;
+}
+
+export interface CreateCampaignStateStoreOptions {
+  readonly operatorRoot: string;
+  readonly reportsDir: string;
+  readonly repositoryRoot?: string;
+}
+
+function pathIsInside(parent: string, candidate: string): boolean {
+  const child = relative(parent, candidate);
+  return child === "" || (!child.startsWith("..") && !isAbsolute(child));
+}
+
+function assertNoSymlinkComponents(rootPath: string, targetPath: string): void {
+  const root = resolve(rootPath);
+  const target = resolve(targetPath);
+  if (!pathIsInside(root, target)) {
+    throw new Error(`campaign reports path ${target} escapes operator root ${root}`);
+  }
+  const relativeTarget = relative(root, target);
+  const components = relativeTarget ? relativeTarget.split(/[\\/]/) : [];
+  let current = root;
+  for (const component of ["", ...components]) {
+    if (component) current = join(current, component);
+    if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
+      throw new Error(`campaign reports path contains symlink component: ${current}`);
+    }
+  }
+}
+
+function prepareReportsDirectory(options: CreateCampaignReportWriterOptions): void {
+  const operatorRoot = options.operatorRoot ?? options.reportsDir;
+  assertNoSymlinkComponents(operatorRoot, options.reportsDir);
+  mkdirSync(options.reportsDir, { recursive: true, mode: 0o700 });
+  assertNoSymlinkComponents(operatorRoot, options.reportsDir);
+  const canonicalReportsDir = realpathSync(options.reportsDir);
+  if (options.repositoryRoot) {
+    const canonicalRepositoryRoot = existsSync(options.repositoryRoot)
+      ? realpathSync(options.repositoryRoot)
+      : resolve(options.repositoryRoot);
+    if (pathIsInside(canonicalRepositoryRoot, canonicalReportsDir)) {
+      throw new Error("campaign reports directory must remain outside the repository");
+    }
+  }
+  chmodSync(canonicalReportsDir, 0o700);
+}
+
+function statePath(options: CreateCampaignStateStoreOptions, projectId: string): string {
+  return join(
+    options.reportsDir,
+    `${safeFileSegment(projectId, "projectId")}.campaign.state.json`,
+  );
+}
+
+function writeOwnerOnlyAtomic(path: string, serialized: string): void {
+  if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
+    throw new Error(`campaign state/report target cannot be a symlink: ${path}`);
+  }
+  const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(temporaryPath, serialized, { mode: 0o600, flag: "wx" });
+  renameSync(temporaryPath, path);
+  chmodSync(path, 0o600);
+}
+
+function parseStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`invalid campaign state: ${field} must be a string array`);
+  }
+  return [...value];
+}
+
+function parseCampaignState(value: unknown): CampaignExecutionState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid campaign state: expected an object");
+  }
+  const state = value as Record<string, unknown>;
+  const expectedKeys = [
+    "baseline",
+    "campaignId",
+    "createdAt",
+    "idempotencyKey",
+    "objectiveId",
+    "projectId",
+    "status",
+    "updatedAt",
+    "version",
+  ];
+  if (Object.keys(state).sort().join(",") !== expectedKeys.join(",")) {
+    throw new Error("invalid campaign state: unexpected or missing fields");
+  }
+  if (
+    state.version !== 1 ||
+    (state.status !== "pending" && state.status !== "terminal") ||
+    typeof state.campaignId !== "string" ||
+    typeof state.projectId !== "string" ||
+    typeof state.idempotencyKey !== "string" ||
+    typeof state.createdAt !== "string" ||
+    typeof state.updatedAt !== "string" ||
+    (state.objectiveId !== null && typeof state.objectiveId !== "string") ||
+    !state.baseline ||
+    typeof state.baseline !== "object" ||
+    Array.isArray(state.baseline)
+  ) {
+    throw new Error("invalid campaign state: malformed scalar fields");
+  }
+  const baseline = state.baseline as Record<string, unknown>;
+  const baselineKeys = [
+    "approvalIds",
+    "brainRunIds",
+    "clarificationIds",
+    "eventSeq",
+    "missionIds",
+    "pullRequestIds",
+    "runIds",
+  ];
+  if (Object.keys(baseline).sort().join(",") !== baselineKeys.join(",")) {
+    throw new Error("invalid campaign state: malformed baseline fields");
+  }
+  if (!Number.isSafeInteger(baseline.eventSeq) || Number(baseline.eventSeq) < 0) {
+    throw new Error("invalid campaign state: baseline eventSeq must be non-negative");
+  }
+  return {
+    version: 1,
+    status: state.status,
+    campaignId: state.campaignId,
+    projectId: state.projectId,
+    idempotencyKey: state.idempotencyKey,
+    createdAt: state.createdAt,
+    updatedAt: state.updatedAt,
+    objectiveId: state.objectiveId,
+    baseline: {
+      brainRunIds: parseStringArray(baseline.brainRunIds, "brainRunIds"),
+      missionIds: parseStringArray(baseline.missionIds, "missionIds"),
+      runIds: parseStringArray(baseline.runIds, "runIds"),
+      approvalIds: parseStringArray(baseline.approvalIds, "approvalIds"),
+      clarificationIds: parseStringArray(baseline.clarificationIds, "clarificationIds"),
+      pullRequestIds: parseStringArray(baseline.pullRequestIds, "pullRequestIds"),
+      eventSeq: Number(baseline.eventSeq),
+    },
+  };
+}
+
+/**
+ * Persist the restart-safe campaign identity and baseline before objective
+ * submission. State files share the hardened operator reports directory.
+ */
+export function createCampaignStateStore(
+  options: CreateCampaignStateStoreOptions,
+): CampaignStateStore {
+  const directoryOptions: CreateCampaignReportWriterOptions = {
+    operatorRoot: options.operatorRoot,
+    reportsDir: options.reportsDir,
+    repositoryRoot: options.repositoryRoot,
+    retentionCount: 1,
+  };
+  const load = (projectId: string): CampaignExecutionState | null => {
+    prepareReportsDirectory(directoryOptions);
+    const path = statePath(options, projectId);
+    if (!existsSync(path)) return null;
+    if (lstatSync(path).isSymbolicLink()) {
+      throw new Error(`campaign state target cannot be a symlink: ${path}`);
+    }
+    try {
+      return parseCampaignState(JSON.parse(readFileSync(path, "utf8")));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`cannot load campaign state for project ${projectId}: ${detail}`);
+    }
+  };
+  return {
+    loadPending(projectId: string): CampaignExecutionState | null {
+      const state = load(projectId);
+      return state?.status === "pending" ? state : null;
+    },
+    save(state: CampaignExecutionState): void {
+      prepareReportsDirectory(directoryOptions);
+      writeOwnerOnlyAtomic(
+        statePath(options, state.projectId),
+        `${JSON.stringify(state, null, 2)}\n`,
+      );
+    },
+    markTerminal(projectId: string, campaignId: string, updatedAt: string): void {
+      const current = load(projectId);
+      if (!current || current.campaignId !== campaignId) {
+        throw new Error(`pending campaign ${campaignId} not found for project ${projectId}`);
+      }
+      this.save({ ...current, status: "terminal", updatedAt });
+    },
+  };
 }
 
 function safeFileSegment(value: string, name: string): string {
@@ -130,8 +352,7 @@ export function createCampaignReportWriter(
   }
   return {
     async write(report: OperatorCampaignReport): Promise<string> {
-      mkdirSync(options.reportsDir, { recursive: true, mode: 0o700 });
-      chmodSync(options.reportsDir, 0o700);
+      prepareReportsDirectory(options);
       const fileName = [
         timestampFileSegment(report.generatedAt),
         safeFileSegment(report.campaignId, "campaignId"),

@@ -17,8 +17,11 @@ import type { DoctorReport, ReadinessState } from "./diagnostics.js";
 import {
   OPERATOR_CAMPAIGN_REPORT_FORMAT_VERSION,
   type CampaignConfigurationSnapshot,
+  type CampaignBaselineState,
   type CampaignEvidenceSnapshot,
+  type CampaignExecutionState,
   type CampaignReportWriter,
+  type CampaignStateStore,
   type OperatorCampaignReport,
 } from "./campaign-report.js";
 import { redactText, redactValue } from "./redact.js";
@@ -54,6 +57,7 @@ export interface CampaignDependencies {
   readonly collectDoctor: () => Promise<DoctorReport>;
   readonly configuration: CampaignConfigurationSnapshot;
   readonly reportWriter?: CampaignReportWriter;
+  readonly stateStore?: CampaignStateStore;
   readonly now?: () => Date;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly confirmProject?: (projectId: string) => Promise<string | undefined>;
@@ -100,6 +104,11 @@ interface PublicSnapshot {
   readonly approvals: readonly Approval[];
   readonly clarifications: readonly unknown[];
   readonly pullRequests: readonly PullRequestRef[];
+}
+
+interface SnapshotCollection {
+  readonly snapshot: PublicSnapshot;
+  readonly eventSeq: number;
 }
 
 interface ReadinessCollection {
@@ -420,50 +429,160 @@ function itemArray<T>(value: { readonly items?: readonly T[] }): readonly T[] {
   return Array.isArray(value.items) ? value.items : [];
 }
 
+function recordId(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const id = (value as Record<string, unknown>).id;
+  return typeof id === "string" ? id : null;
+}
+
+function submittedObjectiveId(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    throw new Error("objective submission returned an invalid public API response");
+  }
+  const response = value as Record<string, unknown>;
+  const id = recordId(response.objective ?? response);
+  if (!id) {
+    throw new Error("objective submission response is missing objective.id");
+  }
+  return id;
+}
+
+async function collectEventsAfter(
+  projectId: string,
+  api: PublicCampaignApi,
+  afterSeq: number,
+): Promise<{ readonly items: readonly EventEnvelope[]; readonly lastSeq: number }> {
+  const items: EventEnvelope[] = [];
+  let cursor = afterSeq;
+  for (;;) {
+    const response = await api.get<{ items: EventEnvelope[] }>(
+      `/v1/events?projectId=${encodeURIComponent(projectId)}&afterSeq=${cursor}&limit=200`,
+    );
+    const page = itemArray(response);
+    if (page.length === 0) break;
+    const nextCursor = Math.max(...page.map((event) => event.seq));
+    if (nextCursor <= cursor) {
+      throw new Error(`public events pagination did not advance after seq ${cursor}`);
+    }
+    items.push(...page.filter((event) => event.seq > cursor));
+    cursor = nextCursor;
+    if (page.length < 200) break;
+  }
+  return { items, lastSeq: cursor };
+}
+
+async function collectCampaignBaseline(
+  projectId: string,
+  api: PublicCampaignApi,
+): Promise<CampaignBaselineState> {
+  const encodedProjectId = encodeURIComponent(projectId);
+  const [
+    brain,
+    missionsResponse,
+    runsResponse,
+    approvalsResponse,
+    clarificationsResponse,
+    pullRequestsResponse,
+    events,
+  ] = await Promise.all([
+    api.get<unknown>(`/v1/projects/${encodedProjectId}/brain/state`),
+    api.get<{ items: Mission[] }>(`/v1/projects/${encodedProjectId}/missions`),
+    api.get<{ items: AgentRun[] }>(`/v1/runs?projectId=${encodedProjectId}`),
+    api.get<{ items: Approval[] }>(`/v1/approvals?projectId=${encodedProjectId}`),
+    api.get<{ items: unknown[] }>(
+      `/v1/projects/${encodedProjectId}/clarifications?status=open`,
+    ),
+    api.get<{ items: PullRequestRef[] }>(`/v1/prs?projectId=${encodedProjectId}`),
+    collectEventsAfter(projectId, api, 0),
+  ]);
+  return {
+    brainRunIds: objectRecords(brain, "runs").flatMap((run) =>
+      typeof run.id === "string" ? [run.id] : []),
+    missionIds: itemArray(missionsResponse).map((mission) => mission.id),
+    runIds: itemArray(runsResponse).map((run) => run.id),
+    approvalIds: itemArray(approvalsResponse).map((approval) => approval.id),
+    clarificationIds: itemArray(clarificationsResponse).flatMap((item) => {
+      const id = recordId(item);
+      return id ? [id] : [];
+    }),
+    pullRequestIds: itemArray(pullRequestsResponse).map((pullRequest) => pullRequest.id),
+    eventSeq: events.lastSeq,
+  };
+}
+
 async function collectPublicSnapshot(
   projectId: string,
   api: PublicCampaignApi,
-): Promise<PublicSnapshot> {
+  baseline: CampaignBaselineState,
+  afterEventSeq: number,
+  accumulatedEvents: readonly EventEnvelope[],
+): Promise<SnapshotCollection> {
   const encodedProjectId = encodeURIComponent(projectId);
   const [
     project,
     brain,
     missionsResponse,
     runsResponse,
-    eventsResponse,
     approvalsResponse,
     clarificationsResponse,
     pullRequestsResponse,
+    eventPage,
   ] = await Promise.all([
     api.get<unknown>(`/v1/projects/${encodedProjectId}/configuration`),
     api.get<unknown>(`/v1/projects/${encodedProjectId}/brain/state`),
     api.get<{ items: Mission[] }>(`/v1/projects/${encodedProjectId}/missions`),
     api.get<{ items: AgentRun[] }>(`/v1/runs?projectId=${encodedProjectId}`),
-    api.get<{ items: EventEnvelope[] }>(
-      `/v1/events?projectId=${encodedProjectId}&afterSeq=0`,
-    ),
     api.get<{ items: Approval[] }>(`/v1/approvals?projectId=${encodedProjectId}`),
     api.get<{ items: unknown[] }>(
       `/v1/projects/${encodedProjectId}/clarifications?status=open`,
     ),
     api.get<{ items: PullRequestRef[] }>(`/v1/prs?projectId=${encodedProjectId}`),
+    collectEventsAfter(projectId, api, afterEventSeq),
   ]);
-  const missions = itemArray(missionsResponse);
+  const baselineMissionIds = new Set(baseline.missionIds);
+  const baselineRunIds = new Set(baseline.runIds);
+  const baselineApprovalIds = new Set(baseline.approvalIds);
+  const baselineClarificationIds = new Set(baseline.clarificationIds);
+  const baselinePullRequestIds = new Set(baseline.pullRequestIds);
+  const baselineBrainRunIds = new Set(baseline.brainRunIds);
+  const missions = itemArray(missionsResponse)
+    .filter((mission) => !baselineMissionIds.has(mission.id));
+  const runs = itemArray(runsResponse)
+    .filter((run) => !baselineRunIds.has(run.id));
+  const approvals = itemArray(approvalsResponse)
+    .filter((approval) => !baselineApprovalIds.has(approval.id));
+  const clarifications = itemArray(clarificationsResponse)
+    .filter((clarification) => {
+      const id = recordId(clarification);
+      return id !== null && !baselineClarificationIds.has(id);
+    });
+  const pullRequests = itemArray(pullRequestsResponse)
+    .filter((pullRequest) => !baselinePullRequestIds.has(pullRequest.id));
+  const filteredBrain = brain && typeof brain === "object"
+    ? {
+        ...(brain as Record<string, unknown>),
+        runs: objectRecords(brain, "runs").filter((run) =>
+          typeof run.id === "string" && !baselineBrainRunIds.has(run.id)),
+      }
+    : brain;
   const missionDetails = await Promise.all(missions.map((mission) =>
     api.get<{ checkpoints?: Checkpoint[] }>(
       `/v1/missions/${encodeURIComponent(mission.id)}`,
     )
   ));
   return {
-    project,
-    brain,
-    missions,
-    runs: itemArray(runsResponse),
-    events: itemArray(eventsResponse),
-    checkpoints: missionDetails.flatMap((detail) => detail.checkpoints ?? []),
-    approvals: itemArray(approvalsResponse),
-    clarifications: itemArray(clarificationsResponse),
-    pullRequests: itemArray(pullRequestsResponse),
+    eventSeq: eventPage.lastSeq,
+    snapshot: {
+      project,
+      brain: filteredBrain,
+      missions,
+      runs,
+      events: [...accumulatedEvents, ...eventPage.items],
+      checkpoints: missionDetails.flatMap((detail) => detail.checkpoints ?? []),
+      approvals,
+      clarifications,
+      pullRequests,
+    },
   };
 }
 
@@ -710,6 +829,19 @@ function interventionRecommendations(
   return recommendations;
 }
 
+function missionIsTerminal(mission: Mission): boolean {
+  return ["completed", "failed", "cancelled"].includes(mission.state);
+}
+
+function allScenariosPassed(
+  statuses: ReadonlyMap<
+    (typeof E2EScenarioKey.options)[number],
+    { readonly status: E2ECampaignResultStatus }
+  >,
+): boolean {
+  return E2EScenarioKey.options.every((key) => statuses.get(key)?.status === "passed");
+}
+
 /**
  * Submit one idempotent fixture objective after exact confirmation, poll only
  * bounded public endpoints, and stop at the configured unmerged PR state.
@@ -726,9 +858,10 @@ export async function runLiveCampaign(
     MAX_POLL_INTERVAL_MS,
     "pollIntervalMs",
   );
+  const pendingState = dependencies.stateStore?.loadPending(options.projectId) ?? null;
   const now = (dependencies.now ?? (() => new Date()))();
-  const generatedAt = now.toISOString();
-  const id = campaignId(now);
+  const generatedAt = pendingState?.createdAt ?? now.toISOString();
+  const id = pendingState?.campaignId ?? campaignId(now);
   const readiness = await collectReadiness(
     options.projectId,
     options.allowFaultInjection === true,
@@ -761,15 +894,37 @@ export async function runLiveCampaign(
     );
   }
 
-  await exactConfirmation(options, dependencies);
-  await dependencies.api.post(
-    `/v1/projects/${encodeURIComponent(options.projectId)}/objectives`,
-    {
-      text: LIVE_OBJECTIVE,
-      acceptanceCriteria: [...LIVE_ACCEPTANCE_CRITERIA],
-      idempotencyKey: id,
-    },
-  );
+  const baseline = pendingState?.baseline ??
+    await collectCampaignBaseline(options.projectId, dependencies.api);
+  let executionState: CampaignExecutionState = pendingState ?? {
+    version: 1,
+    status: "pending",
+    campaignId: id,
+    projectId: options.projectId,
+    idempotencyKey: id,
+    createdAt: generatedAt,
+    updatedAt: generatedAt,
+    objectiveId: null,
+    baseline,
+  };
+  if (executionState.objectiveId === null) {
+    await exactConfirmation(options, dependencies);
+    dependencies.stateStore?.save(executionState);
+    const objectiveResponse = await dependencies.api.post<unknown>(
+      `/v1/projects/${encodeURIComponent(options.projectId)}/objectives`,
+      {
+        text: LIVE_OBJECTIVE,
+        acceptanceCriteria: [...LIVE_ACCEPTANCE_CRITERIA],
+        idempotencyKey: executionState.idempotencyKey,
+      },
+    );
+    executionState = {
+      ...executionState,
+      objectiveId: submittedObjectiveId(objectiveResponse),
+      updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+    };
+    dependencies.stateStore?.save(executionState);
+  }
 
   const sleep = dependencies.sleep ?? ((milliseconds: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -778,9 +933,20 @@ export async function runLiveCampaign(
   let terminalStatuses: ReturnType<typeof observedStatuses> | null = null;
   let terminalNote = "";
   let recommendations = [...readiness.recommendations];
+  let eventSeq = baseline.eventSeq;
+  let campaignEvents: readonly EventEnvelope[] = [];
 
   for (let poll = 0; poll < maxPolls; poll += 1) {
-    latestSnapshot = await collectPublicSnapshot(options.projectId, dependencies.api);
+    const collected = await collectPublicSnapshot(
+      options.projectId,
+      dependencies.api,
+      baseline,
+      eventSeq,
+      campaignEvents,
+    );
+    latestSnapshot = collected.snapshot;
+    eventSeq = collected.eventSeq;
+    campaignEvents = latestSnapshot.events;
     recommendations = [
       ...readiness.recommendations,
       ...interventionRecommendations(options.projectId, latestSnapshot),
@@ -806,11 +972,17 @@ export async function runLiveCampaign(
     }
     const accepted = latestSnapshot.pullRequests.find((pullRequest) =>
       acceptedByPolicy(pullRequest, policy));
-    if (accepted) {
-      terminalStatuses = observedStatuses(latestSnapshot, accepted);
-      terminalNote =
-        `Campaign stopped at unmerged pull request ${accepted.id} (${accepted.state}); no merge was attempted.`;
-      break;
+    const missionsTerminal =
+      latestSnapshot.missions.length > 0 &&
+      latestSnapshot.missions.every(missionIsTerminal);
+    if (accepted && missionsTerminal) {
+      const observed = observedStatuses(latestSnapshot, accepted);
+      if (allScenariosPassed(observed)) {
+        terminalStatuses = observed;
+        terminalNote =
+          `Campaign stopped at unmerged pull request ${accepted.id} (${accepted.state}); no merge was attempted.`;
+        break;
+      }
     }
     if (
       latestSnapshot.clarifications.length > 0 ||
@@ -830,14 +1002,14 @@ export async function runLiveCampaign(
     throw new Error("campaign polling produced no public API snapshot");
   }
   if (!terminalStatuses) {
-    terminalStatuses = blockedRunStatuses(
-      readiness.preflight,
-      `Campaign polling reached its bound (${maxPolls} polls) before an acceptable pull request appeared.`,
-    );
-    for (const key of E2EScenarioKey.options) {
-      const current = terminalStatuses.get(key);
-      if (current) terminalStatuses.set(key, { ...current, status: "failed" });
-    }
+    const accepted = latestSnapshot.pullRequests.find((pullRequest) =>
+      acceptedByPolicy(pullRequest, policy));
+    terminalStatuses = accepted
+      ? observedStatuses(latestSnapshot, accepted)
+      : blockedRunStatuses(
+          readiness.preflight,
+          `Campaign polling reached its bound (${maxPolls} polls) before an acceptable pull request appeared.`,
+        );
     terminalNote =
       `Campaign failed after ${maxPolls} bounded polls without an acceptable pull request.`;
     recommendations.push(
@@ -852,7 +1024,7 @@ export async function runLiveCampaign(
     statuses: terminalStatuses,
     note: terminalNote,
   });
-  return persist(
+  const result = await persist(
     baseReport(
       "run",
       generatedAt,
@@ -866,4 +1038,10 @@ export async function runLiveCampaign(
     ),
     dependencies.reportWriter,
   );
+  dependencies.stateStore?.markTerminal(
+    options.projectId,
+    id,
+    (dependencies.now ?? (() => new Date()))().toISOString(),
+  );
+  return result;
 }

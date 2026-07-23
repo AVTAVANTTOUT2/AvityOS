@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,9 +19,13 @@ import {
   runLiveCampaign,
   type PublicCampaignApi,
 } from "./campaign.js";
-import { createCampaignReportWriter } from "./campaign-report.js";
+import {
+  createCampaignReportWriter,
+  createCampaignStateStore,
+} from "./campaign-report.js";
 import { main } from "../main.js";
 import { Client } from "../client.js";
+import { redactValue } from "./redact.js";
 
 const NOW = new Date("2026-07-23T12:00:00.000Z");
 
@@ -279,7 +289,34 @@ describe("live campaign operator", () => {
   });
 
   it("treats a merged pull request as campaign failure and never calls merge", async () => {
-    const api = apiFor({ pullRequestState: "merged" });
+    const base = apiFor();
+    let submitted = false;
+    const api = {
+      ...base,
+      async get<T>(path: string): Promise<T> {
+        if (path === "/v1/prs?projectId=project-1") {
+          return {
+            items: submitted
+              ? [{
+                  id: "pr-new-merged",
+                  projectId: "project-1",
+                  missionId: null,
+                  number: 42,
+                  url: "https://github.com/example/live-fixture/pull/42",
+                  branch: "campaign",
+                  title: "New merged PR",
+                  state: "merged",
+                }]
+              : [],
+          } as T;
+        }
+        return base.get<T>(path);
+      },
+      async post<T>(path: string, body?: unknown): Promise<T> {
+        submitted = true;
+        return base.post<T>(path, body);
+      },
+    };
 
     const result = await runLiveCampaign(
       {
@@ -299,6 +336,201 @@ describe("live campaign operator", () => {
     ]);
   });
 
+  it("ignores a merged pull request from the pre-campaign baseline", async () => {
+    const base = apiFor();
+    let submitted = false;
+    const oldMerged = {
+      id: "pr-old",
+      projectId: "project-1",
+      missionId: null,
+      number: 1,
+      url: "https://github.com/example/live-fixture/pull/1",
+      branch: "old",
+      title: "Old merged PR",
+      state: "merged",
+    };
+    const freshDraft = {
+      ...oldMerged,
+      id: "pr-fresh",
+      number: 42,
+      url: "https://github.com/example/live-fixture/pull/42",
+      branch: "fresh",
+      title: "Fresh campaign PR",
+      state: "draft",
+    };
+    const api: PublicCampaignApi = {
+      async get<T>(path: string): Promise<T> {
+        if (path === "/v1/prs?projectId=project-1") {
+          return { items: submitted ? [oldMerged, freshDraft] : [oldMerged] } as T;
+        }
+        return base.get<T>(path);
+      },
+      async post<T>(path: string, body?: unknown): Promise<T> {
+        submitted = true;
+        return base.post<T>(path, body);
+      },
+    };
+
+    const result = await runLiveCampaign(
+      {
+        projectId: "project-1",
+        isTTY: false,
+        confirmedProjectId: "project-1",
+        maxPolls: 1,
+        pollIntervalMs: 1,
+      },
+      dependencies(api),
+    );
+
+    expect(result.report.campaign.results.find((item) => item.key === "no_autonomous_merge")?.status).not.toBe("failed");
+    expect(result.report.evidence.pullRequests.map((pullRequest) => pullRequest.id)).toEqual(["pr-fresh"]);
+  });
+
+  it("continues polling after an early draft PR until new missions are terminal", async () => {
+    const base = apiFor({ pullRequestState: "draft" });
+    let submitted = false;
+    let missionReads = 0;
+    const api: PublicCampaignApi = {
+      async get<T>(path: string): Promise<T> {
+        if (path === "/v1/projects/project-1/missions") {
+          if (!submitted) return { items: [] } as T;
+          missionReads += 1;
+          return {
+            items: [{
+              id: "mission-new",
+              projectId: "project-1",
+              role: "backend",
+              state: missionReads === 1 ? "running" : "completed",
+              correctionAttempts: 0,
+            }],
+          } as T;
+        }
+        if (path === "/v1/missions/mission-new") {
+          return { checkpoints: [] } as T;
+        }
+        return base.get<T>(path);
+      },
+      async post<T>(path: string, body?: unknown): Promise<T> {
+        submitted = true;
+        return base.post<T>(path, body);
+      },
+    };
+
+    await runLiveCampaign(
+      {
+        projectId: "project-1",
+        isTTY: false,
+        confirmedProjectId: "project-1",
+        maxPolls: 2,
+        pollIntervalMs: 1,
+      },
+      dependencies(api),
+    );
+
+    expect(missionReads).toBe(2);
+  });
+
+  it("excludes baseline events and advances the public event cursor", async () => {
+    const base = apiFor({ pullRequestState: "draft" });
+    let submitted = false;
+    const eventPaths: string[] = [];
+    const oldFallback = {
+      schemaVersion: 1,
+      seq: 5,
+      id: "event-old",
+      type: "provider.fallback",
+      projectId: "project-1",
+      missionId: "mission-old",
+      runId: "run-old",
+      createdAt: NOW.toISOString(),
+      payload: { provider: "codex", action: "switch_provider" },
+    };
+    const api: PublicCampaignApi = {
+      async get<T>(path: string): Promise<T> {
+        if (path.startsWith("/v1/events?")) {
+          eventPaths.push(path);
+          return { items: submitted && path.includes("afterSeq=5") ? [] : [oldFallback] } as T;
+        }
+        return base.get<T>(path);
+      },
+      async post<T>(path: string, body?: unknown): Promise<T> {
+        submitted = true;
+        return base.post<T>(path, body);
+      },
+    };
+
+    const result = await runLiveCampaign(
+      {
+        projectId: "project-1",
+        isTTY: false,
+        confirmedProjectId: "project-1",
+        maxPolls: 1,
+        pollIntervalMs: 1,
+      },
+      dependencies(api),
+    );
+
+    expect(eventPaths.some((path) => path.includes("afterSeq=5"))).toBe(true);
+    expect(result.report.campaign.results.find((item) => item.key === "cross_provider_fallback")?.status).not.toBe("passed");
+  });
+
+  it("resumes a pending campaign without submitting a second objective", async () => {
+    const operatorRoot = mkdtempSync(join(tmpdir(), "avity-campaign-resume-"));
+    const reportsDir = join(operatorRoot, "reports");
+    const stateStore = createCampaignStateStore({ operatorRoot, reportsDir });
+    const base = apiFor();
+    let posts = 0;
+    let crashOnce = true;
+    const idempotencyKeys: string[] = [];
+    const api: PublicCampaignApi = {
+      async get<T>(path: string): Promise<T> {
+        if (
+          posts > 0 &&
+          crashOnce &&
+          path === "/v1/projects/project-1/configuration"
+        ) {
+          crashOnce = false;
+          throw new Error("simulated process interruption");
+        }
+        return base.get<T>(path);
+      },
+      async post<T>(path: string, body?: unknown): Promise<T> {
+        posts += 1;
+        idempotencyKeys.push(String((body as { idempotencyKey?: unknown }).idempotencyKey));
+        return base.post<T>(path, body);
+      },
+    };
+    const deps = { ...dependencies(api), stateStore };
+
+    await expect(runLiveCampaign(
+      {
+        projectId: "project-1",
+        isTTY: false,
+        confirmedProjectId: "project-1",
+        maxPolls: 1,
+        pollIntervalMs: 1,
+      },
+      deps,
+    )).rejects.toThrow(/simulated process interruption/);
+
+    await runLiveCampaign(
+      {
+        projectId: "project-1",
+        isTTY: false,
+        confirmedProjectId: "project-1",
+        maxPolls: 1,
+        pollIntervalMs: 1,
+      },
+      deps,
+    );
+
+    const stateFiles = readdirSync(reportsDir).filter((name) => name.endsWith(".state.json"));
+    expect(posts).toBe(1);
+    expect(new Set(idempotencyKeys).size).toBe(1);
+    expect(stateFiles).toHaveLength(1);
+    expect(statSync(join(reportsDir, stateFiles[0]!)).mode & 0o777).toBe(0o600);
+  });
+
   it("writes redacted reports with deterministic retention outside the repository", async () => {
     const reportsDir = mkdtempSync(join(tmpdir(), "avity-campaign-reports-"));
     const writer = createCampaignReportWriter({ reportsDir, retentionCount: 2 });
@@ -314,6 +546,24 @@ describe("live campaign operator", () => {
       "2026-07-23T12-00-00.000Z-campaign-003-prepare.json",
     ]);
     expect(readFileSync(latestPath, "utf8")).not.toContain("ghp_should_never_be_persisted");
+    expect(statSync(reportsDir).mode & 0o777).toBe(0o700);
+    expect(statSync(latestPath).mode & 0o777).toBe(0o600);
+  });
+
+  it("recursively sanitizes secret-bearing URLs while preserving host and path", () => {
+    const redacted = redactValue({
+      remote: "https://user:token@github.com/org/repo?token=secret-value&ref=main#auth=hidden",
+      nested: {
+        controlPlaneUrl: "https://admin:key@control.example.test/v1?project=one&api_key=hidden#session",
+      },
+    });
+
+    expect(redacted).toEqual({
+      remote: "https://github.com/org/repo?ref=main",
+      nested: {
+        controlPlaneUrl: "https://control.example.test/v1?project=one",
+      },
+    });
   });
 
   it("refuses a campaign report directory inside the repository", () => {
@@ -324,6 +574,20 @@ describe("live campaign operator", () => {
       repositoryRoot,
       retentionCount: 2,
     })).toThrow(/outside the repository/);
+  });
+
+  it("refuses symlinked campaign report directories", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "avity-campaign-symlink-"));
+    const target = mkdtempSync(join(tmpdir(), "avity-campaign-target-"));
+    const reportsDir = join(parent, "reports");
+    symlinkSync(target, reportsDir);
+    const writer = createCampaignReportWriter({ reportsDir, retentionCount: 2 });
+    const report = await prepareLiveCampaign(
+      { projectId: "project-1" },
+      dependencies(apiFor()),
+    );
+
+    await expect(writer.write(report.report)).rejects.toThrow(/symlink/i);
   });
 
   it("does not turn fake-fixture evidence into a passed live scenario", async () => {
@@ -360,10 +624,12 @@ describe("live campaign operator", () => {
   });
 
   it("does not pass a provider scenario with a failed mission checkpoint", async () => {
-    const api = apiFor({ pullRequestState: "draft" });
-    const get = api.get.bind(api);
-    vi.spyOn(api, "get").mockImplementation(async <T>(path: string): Promise<T> => {
+    const base = apiFor();
+    let submitted = false;
+    const api: PublicCampaignApi = {
+      async get<T>(path: string): Promise<T> {
       if (path === "/v1/projects/project-1/missions") {
+        if (!submitted) return { items: [] } as T;
         return {
           items: [{
             id: "mission-codex",
@@ -388,6 +654,7 @@ describe("live campaign operator", () => {
         } as T;
       }
       if (path === "/v1/runs?projectId=project-1") {
+        if (!submitted) return { items: [] } as T;
         return {
           items: [{
             id: "run-codex",
@@ -397,8 +664,29 @@ describe("live campaign operator", () => {
           }],
         } as T;
       }
-      return get<T>(path);
-    });
+      if (path === "/v1/prs?projectId=project-1") {
+        return {
+          items: submitted
+            ? [{
+                id: "pr-checkpoint",
+                projectId: "project-1",
+                missionId: "mission-codex",
+                number: 42,
+                url: "https://github.com/example/live-fixture/pull/42",
+                branch: "checkpoint",
+                title: "Checkpoint campaign",
+                state: "draft",
+              }]
+            : [],
+        } as T;
+      }
+      return base.get<T>(path);
+      },
+      async post<T>(path: string, body?: unknown): Promise<T> {
+        submitted = true;
+        return base.post<T>(path, body);
+      },
+    };
 
     const result = await runLiveCampaign(
       {
@@ -415,12 +703,13 @@ describe("live campaign operator", () => {
   });
 
   it("does not treat a local pull-request record as GitHub publication evidence", async () => {
-    const api = apiFor({ pullRequestState: "draft" });
-    const get = api.get.bind(api);
-    vi.spyOn(api, "get").mockImplementation(async <T>(path: string): Promise<T> => {
+    const base = apiFor();
+    let submitted = false;
+    const api: PublicCampaignApi = {
+      async get<T>(path: string): Promise<T> {
       if (path === "/v1/prs?projectId=project-1") {
         return {
-          items: [{
+          items: submitted ? [{
             id: "pr-local",
             projectId: "project-1",
             missionId: null,
@@ -429,11 +718,16 @@ describe("live campaign operator", () => {
             branch: "avity/local-only",
             title: "Local campaign record",
             state: "draft",
-          }],
+          }] : [],
         } as T;
       }
-      return get<T>(path);
-    });
+      return base.get<T>(path);
+      },
+      async post<T>(path: string, body?: unknown): Promise<T> {
+        submitted = true;
+        return base.post<T>(path, body);
+      },
+    };
 
     const result = await runLiveCampaign(
       {
