@@ -8,14 +8,18 @@ import {
   CODEX_SANDBOX_POLICY,
   CURSOR_SANDBOX_POLICY,
 } from "@avityos/providers";
-import { buildProviders, parseRoleProviderMap } from "./providers.js";
+import {
+  buildProviders,
+  parseRoleProviderMap,
+  resolveCliToolchainRuntimePaths,
+} from "./providers.js";
 
 function adapter(name: string, env: NodeJS.ProcessEnv): CommandProviderAdapter {
   return buildProviders(env).get(name) as CommandProviderAdapter;
 }
 
 describe("runtime command-provider safety", () => {
-  it("uses each supported CLI's non-interactive sandbox controls", () => {
+  it("uses each supported CLI's non-interactive controls inside the AvityOS sandbox", () => {
     const providers = buildProviders({
       AVITY_CODEX_BIN: "codex",
       AVITY_CLAUDE_CODE_BIN: "claude",
@@ -26,8 +30,15 @@ describe("runtime command-provider safety", () => {
     });
 
     const codex = providers.get("codex") as CommandProviderAdapter;
-    expect(codex.getConfig().args).toContain("workspace-write");
+    expect(codex.getConfig().args).toEqual(
+      expect.arrayContaining(["--sandbox", "danger-full-access"]),
+    );
+    expect(codex.getConfig().args).not.toContain("workspace-write");
     expect(codex.getConfig().args).toContain('approval_policy="never"');
+    expect(codex.getConfig().args).toContain('shell_environment_policy.inherit="none"');
+    expect(codex.getConfig().args.some(
+      (arg) => arg.startsWith('shell_environment_policy.set.PATH="'),
+    )).toBe(true);
     expect(codex.getConfig().args).toContain("--ignore-user-config");
     expect(codex.getConfig().args).not.toContain("--ask-for-approval");
 
@@ -40,6 +51,35 @@ describe("runtime command-provider safety", () => {
     expect(cursor.getConfig().args).toEqual(
       expect.arrayContaining(["--sandbox", "enabled", "--skip-worktree-setup", "--workspace"]),
     );
+  });
+
+  it("grants only resolved toolchain runtime roots to CLI adapters", () => {
+    const runtimePaths = ["/trusted/runtime/node", "/trusted/runtime/git"];
+    const providers = buildProviders(
+      {
+        AVITY_CODEX_BIN: "codex",
+        AVITY_CLAUDE_CODE_BIN: "claude",
+        AVITY_CURSOR_BIN: "cursor-agent",
+        CODEX_API_KEY: "ck",
+        ANTHROPIC_API_KEY: "ak",
+        CURSOR_API_KEY: "uk",
+      },
+      { cliToolchainRuntimePaths: runtimePaths },
+    );
+
+    for (const name of ["codex", "claude-code", "cursor"]) {
+      const config = (providers.get(name) as CommandProviderAdapter).getConfig();
+      expect(config.runtimePaths).toEqual(runtimePaths);
+    }
+  });
+
+  it("rejects path-like operator toolchain entries", () => {
+    expect(() =>
+      resolveCliToolchainRuntimePaths({
+        PATH: "/usr/bin:/bin",
+        AVITY_CLI_TOOLCHAIN_COMMANDS: "../secret-tool",
+      }),
+    ).toThrow(/bare executable names only/);
   });
 
   it("applies a distinct auth policy per CLI provider", () => {

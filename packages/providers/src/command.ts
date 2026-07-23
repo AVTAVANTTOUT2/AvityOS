@@ -81,6 +81,12 @@ export interface CommandAdapterConfig {
    */
   readablePaths?: readonly string[];
   /**
+   * Canonical runtime roots for trusted repository toolchains (for example
+   * git, Node.js and pnpm). The outer OS sandbox grants these roots read-only
+   * so the provider can launch checks without exposing arbitrary PATH trees.
+   */
+  runtimePaths?: readonly string[];
+  /**
    * Per-provider network policy. Defaults to false (fail-closed): only agents
    * that genuinely need to reach a model API should opt in.
    */
@@ -184,6 +190,7 @@ export class CommandProviderAdapter implements ProviderAdapter {
         credentialFiles: this.config.credentialFiles,
         credentialHome: this.config.credentialHome,
         readablePaths: this.config.readablePaths,
+        runtimePaths: this.config.runtimePaths,
       });
     } catch (err) {
       // Fail closed but stay within the adapter contract: surface a normalized
