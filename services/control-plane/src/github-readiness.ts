@@ -32,6 +32,25 @@ export type CommandRunner = (
   cwd?: string,
 ) => Promise<CommandResult>;
 
+export const LOCAL_READINESS_COMMAND_TIMEOUT_MS = 5_000;
+export const REMOTE_READINESS_COMMAND_TIMEOUT_MS = 15_000;
+
+/**
+ * GitHub and push checks cross process and network boundaries. Keeping their
+ * timeout separate from cheap local binary checks prevents a healthy but
+ * moderately slow connection from becoming a false operator blocker.
+ */
+export function githubReadinessCommandTimeoutMs(
+  command: string,
+  args: readonly string[],
+): number {
+  const isRemoteGitCommand = command === "git" && args.includes("push");
+  const isRemoteGitHubCommand = command === "gh" && args[0] !== "--version";
+  return isRemoteGitCommand || isRemoteGitHubCommand
+    ? REMOTE_READINESS_COMMAND_TIMEOUT_MS
+    : LOCAL_READINESS_COMMAND_TIMEOUT_MS;
+}
+
 async function runCommand(
   command: string,
   args: readonly string[],
@@ -40,7 +59,7 @@ async function runCommand(
   try {
     const { stdout } = await execFileAsync(command, [...args], {
       cwd,
-      timeout: 5_000,
+      timeout: githubReadinessCommandTimeoutMs(command, args),
       env: {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "",
@@ -189,6 +208,18 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 30_000;
+const INCOMPLETE_CACHE_TTL_MS = 5_000;
+
+function isCompleteRepositoryReadiness(value: GitHubReadiness): boolean {
+  return (
+    value.gitAvailable &&
+    value.ghAvailable &&
+    value.ghAuthenticated &&
+    value.repositoryReadable &&
+    value.repositoryPushDryRunSucceeded &&
+    value.repositoryWriteRoleObserved
+  );
+}
 
 export function clearGitHubReadinessCache(): void {
   cache.clear();
@@ -216,6 +247,27 @@ export function getCachedGitHubReadiness(
     value,
     expiresAt: current + CACHE_TTL_MS,
   });
+
+  // Share an in-flight probe and retain successful readiness for the normal
+  // TTL, but do not pin a transient timeout or network failure for 30 seconds.
+  // A short negative TTL prevents hot polling while allowing the next operator
+  // attempt to recover promptly.
+  void value.then(
+    (readiness) => {
+      const entry = cache.get(cacheKey);
+      if (
+        target &&
+        entry?.value === value &&
+        !isCompleteRepositoryReadiness(readiness)
+      ) {
+        entry.expiresAt = Math.min(
+          entry.expiresAt,
+          now() + INCOMPLETE_CACHE_TTL_MS,
+        );
+      }
+    },
+    () => undefined,
+  );
 
   // Never let a rejected detection stick in the cache for the whole TTL: a
   // transient failure (e.g. an injected runner that throws) would otherwise be

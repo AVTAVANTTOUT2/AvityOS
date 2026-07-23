@@ -4,7 +4,10 @@ import {
   clearGitHubReadinessCache,
   detectGitHubReadiness,
   getCachedGitHubReadiness,
+  githubReadinessCommandTimeoutMs,
+  LOCAL_READINESS_COMMAND_TIMEOUT_MS,
   PREFLIGHT_PERMISSION_BRANCH,
+  REMOTE_READINESS_COMMAND_TIMEOUT_MS,
   type CommandResult,
   type CommandRunner,
   type RepositoryReadinessTarget,
@@ -52,6 +55,23 @@ const PUSH_KEY = pushKey(DEMO_TARGET.remoteUrl);
 const VIEW_KEY = "gh repo view acme/demo --json nameWithOwner";
 const PERMISSION_KEY =
   "gh repo view acme/demo --json viewerPermission --jq .viewerPermission";
+
+describe("githubReadinessCommandTimeoutMs", () => {
+  it("allows remote GitHub operations more time than local binary checks", () => {
+    expect(githubReadinessCommandTimeoutMs("git", ["--version"])).toBe(
+      LOCAL_READINESS_COMMAND_TIMEOUT_MS,
+    );
+    expect(githubReadinessCommandTimeoutMs("gh", ["--version"])).toBe(
+      LOCAL_READINESS_COMMAND_TIMEOUT_MS,
+    );
+    expect(githubReadinessCommandTimeoutMs("git", ["push", "--dry-run"])).toBe(
+      REMOTE_READINESS_COMMAND_TIMEOUT_MS,
+    );
+    expect(
+      githubReadinessCommandTimeoutMs("gh", ["repo", "view", "acme/demo"]),
+    ).toBe(REMOTE_READINESS_COMMAND_TIMEOUT_MS);
+  });
+});
 
 describe("detectGitHubReadiness", () => {
   it("reports gitAvailable false when git --version fails", async () => {
@@ -563,6 +583,35 @@ describe("getCachedGitHubReadiness", () => {
     const second = getCachedGitHubReadiness(target, () => now, run);
     expect(second).not.toBe(first);
     await second;
+  });
+
+  it("retries incomplete repository readiness after a short negative TTL", async () => {
+    let now = 1_000;
+    let attempts = 0;
+    const run: CommandRunner = async () => {
+      attempts += 1;
+      return { success: false, stdout: "" };
+    };
+    const target = {
+      repoPath: "/repo-flaky",
+      remoteUrl: "git@github.com:acme/flaky.git",
+    };
+
+    const first = getCachedGitHubReadiness(target, () => now, run);
+    await first;
+    const attemptsAfterFirstProbe = attempts;
+
+    now += 4_999;
+    const cached = getCachedGitHubReadiness(target, () => now, run);
+    expect(cached).toBe(first);
+    await cached;
+    expect(attempts).toBe(attemptsAfterFirstProbe);
+
+    now += 2;
+    const retried = getCachedGitHubReadiness(target, () => now, run);
+    expect(retried).not.toBe(first);
+    await retried;
+    expect(attempts).toBeGreaterThan(attemptsAfterFirstProbe);
   });
 
   it("keeps distinct cache entries per repository path", async () => {
