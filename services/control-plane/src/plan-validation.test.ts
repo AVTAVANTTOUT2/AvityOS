@@ -186,6 +186,24 @@ describe("deterministic plan validation", () => {
     ).toEqual({ ok: true });
   });
 
+  it("requires exact canonical paths for expected artifacts", () => {
+    expect(
+      issuesOf(
+        proposal([
+          mission({ expectedArtifacts: ["Modified src/feature.ts"] }),
+        ]),
+      ).join(),
+    ).toContain("without a status label");
+    expect(
+      issuesOf(proposal([mission({ expectedArtifacts: ["src/**"] })])).join(),
+    ).toContain("not a glob");
+    expect(
+      issuesOf(
+        proposal([mission({ expectedArtifacts: ["src/feature.ts"] })]),
+      ),
+    ).toEqual([]);
+  });
+
   it("rejects a mission budget above the project budget", () => {
     expect(issuesOf(proposal([mission({ budgetUsd: 500 })])).join()).toContain("exceeds the project budget");
   });
