@@ -667,6 +667,9 @@ export class Engine {
         systemPrompt: buildSystemPrompt(project, current, this.store.listBrainEntries(project.id)),
         userPrompt: current.contract.objective,
         ...(worktreePath ? { cwd: worktreePath } : {}),
+        ...(worktreePath && project.repoPath
+          ? { sandboxReadablePaths: [project.repoPath] }
+          : {}),
         timeoutMs: (current.contract.timeoutSeconds ?? 900) * 1000,
       });
       this.activeRuns.set(run.id, handle);
@@ -1258,6 +1261,9 @@ export class Engine {
         `Diff:\n${diff || "(no file changes)"}`,
       ].join("\n\n"),
       ...(mission.worktreePath ? { cwd: mission.worktreePath } : {}),
+      ...(mission.worktreePath && project.repoPath
+        ? { sandboxReadablePaths: [project.repoPath] }
+        : {}),
       timeoutMs: 300_000,
     });
     this.activeRuns.set(run.id, handle);

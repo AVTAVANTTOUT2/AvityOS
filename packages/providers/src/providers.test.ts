@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -312,6 +313,38 @@ describe("command adapter (hermetic unit)", () => {
     ]);
   });
 
+  it("merges trusted run-scoped readable paths with provider policy roots", async () => {
+    let observed: SandboxCommandOptions | undefined;
+    const adapter = new CommandProviderAdapter(
+      "worktree-agent",
+      {
+        executable: "echo",
+        args: ["ok"],
+        readablePaths: ["/trusted/provider-data"],
+      },
+      {
+        sandbox: ((argv, cwd, options) => {
+          observed = options;
+          return hermeticSandbox(argv, cwd, options);
+        }) as SandboxLauncher,
+      },
+    );
+
+    await drain(
+      adapter.startRun({
+        runId: "r",
+        model: "default",
+        systemPrompt: "",
+        userPrompt: "",
+        sandboxReadablePaths: ["/trusted/project-repo", "/trusted/provider-data"],
+      }).events,
+    );
+    expect(observed?.readablePaths).toEqual([
+      "/trusted/provider-data",
+      "/trusted/project-repo",
+    ]);
+  });
+
   it("normalizes spawn failures as agent_crash", async () => {
     const adapter = new CommandProviderAdapter(
       "spawn-fail",
@@ -604,6 +637,50 @@ describe.skipIf(!SANDBOX_AVAILABLE)("command adapter sandbox isolation (integrat
       expect(text.trim().endsWith(workspace.split("/").pop()!)).toBe(true);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("lets an agent use Git in a linked worktree through a trusted repository read grant", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "avity-provider-git-worktree-"));
+    const repo = join(scratch, "repo");
+    const worktree = join(scratch, "worktree");
+    mkdirSync(repo);
+    try {
+      execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Avity Test"], { cwd: repo });
+      execFileSync("git", ["config", "user.email", "avity-test@example.invalid"], { cwd: repo });
+      writeFileSync(join(repo, "README.md"), "# fixture\n");
+      execFileSync("git", ["add", "README.md"], { cwd: repo });
+      execFileSync("git", ["commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["worktree", "add", "-b", "mission/test", worktree], {
+        cwd: repo,
+        stdio: "ignore",
+      });
+      writeFileSync(join(worktree, "change.txt"), "mission change\n");
+
+      const adapter = new CommandProviderAdapter("git-worktree", {
+        executable: "git",
+        args: ["status", "--short"],
+      });
+      const events = await drain(
+        adapter.startRun({
+          runId: "r",
+          model: "default",
+          systemPrompt: "",
+          userPrompt: "",
+          cwd: worktree,
+          sandboxReadablePaths: [repo],
+        }).events,
+      );
+      expect(events.at(-1)).toMatchObject({ type: "completed" });
+      expect(
+        events
+          .filter((event): event is Extract<RunEvent, { type: "output" }> => event.type === "output")
+          .map((event) => event.text)
+          .join(""),
+      ).toContain("change.txt");
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
     }
   });
 
