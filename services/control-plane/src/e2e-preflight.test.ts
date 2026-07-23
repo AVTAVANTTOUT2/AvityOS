@@ -160,6 +160,86 @@ describe("buildE2EPreflight", () => {
     expect(statusOf(report, "bounded_correction_after_rejection")).toBe("ready");
   });
 
+  it("blocks a registered but unauthenticated mission adapter", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        providers: providersFrom([
+          ["codex", true],
+          ["claude-code", true],
+        ]),
+        providerChain: ["codex", "claude-code"],
+        roleProviderChains: new Map([
+          ["backend", ["codex", "claude-code"]],
+        ]),
+        missionRoles: ["backend"],
+        providerReadiness: new Map([
+          ["codex", { status: "ready", reasons: [] }],
+          [
+            "claude-code",
+            {
+              status: "blocked_missing_credentials",
+              reasons: [
+                {
+                  code: "auth_missing",
+                  category: "blocked_missing_credentials",
+                  message:
+                    "claude-code is not authenticated for sandboxed execution",
+                  tools: [],
+                  environmentVariables: ["CLAUDE_CODE_OAUTH_TOKEN"],
+                  remediation: ["configure portable Claude authentication"],
+                },
+              ],
+            },
+          ],
+        ]),
+      }),
+    );
+
+    const claude = report.scenarios.find(
+      (scenario) => scenario.key === "claude_code_mission",
+    )!;
+    expect(claude.status).toBe("blocked_missing_credentials");
+    expect(claude.reasons[0]?.code).toBe("auth_missing");
+    expect(statusOf(report, "cross_provider_fallback")).toBe(
+      "blocked_operator_configuration",
+    );
+  });
+
+  it("does not count an unready provider as an independent reviewer", () => {
+    const report = buildE2EPreflight(
+      inputs({
+        providers: providersFrom([
+          ["codex", true],
+          ["anthropic", false],
+        ]),
+        providerChain: ["codex", "anthropic"],
+        providerReadiness: new Map([
+          ["codex", { status: "ready", reasons: [] }],
+          [
+            "anthropic",
+            {
+              status: "blocked_missing_credentials",
+              reasons: [
+                {
+                  code: "auth_missing",
+                  category: "blocked_missing_credentials",
+                  message: "anthropic API credentials are not configured",
+                  tools: [],
+                  environmentVariables: ["ANTHROPIC_API_KEY"],
+                  remediation: ["configure Anthropic authentication"],
+                },
+              ],
+            },
+          ],
+        ]),
+      }),
+    );
+
+    expect(statusOf(report, "reviewer_distinct_from_author")).toBe(
+      "blocked_operator_configuration",
+    );
+  });
+
   it("blocks GitHub scenarios when only a credential hint is present", () => {
     const report = buildE2EPreflight(
       inputs({

@@ -7,6 +7,7 @@ import {
   type E2EProviderSummary,
   type E2EReadinessReason,
   type E2EScenarioReport,
+  type E2EScenarioStatus,
 } from "@avityos/contracts";
 import type { ProviderAdapter } from "@avityos/providers";
 import {
@@ -38,6 +39,18 @@ export interface E2EPreflightInputs {
    * inferred from registered providers alone.
    */
   missionRoles: readonly string[];
+  /**
+   * Secret-free startup readiness from the provider-status snapshot. When
+   * supplied, a registered adapter is runnable only when its binary, auth,
+   * model and routing checks are all ready.
+   */
+  providerReadiness?: ReadonlyMap<
+    string,
+    {
+      status: E2EScenarioStatus;
+      reasons: readonly E2EReadinessReason[];
+    }
+  >;
   /** Non-secret GitHub host readiness (async detection happens at the boundary). */
   github: {
     gitAvailable: boolean;
@@ -148,9 +161,18 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
 
   const realProviders = providers.filter((p) => p.real);
   const realEditors = realProviders.filter((p) => p.workspaceEdits);
-  const hasRealBrainProvider = realProviders.some((p) => brainChain.includes(p.name));
 
   const hasProvider = (name: string): boolean => inputs.providers.has(name);
+  const providerReadiness = (name: string) =>
+    inputs.providerReadiness?.get(name);
+  const providerIsReady = (name: string): boolean => {
+    if (!inputs.providerReadiness) return true;
+    return providerReadiness(name)?.status === "ready";
+  };
+  const hasRealBrainProvider = realProviders.some(
+    (provider) =>
+      brainChain.includes(provider.name) && providerIsReady(provider.name),
+  );
 
   const scenarios: E2EScenarioReport[] = [];
 
@@ -221,6 +243,31 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
           },
         ),
       );
+    } else if (!providerIsReady(name)) {
+      const readiness = providerReadiness(name);
+      const reasons = readiness?.reasons.length
+        ? [...readiness.reasons]
+        : [
+            {
+              code: "provider_readiness_missing",
+              category: "blocked_operator_configuration" as const,
+              message: `${name} has no provider-readiness snapshot`,
+              tools: [],
+              environmentVariables: [],
+              remediation: [
+                "Restart the control plane so provider readiness can be evaluated.",
+              ],
+            },
+          ];
+      scenarios.push({
+        key,
+        title,
+        status: readiness?.status ?? "blocked_operator_configuration",
+        detail:
+          reasons[0]?.message ??
+          `The ${name} adapter is registered but is not ready.`,
+        reasons,
+      });
     } else if (!inputs.providers.get(name)!.capabilities().workspaceEdits) {
       scenarios.push(
         blocked(
@@ -267,7 +314,10 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
   }
 
   const availableRealReviewProviders = reviewChain.filter(
-    (provider) => provider !== FIXTURE_PROVIDER && inputs.providers.has(provider),
+    (provider) =>
+      provider !== FIXTURE_PROVIDER &&
+      inputs.providers.has(provider) &&
+      providerIsReady(provider),
   );
   const canSelectDistinctReviewer = new Set(availableRealReviewProviders).size >= 2;
 
@@ -316,7 +366,11 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
           ),
   );
 
-  const routableRealEditors = realEditors.filter((p) => routableMissionProviders.has(p.name));
+  const routableRealEditors = realEditors.filter(
+    (provider) =>
+      routableMissionProviders.has(provider.name) &&
+      providerIsReady(provider.name),
+  );
   scenarios.push(
     routableRealEditors.length >= 1
       ? ready(
@@ -361,7 +415,12 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
   );
 
   const hasBrainFallback =
-    new Set(brainChain.filter((provider) => provider !== FIXTURE_PROVIDER))
+    new Set(
+      brainChain.filter(
+        (provider) =>
+          provider !== FIXTURE_PROVIDER && providerIsReady(provider),
+      ),
+    )
       .size >= 2;
   const hasMissionFallback = missionRoleChains.some(
     (route) =>
@@ -369,6 +428,7 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
         route.providers.filter(
           (provider) =>
             provider !== FIXTURE_PROVIDER &&
+            providerIsReady(provider) &&
             inputs.providers.get(provider)?.capabilities().workspaceEdits ===
               true,
         ),
