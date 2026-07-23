@@ -430,6 +430,51 @@ describe("chantier 3: atomic pause and resume", () => {
     });
   });
 
+  it("restores a blocked mission after pausing and resuming its project", async () => {
+    const project = store.createProject({
+      name: "Blocked pause",
+      description: "",
+      repoPath: null,
+      repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id,
+      planId: null,
+      milestoneId: null,
+      title: "Needs operator resolution",
+      role: "backend",
+      contract: {
+        objective: "Remain blocked across an unrelated project pause",
+        rationale: "",
+        context: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        acceptanceCriteria: ["blocked state is preserved"],
+        requiredChecks: [],
+        checkCommands: {},
+        budgetUsd: null,
+        timeoutSeconds: 60,
+        expectedArtifacts: [],
+        escalationConditions: [],
+      },
+      priority: 50,
+      dependsOn: [],
+    });
+    store.transitionMission(mission.id, "ready", "seed ready mission");
+    store.transitionMission(mission.id, "blocked", "operator action required");
+
+    await engine.pauseProject(project.id, { reason: "maintenance", actor: "test" });
+    expect(store.getMission(mission.id)!.state).toBe("paused");
+
+    await engine.resumeProject(project.id, { actor: "test" });
+
+    expect(store.getProject(project.id)!.status).toBe("active");
+    expect(store.getMission(mission.id)!.state).toBe("blocked");
+    expect(store.getMission(mission.id)!.stateReason).toBe("project resumed (was blocked)");
+  });
+
   it("resumes once and treats a second resume as idempotent", async () => {
     const project = store.createProject({
       name: "Resume", description: "", repoPath: null, repoRemoteUrl: null, autonomyProfile: "supervised",
