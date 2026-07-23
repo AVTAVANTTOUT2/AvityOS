@@ -850,6 +850,10 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       roleProviderChains: routing.roleProviderChains,
       missionRoles: routing.missionRoles,
       github,
+      // Derived at the boundary, never from ambient credentials: a project
+      // without a configured remote is an operator-configuration gap, so the
+      // push scenarios must not be misreported as missing credentials.
+      repositoryTargetConfigured: Boolean(repositoryTarget),
     });
     return E2EPreflightReport.parse(report);
   });

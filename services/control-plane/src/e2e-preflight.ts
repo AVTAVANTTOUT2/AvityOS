@@ -48,6 +48,18 @@ export interface E2EPreflightInputs {
     repositoryPushDryRunSucceeded: boolean;
     repositoryWriteRoleObserved: boolean;
   };
+  /**
+   * Whether a concrete repository publication target (project repoPath +
+   * repoRemoteUrl) was configured for this preflight. When false, the readiness
+   * detector never attempted a repository-scoped push dry-run, so a false
+   * `repositoryPushDryRunSucceeded` reflects a missing remote configuration —
+   * an operator-configuration gap — rather than absent credentials. This signal
+   * is derived at the request boundary (never from ambient process env) so the
+   * classification is hermetic and independent of the host's credential hints.
+   * Defaults to true to preserve the credential-driven classification for
+   * callers that already evaluated a concrete target.
+   */
+  repositoryTargetConfigured?: boolean;
   now?: () => Date;
 }
 
@@ -425,6 +437,7 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
   );
 
   const { github } = inputs;
+  const repositoryTargetConfigured = inputs.repositoryTargetConfigured ?? true;
 
   if (!github.gitAvailable) {
     scenarios.push(
@@ -437,6 +450,21 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
         {
           tools: ["git"],
           remediation: ["Install git and run preflight again."],
+        },
+      ),
+    );
+  } else if (!repositoryTargetConfigured) {
+    scenarios.push(
+      blocked(
+        "branch_push",
+        "Push a dedicated branch",
+        "blocked_operator_configuration",
+        "project_remote_not_configured",
+        "No repository remote is configured for the project, so the non-mutating push dry-run cannot run. This is a missing operator configuration, not absent credentials.",
+        {
+          remediation: [
+            "Configure the project repository remote (repoRemoteUrl) and run preflight with the project's id before attempting a live push.",
+          ],
         },
       ),
     );
@@ -526,6 +554,21 @@ export function buildE2EPreflight(inputs: E2EPreflightInputs): E2EPreflightRepor
           ],
           remediation: [
             "Authenticate gh through a protected credential channel and run preflight again.",
+          ],
+        },
+      ),
+    );
+  } else if (!repositoryTargetConfigured) {
+    scenarios.push(
+      blocked(
+        "draft_pull_request",
+        "Create a draft pull request",
+        "blocked_operator_configuration",
+        "project_remote_not_configured",
+        "git and gh are ready and authenticated, but no repository remote is configured for the project, so the pre-Pull-Request push dry-run cannot run.",
+        {
+          remediation: [
+            "Configure the project repository remote (repoRemoteUrl) and run preflight with the project's id before attempting a Pull Request.",
           ],
         },
       ),

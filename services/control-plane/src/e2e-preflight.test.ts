@@ -178,6 +178,58 @@ describe("buildE2EPreflight", () => {
     expect(statusOf(report, "draft_pull_request")).toBe("blocked_missing_credentials");
   });
 
+  it("classifies a missing project remote as operator configuration, independent of ambient credential hints", () => {
+    // Regression: the branch_push / draft_pull_request classification must not
+    // depend on the host's credentialHintAvailable (read from process env) when
+    // no concrete repository target was configured. Both hint values must yield
+    // the same operator-configuration verdict so the preflight stays hermetic.
+    for (const credentialHintAvailable of [true, false]) {
+      const report = buildE2EPreflight(
+        inputs({
+          repositoryTargetConfigured: false,
+          github: {
+            gitAvailable: true,
+            ghAvailable: true,
+            credentialHintAvailable,
+            ghAuthenticated: true,
+            repositoryReadable: false,
+            repositoryPushDryRunSucceeded: false,
+            repositoryWriteRoleObserved: false,
+          },
+        }),
+      );
+      expect(statusOf(report, "branch_push")).toBe("blocked_operator_configuration");
+      expect(statusOf(report, "draft_pull_request")).toBe("blocked_operator_configuration");
+      expect(
+        report.scenarios.find((s) => s.key === "branch_push")!.reasons[0]?.code,
+      ).toBe("project_remote_not_configured");
+      expect(
+        report.scenarios.find((s) => s.key === "draft_pull_request")!.reasons[0]
+          ?.code,
+      ).toBe("project_remote_not_configured");
+    }
+  });
+
+  it("keeps the credential-driven verdict when a concrete repository target was configured", () => {
+    // With a concrete target present (repositoryTargetConfigured true) a failed
+    // dry-run with no credential hint stays a missing-credentials verdict.
+    const report = buildE2EPreflight(
+      inputs({
+        repositoryTargetConfigured: true,
+        github: {
+          gitAvailable: true,
+          ghAvailable: true,
+          credentialHintAvailable: false,
+          ghAuthenticated: false,
+          repositoryReadable: false,
+          repositoryPushDryRunSucceeded: false,
+          repositoryWriteRoleObserved: false,
+        },
+      }),
+    );
+    expect(statusOf(report, "branch_push")).toBe("blocked_missing_credentials");
+  });
+
   it("blocks GitHub write scenarios when the repository is only readable", () => {
     const report = buildE2EPreflight(
       inputs({
