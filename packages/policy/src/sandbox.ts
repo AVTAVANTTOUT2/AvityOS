@@ -79,6 +79,15 @@ export interface SandboxedCommand {
 export const RESERVED_SANDBOX_ENV_VARS = ["HOME", "TMPDIR", "PATH"] as const;
 export type ReservedSandboxEnvVar = (typeof RESERVED_SANDBOX_ENV_VARS)[number];
 
+/**
+ * Keep the disposable HOME short enough for CLIs that derive Unix sockets or
+ * project state paths from HOME. macOS resolves `/tmp` to `/private/tmp`; the
+ * mkdtemp directory remains private and is still the only temporary path
+ * granted by the sandbox profile.
+ */
+export const SANDBOX_HOME_PREFIX =
+  process.platform === "win32" ? join(tmpdir(), "avity-sbx-") : join(sep, "tmp", "avity-sbx-");
+
 /** Bounds for recursive Mach-O dependency scanning (no code from the binary runs). */
 export const MACHO_SCAN_MAX_DEPTH = 6;
 export const MACHO_SCAN_MAX_FILES = 64;
@@ -177,7 +186,7 @@ export function sandboxCommand(
 
   const workspace = realpathSync(cwd);
   const resolvedExecutable = resolveExecutablePath(executable);
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "avity-sandbox-home-")));
+  const home = realpathSync(mkdtempSync(SANDBOX_HOME_PREFIX));
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;

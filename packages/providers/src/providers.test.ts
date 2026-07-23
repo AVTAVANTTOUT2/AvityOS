@@ -529,7 +529,7 @@ describe.skipIf(!SANDBOX_AVAILABLE)("command adapter sandbox isolation (integrat
     const { text } = await runText({ executable: "printenv", args: ["HOME"] });
     const home = text.trim();
     expect(home).not.toBe(homedir());
-    expect(home).toContain("avity-sandbox-home-");
+    expect(home).toContain("avity-sbx-");
   });
 
   it("cannot read a file placed in the real HOME", async () => {

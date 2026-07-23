@@ -25,13 +25,13 @@ importers:
       '@avityos/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@avityos/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
     devDependencies:
       '@avityos/control-plane':
         specifier: workspace:*
         version: link:../../services/control-plane
-      '@avityos/providers':
-        specifier: workspace:*
-        version: link:../../packages/providers
       '@types/node':
         specifier: 22.13.1
         version: 22.13.1

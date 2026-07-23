@@ -11,8 +11,8 @@ tool/agent/policy failure, `sandbox_unavailable`, unknown).
 | Name | Interface | Workspace edits | Runtime safety |
 | --- | --- | ---: | --- |
 | `codex` | official `codex exec` | yes | OS sandbox + `workspace-write`, no approvals, ephemeral, no inherited shell env; **network allowed**; auth: `CODEX_API_KEY` or staged `~/.codex/auth.json` |
-| `claude-code` | `claude -p` | yes | OS sandbox + safe mode, no persistence, explicit tools/permission mode; **network allowed**; auth: `ANTHROPIC_API_KEY` or staged `~/.claude/.credentials.json` |
-| `cursor` | `cursor-agent -p` | yes | OS sandbox + built-in sandbox, trusted explicit workspace, setup scripts disabled; **network allowed**; auth: `CURSOR_API_KEY` only |
+| `claude-code` | `claude -p` | yes | OS sandbox + safe mode, no persistence, explicit tools/permission mode; **network allowed**; auth: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or staged `~/.claude/.credentials.json` |
+| `cursor` | `cursor-agent -p` | yes | OS sandbox + built-in sandbox, trusted explicit workspace, setup scripts disabled; **network allowed**; auth: `CURSOR_API_KEY` or staged `~/.cursor/auth.json` file store |
 | `command` | configured argv template | opt-in only | OS sandbox; reviewer-only unless `AVITY_COMMAND_WORKSPACE_EDITS=1`; **network denied** unless `AVITY_COMMAND_ALLOW_NETWORK=1`; env names from `AVITY_COMMAND_ENV_ALLOWLIST` only |
 | `openai` | OpenAI Responses API | no | text/review runs; `store:false`; key scoped to HTTP adapter |
 | `anthropic` | Anthropic Messages API | no | text/review runs |
@@ -24,8 +24,11 @@ not equivalent to editing a repository. CLI adapters combine the architecture
 system prompt and mission prompt, and **every CLI adapter is launched inside the
 AvityOS OS sandbox** (`sandboxCommand`), whose boundary is **fail-closed**:
 
-- **Writable paths:** the persisted worktree and the throwaway HOME only (plus
-  `/dev`). Nothing else on the host can be written.
+- **Writable paths:** the persisted worktree and one private, short-lived
+  throwaway HOME under `/tmp` only (plus `/dev`). The short path keeps
+  provider-derived Unix socket/project paths under OS limits; random `mkdtemp`
+  ownership and the sandbox profile still deny every adjacent `/tmp` path.
+  Nothing else on the host can be written.
 - **Readable paths:** the worktree, the throwaway HOME, the resolved executable
   and its detected runtime, a minimal set of system trees needed to start, CA
   trust, device nodes, and any extra paths a provider policy declares via
@@ -61,8 +64,8 @@ AvityOS OS sandbox** (`sandboxCommand`), whose boundary is **fail-closed**:
 | Provider | Allowed env | Allowed credential files (relative to real HOME) | Notes |
 | --- | --- | --- | --- |
 | `codex` | `CODEX_API_KEY` | `.codex/auth.json` | Env preferred; file staged only when env absent. Full `~/.codex` is never copied. |
-| `claude-code` | `ANTHROPIC_API_KEY` | `.claude/.credentials.json` | macOS Keychain / `claude.ai` subscription login is **not** treated as sandbox-portable. |
-| `cursor` | `CURSOR_API_KEY` | _(none)_ | Interactive Keychain/`login` tokens are not mounted. |
+| `claude-code` | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | `.claude/.credentials.json` | A normal macOS Keychain login is not portable. `claude setup-token` creates the official long-lived inference token for automation. |
+| `cursor` | `CURSOR_API_KEY` | `.cursor/auth.json` | The default Keychain login is not mounted. Create the owner-only file store with `AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login`; AvityOS stages only `auth.json` and forces file-store mode inside the throwaway HOME. |
 | `command` | names in `AVITY_COMMAND_ENV_ALLOWLIST` | _(none)_ | Operator-defined allowlist only. |
 
 Missing required auth → `healthy() === false` and `startRun` emits
@@ -104,9 +107,10 @@ With real credentials present, an operator may additionally verify:
 
 1. `CODEX_API_KEY` or `~/.codex/auth.json` → `codex login status` inside a
    throwaway HOME prepared by AvityOS staging (non-mutating).
-2. `ANTHROPIC_API_KEY` → `claude auth status` / a single `-p` probe with
-   `--max-turns 1` (costs money — optional).
-3. `CURSOR_API_KEY` → `cursor-agent status` / `whoami`.
+2. `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` → `claude auth status` /
+   a single `-p` probe (costs money — optional).
+3. `CURSOR_API_KEY` or file-store `~/.cursor/auth.json` →
+   `AGENT_CLI_CREDENTIAL_STORE=file cursor-agent status`.
 
 These checks are intentionally outside credential-free CI.
 

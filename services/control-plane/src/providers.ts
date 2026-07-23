@@ -63,6 +63,7 @@ export function resolveProviderCliAuth(
  *   OPENAI_API_KEY   [+ AVITY_OPENAI_BASE_URL, AVITY_OPENAI_MODELS]
  *   DEEPSEEK_API_KEY [+ AVITY_DEEPSEEK_BASE_URL, AVITY_DEEPSEEK_MODELS]
  *   ANTHROPIC_API_KEY[+ AVITY_ANTHROPIC_BASE_URL, AVITY_ANTHROPIC_MODELS]
+ *   CLAUDE_CODE_OAUTH_TOKEN (official `claude setup-token` automation token)
  *   AVITY_CLAUDE_CODE_BIN  path to the claude executable (non-interactive -p)
  *   AVITY_CODEX_BIN        path to the codex executable (`codex exec`)
  *   AVITY_CURSOR_BIN       path to the cursor-agent executable
@@ -74,11 +75,16 @@ export function resolveProviderCliAuth(
  *
  * CLI auth (sandboxed — never inherits process.env or the real HOME):
  *   Codex:        CODEX_API_KEY or readable ~/.codex/auth.json
- *   Claude Code:  ANTHROPIC_API_KEY or readable ~/.claude/.credentials.json
- *   Cursor:       CURSOR_API_KEY
+ *   Claude Code:  ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or readable
+ *                 ~/.claude/.credentials.json
+ *   Cursor:       CURSOR_API_KEY or readable ~/.cursor/auth.json created by
+ *                 `AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login`
  *   command:      names in AVITY_COMMAND_ENV_ALLOWLIST only
  */
-export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdapter> {
+export function buildProviders(
+  env: NodeJS.ProcessEnv,
+  options: { readonly realHome?: string } = {},
+): Map<string, ProviderAdapter> {
   const providers = new Map<string, ProviderAdapter>();
   // Fail-closed: the fixture provider is registered only in test/demo modes.
   // In production it is never present, so nothing can implicitly route to it.
@@ -122,7 +128,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
   }
 
   if (env.AVITY_CLAUDE_CODE_BIN) {
-    const auth = resolveProviderCliAuth("claude-code", env);
+    const auth = resolveProviderCliAuth("claude-code", env, options);
     const claudeModels = models(env.AVITY_CLAUDE_CODE_MODELS);
     providers.set(
       "claude-code",
@@ -146,7 +152,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
   }
 
   if (env.AVITY_CODEX_BIN) {
-    const auth = resolveProviderCliAuth("codex", env);
+    const auth = resolveProviderCliAuth("codex", env, options);
     const codexModels = models(env.AVITY_CODEX_MODELS);
     providers.set(
       "codex",
@@ -170,8 +176,11 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
   }
 
   if (env.AVITY_CURSOR_BIN) {
-    const auth = resolveProviderCliAuth("cursor", env);
+    const auth = resolveProviderCliAuth("cursor", env, options);
     const cursorModels = models(env.AVITY_CURSOR_MODELS);
+    const cursorEnv = auth.credentialFiles.length > 0
+      ? { ...auth.env, AGENT_CLI_CREDENTIAL_STORE: "file" }
+      : auth.env;
     providers.set(
       "cursor",
       new CommandProviderAdapter("cursor", {
@@ -184,7 +193,7 @@ export function buildProviders(env: NodeJS.ProcessEnv): Map<string, ProviderAdap
         ],
         models: cursorModels,
         allowNetwork: CURSOR_SANDBOX_POLICY.allowNetwork,
-        env: auth.env,
+        env: cursorEnv,
         credentialFiles: auth.credentialFiles,
         authError: auth.authenticated ? undefined : auth.reason,
       }),

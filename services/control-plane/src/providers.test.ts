@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandProviderAdapter } from "@avityos/providers";
 import {
@@ -65,6 +68,30 @@ describe("runtime command-provider safety", () => {
     expect(cursor.env).toEqual({ CURSOR_API_KEY: "cursor-only" });
     expect(cursor.env).not.toHaveProperty("CODEX_API_KEY");
     expect(cursor.allowNetwork).toBe(CURSOR_SANDBOX_POLICY.allowNetwork);
+  });
+
+  it("configures Cursor's file credential store only when a staged auth file is used", () => {
+    const home = mkdtempSync(join(tmpdir(), "avity-cursor-provider-"));
+    try {
+      mkdirSync(join(home, ".cursor"), { recursive: true });
+      writeFileSync(join(home, ".cursor", "auth.json"), '{"accessToken":"test"}\n', { mode: 0o600 });
+
+      const cursor = buildProviders(
+        { AVITY_CURSOR_BIN: "cursor-agent" },
+        { realHome: home },
+      ).get("cursor") as CommandProviderAdapter;
+      expect(cursor.getConfig().authError).toBeUndefined();
+      expect(cursor.getConfig().env).toEqual({ AGENT_CLI_CREDENTIAL_STORE: "file" });
+      expect(cursor.getConfig().credentialFiles).toEqual([
+        {
+          sourcePath: join(home, ".cursor", "auth.json"),
+          homeRelativePath: ".cursor/auth.json",
+          readonly: true,
+        },
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("marks CLI providers unauthenticated when required secrets are missing", async () => {

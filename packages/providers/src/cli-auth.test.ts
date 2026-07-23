@@ -71,14 +71,29 @@ describe("CLI provider sandbox auth policies", () => {
     ]);
   });
 
-  it("claude-code policy forwards only ANTHROPIC_API_KEY", () => {
+  it("claude-code policy forwards only supported API or OAuth credentials", () => {
     const resolved = resolveCliProviderAuth(CLAUDE_CODE_SANDBOX_POLICY, {
       ANTHROPIC_API_KEY: "claude-secret",
+      CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth",
       CODEX_API_KEY: "codex-secret",
       CURSOR_API_KEY: "cursor-secret",
     });
     expect(resolved.authenticated).toBe(true);
-    expect(resolved.env).toEqual({ ANTHROPIC_API_KEY: "claude-secret" });
+    expect(resolved.env).toEqual({
+      ANTHROPIC_API_KEY: "claude-secret",
+      CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth",
+    });
+    expect(resolved.env).not.toHaveProperty("CODEX_API_KEY");
+    expect(resolved.env).not.toHaveProperty("CURSOR_API_KEY");
+    expect(resolved.credentialFiles).toEqual([]);
+  });
+
+  it("accepts the official Claude Code automation OAuth token by itself", () => {
+    const resolved = resolveCliProviderAuth(CLAUDE_CODE_SANDBOX_POLICY, {
+      CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth",
+    });
+    expect(resolved.authenticated).toBe(true);
+    expect(resolved.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth" });
     expect(resolved.credentialFiles).toEqual([]);
   });
 
@@ -110,6 +125,24 @@ describe("CLI provider sandbox auth policies", () => {
     expect(resolved.authenticated).toBe(true);
     expect(resolved.env).toEqual({ CURSOR_API_KEY: "cursor-secret" });
     expect(resolved.credentialFiles).toEqual([]);
+  });
+
+  it("stages only Cursor's owner-only file credential store when no API key is present", () => {
+    const home = mkdtempSync(join(tmpdir(), "avity-cursor-home-"));
+    homes.push(home);
+    mkdirSync(join(home, ".cursor"), { recursive: true });
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    const auth = join(home, ".cursor", "auth.json");
+    writeFileSync(auth, '{"accessToken":"cursor-token"}\n', { mode: 0o600 });
+    writeFileSync(join(home, ".cursor", "cli-config.json"), '{"authInfo":{}}\n');
+    writeFileSync(join(home, ".ssh", "id_rsa"), "PRIVATE\n");
+
+    const resolved = resolveCliProviderAuth(CURSOR_SANDBOX_POLICY, {}, { realHome: home });
+    expect(resolved.authenticated).toBe(true);
+    expect(resolved.env).toEqual({});
+    expect(resolved.credentialFiles).toEqual([
+      { sourcePath: auth, homeRelativePath: ".cursor/auth.json", readonly: true },
+    ]);
   });
 
   it("returns a clear auth error when required credentials are absent", () => {
@@ -258,7 +291,7 @@ describe.skipIf(!SANDBOX_AVAILABLE)("CommandProviderAdapter credential exposure"
       hasAnthropic: boolean;
     };
     expect(payload.home).not.toBe(homedir());
-    expect(payload.home).toContain("avity-sandbox-home-");
+    expect(payload.home).toContain("avity-sbx-");
     expect(payload.mode).toBe(0o400);
     expect(payload.body).toBe('{"ok":true}');
     expect(payload.realCanary).toBe("blocked");
