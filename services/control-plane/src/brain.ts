@@ -219,6 +219,14 @@ export class BrainPipeline {
 
     const activePlan = this.store.activePlan(projectId);
     if (!replan && activePlan && activePlan.objectiveId === objectiveId) {
+      // `startPlanning` deliberately marks the project as planning before
+      // entering this idempotent pipeline. A resume after cancelling an
+      // in-flight replan can still have a valid active plan for the same
+      // objective; returning it without restoring `active` would leave the
+      // scheduler permanently disabled.
+      if (this.store.getProject(projectId)?.status === "planning") {
+        this.store.setProjectStatus(projectId, "active", pauseGeneration);
+      }
       return { status: "exists", plan: activePlan };
     }
 

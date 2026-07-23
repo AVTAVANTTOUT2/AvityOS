@@ -210,6 +210,30 @@ describe("AI brain pipeline", () => {
     expect(store.verifyAuditChain()).toBe(true);
   });
 
+  it("reactivates scheduling when planning resumes with an existing valid plan", async () => {
+    const project = store.createProject({
+      name: "Existing plan resume", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Resume a previously planned objective without replacing its valid plan",
+      ["the existing plan remains active", "mission scheduling resumes"],
+    );
+    const planned = await engine.brain.ensurePlan(project.id, objective.id);
+    expect(planned.status).toBe("planned");
+    const planId = store.activePlan(project.id)!.id;
+    const runsBefore = store.listBrainRuns(project.id, objective.id).length;
+
+    store.setProjectStatus(project.id, "planning");
+    await engine.pauseProject(project.id, { reason: "interrupt stale replan", actor: "test" });
+    await engine.resumeProject(project.id, { actor: "test" });
+    await waitFor(() => store.getProject(project.id)!.status === "active", 1_000);
+
+    expect(store.activePlan(project.id)!.id).toBe(planId);
+    expect(store.listBrainRuns(project.id, objective.id)).toHaveLength(runsBefore);
+  });
+
   it("opens a structured AI clarification group when analysis is ambiguous", async () => {
     ({ store, engine } = makeEngine(db, { brain: "fake:plan-ambiguous" }));
     const project = store.createProject({
