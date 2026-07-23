@@ -46,6 +46,8 @@ interface Lease {
   command: string[];
   cwd: string;
   leaseToken: string;
+  /** Server-authorized read-only roots for the OS sandbox. */
+  readablePaths?: string[];
 }
 
 export const CREDENTIAL_FILE_MODE = 0o600;
@@ -335,7 +337,10 @@ export class WorkerAgent {
           this.active.delete(lease.id);
         },
       },
-      { timeoutMs: 15 * 60 * 1000 },
+      {
+        timeoutMs: 15 * 60 * 1000,
+        readablePaths: lease.readablePaths,
+      },
     );
     this.active.set(lease.id, handle);
     await handle.done;

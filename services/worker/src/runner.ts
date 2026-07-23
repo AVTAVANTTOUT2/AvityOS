@@ -23,7 +23,14 @@ export function runCommand(
   argv: readonly string[],
   cwd: string,
   callbacks: RunnerCallbacks,
-  options: { timeoutMs?: number; env?: Record<string, string>; sandbox?: boolean; allowNetwork?: boolean } = {},
+  options: {
+    timeoutMs?: number;
+    env?: Record<string, string>;
+    sandbox?: boolean;
+    allowNetwork?: boolean;
+    /** Trusted read-only roots supplied by the authenticated control plane. */
+    readablePaths?: readonly string[];
+  } = {},
 ): RunnerHandle {
   const sandbox = options.sandbox ?? true;
   const [executable, ...args] = argv;
@@ -31,6 +38,7 @@ export function runCommand(
   const invocation = sandbox
     ? sandboxCommand(argv, cwd, {
         allowNetwork: options.allowNetwork,
+        readablePaths: options.readablePaths,
         env: options.env
           ? Object.fromEntries(
               Object.entries(options.env).filter(([k]) => !["HOME", "TMPDIR", "PATH"].includes(k)),

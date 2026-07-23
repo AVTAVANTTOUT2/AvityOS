@@ -182,6 +182,12 @@ export class CommandProviderAdapter implements ProviderAdapter {
     // inherited. If the host cannot provide the sandbox primitive, the run
     // fails closed rather than executing with ambient authority.
     const workspace = input.cwd ?? process.cwd();
+    const readablePaths = [
+      ...new Set([
+        ...(this.config.readablePaths ?? []),
+        ...(input.sandboxReadablePaths ?? []),
+      ]),
+    ];
     let invocation: SandboxedCommand;
     try {
       invocation = this.sandbox([this.config.executable, ...argv], workspace, {
@@ -189,7 +195,7 @@ export class CommandProviderAdapter implements ProviderAdapter {
         env: this.config.env ? { ...this.config.env } : undefined,
         credentialFiles: this.config.credentialFiles,
         credentialHome: this.config.credentialHome,
-        readablePaths: this.config.readablePaths,
+        readablePaths: readablePaths.length > 0 ? readablePaths : undefined,
         runtimePaths: this.config.runtimePaths,
       });
     } catch (err) {

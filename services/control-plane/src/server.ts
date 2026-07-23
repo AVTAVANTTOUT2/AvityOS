@@ -673,7 +673,16 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (!workerId) return;
     store.heartbeatWorker(workerId);
     const lease = store.leaseTerminal(workerId);
-    return { lease };
+    if (!lease) return { lease: null };
+    const repoPath = store.getProject(lease.projectId)?.repoPath;
+    return {
+      lease: {
+        ...lease,
+        // This path comes from durable project configuration, never from a
+        // terminal client or the worktree's redirectable `.git` file.
+        readablePaths: repoPath ? [repoPath] : [],
+      },
+    };
   });
 
   app.post("/v1/terminals/:id/output", async (req, reply) => {

@@ -1,5 +1,6 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -115,6 +116,39 @@ describe("runner", () => {
     await rm(scratch, { recursive: true, force: true });
     await rm(secretHome, { recursive: true, force: true });
   });
+
+  it("allows Git checks in a linked worktree through a trusted repository read grant", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "avity-runner-git-worktree-"));
+    const repo = join(scratch, "repo");
+    const worktree = join(scratch, "worktree");
+    await mkdir(repo);
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Avity Test"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "avity-test@example.invalid"], { cwd: repo });
+    await writeFile(join(repo, "README.md"), "# fixture\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["worktree", "add", "-b", "mission/test", worktree], {
+      cwd: repo,
+      stdio: "ignore",
+    });
+
+    let state = "";
+    const handle = runCommand(
+      ["git", "diff", "--check", "HEAD"],
+      worktree,
+      {
+        onOutput: () => undefined,
+        onExit: (result) => {
+          state = result.state;
+        },
+      },
+      { readablePaths: [repo] },
+    );
+    await handle.done;
+    expect(state).toBe("succeeded");
+    await rm(scratch, { recursive: true, force: true });
+  });
 });
 
 describe("worker <-> control plane integration", () => {
@@ -213,6 +247,39 @@ describe("worker <-> control plane integration", () => {
       body: "{}",
     });
     expect(res.status).toBe(401);
+  });
+
+  it("leases the durable project repository as a trusted read-only sandbox root", async () => {
+    const project = store.createProject({
+      name: "linked-worktree-check",
+      description: "",
+      repoPath: realpathSync(process.cwd()),
+      repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    agent = new WorkerAgent({
+      controlPlaneUrl: baseUrl,
+      name: "trusted-roots",
+      pollMs: 10_000,
+      capabilities: ["shell"],
+    });
+    const credentials = await agent.enroll();
+    store.createTerminal(project.id, ["echo", "leased"], process.cwd());
+
+    const res = await fetch(`${baseUrl}/v1/workers/lease`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-worker-id": credentials.id,
+        "x-worker-token": credentials.token,
+      },
+      body: "{}",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      lease: { readablePaths: string[] };
+    };
+    expect(body.lease.readablePaths).toEqual([realpathSync(process.cwd())]);
   });
 
   it("leases only compatible work within worker capacity and fences stale tokens", () => {
@@ -613,6 +680,7 @@ describe("worker output/exit ordering", () => {
   // delays the /output response so an unsynchronised exit would overtake it.
   it("persists streamed output before reporting the terminal exit", async () => {
     const calls: string[] = [];
+    let observedReadablePaths: readonly string[] | undefined;
     const fetchImpl = (async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/output")) {
@@ -635,7 +703,9 @@ describe("worker output/exit ordering", () => {
       _argv: readonly string[],
       _cwd: string,
       callbacks: RunnerCallbacks,
+      options?: { readablePaths?: readonly string[] },
     ): RunnerHandle => {
+      observedReadablePaths = options?.readablePaths;
       let resolveDone: () => void = () => undefined;
       const done = new Promise<void>((resolve) => {
         resolveDone = resolve;
@@ -669,9 +739,11 @@ describe("worker output/exit ordering", () => {
       command: ["echo", "streamed via worker"],
       cwd: "/tmp",
       leaseToken: "lease_ordering",
+      readablePaths: ["/trusted/project-repo"],
     });
 
     // The delayed /output must land before /exit despite being fire-and-forget.
     expect(calls).toEqual(["output", "exit"]);
+    expect(observedReadablePaths).toEqual(["/trusted/project-repo"]);
   });
 });

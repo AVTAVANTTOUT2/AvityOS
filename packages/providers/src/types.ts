@@ -26,6 +26,12 @@ export interface StartRunInput {
   userPrompt: string;
   /** Working directory for agents that operate on files (command adapter). */
   cwd?: string;
+  /**
+   * Trusted, control-plane-authorized paths the command adapter may read in
+   * addition to `cwd`. This is used for linked Git worktrees, whose `.git`
+   * file points back to metadata in the canonical project repository.
+   */
+  sandboxReadablePaths?: readonly string[];
   timeoutMs?: number;
   maxOutputTokens?: number;
 }
