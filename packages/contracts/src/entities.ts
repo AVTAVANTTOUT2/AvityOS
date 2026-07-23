@@ -145,6 +145,8 @@ export const Mission = z.object({
   contract: MissionContract,
   branchName: z.string().nullable(),
   worktreePath: z.string().nullable(),
+  /** Immutable Git commit the mission branch started from after dependency composition. */
+  baselineCommit: z.string().nullable().default(null),
   correctionAttempts: z.number().int().min(0).default(0),
   maxCorrectionAttempts: z.number().int().min(0).default(3),
   priority: z.number().int().min(0).max(100).default(50),

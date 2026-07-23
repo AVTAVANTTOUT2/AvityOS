@@ -6,7 +6,9 @@ import {
   addMissionWorktree,
   changedFiles,
   commitAll,
+  composeDependencyBaseline,
   currentBranch,
+  DependencyCompositionError,
   git,
   hasConflicts,
   initRepo,
@@ -159,5 +161,74 @@ describe("git package", () => {
     await writeFile(join(wt3, "other.txt"), "safe\n");
     await commitAll(wt3, "feat: safe file");
     expect(await hasConflicts(repo, "main", "mission/m3")).toBe(false);
+  });
+
+  it("composes divergent dependency branches into an immutable baseline", async () => {
+    const frontend = join(scratch, "wt-frontend");
+    const backend = join(scratch, "wt-backend");
+    await addMissionWorktree(repo, frontend, "mission/frontend", "main");
+    await writeFile(join(frontend, "frontend.txt"), "frontend\n");
+    const frontendCommit = await commitAll(frontend, "feat: frontend");
+    await addMissionWorktree(repo, backend, "mission/backend", "main");
+    await writeFile(join(backend, "backend.txt"), "backend\n");
+    const backendCommit = await commitAll(backend, "feat: backend");
+
+    const baseline = await composeDependencyBaseline(
+      repo,
+      "main",
+      ["mission/frontend", "mission/backend"],
+    );
+
+    expect(await git(repo, "show", `${baseline}:frontend.txt`)).toBe("frontend\n");
+    expect(await git(repo, "show", `${baseline}:backend.txt`)).toBe("backend\n");
+    const parents = (await git(repo, "show", "-s", "--format=%P", baseline)).trim().split(" ");
+    expect(parents).toEqual(expect.arrayContaining([frontendCommit, backendCommit]));
+  });
+
+  it("fails closed when dependency branches conflict", async () => {
+    const first = join(scratch, "wt-first");
+    const second = join(scratch, "wt-second");
+    await addMissionWorktree(repo, first, "mission/first", "main");
+    await writeFile(join(first, "README.md"), "# first\n");
+    await commitAll(first, "docs: first");
+    await addMissionWorktree(repo, second, "mission/second", "main");
+    await writeFile(join(second, "README.md"), "# second\n");
+    await commitAll(second, "docs: second");
+
+    await expect(
+      composeDependencyBaseline(repo, "main", ["mission/first", "mission/second"]),
+    ).rejects.toBeInstanceOf(DependencyCompositionError);
+  });
+
+  it("never executes repository-configured merge drivers during dependency composition", async () => {
+    const marker = join(scratch, "merge-driver-ran");
+    const driver = join(scratch, "evil-merge-driver.sh");
+    await writeFile(
+      driver,
+      `#!/bin/sh\nprintf compromised > '${marker}'\ncp "$2" "$1"\n`,
+    );
+    await chmod(driver, 0o755);
+    await writeFile(join(repo, ".gitattributes"), "shared.txt merge=evil\n");
+    await writeFile(join(repo, "shared.txt"), "base\n");
+    await commitAll(repo, "test: configure merge target");
+    await git(repo, "config", "merge.evil.driver", `${driver} %O %A %B`);
+
+    const first = join(scratch, "wt-driver-first");
+    const second = join(scratch, "wt-driver-second");
+    await addMissionWorktree(repo, first, "mission/driver-first", "main");
+    await writeFile(join(first, "shared.txt"), "first\n");
+    await commitAll(first, "test: first driver input");
+    await addMissionWorktree(repo, second, "mission/driver-second", "main");
+    await writeFile(join(second, "shared.txt"), "second\n");
+    await commitAll(second, "test: second driver input");
+
+    await expect(
+      composeDependencyBaseline(
+        repo,
+        "main",
+        ["mission/driver-first", "mission/driver-second"],
+      ),
+    ).rejects.toBeInstanceOf(DependencyCompositionError);
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

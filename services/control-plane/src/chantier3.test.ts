@@ -538,4 +538,15 @@ describe("chantier 3: migration compatibility", () => {
     ]));
     db.close();
   });
+
+  it("persists the immutable mission baseline column on current databases", () => {
+    const db = openDatabase(":memory:");
+    const versions = (
+      db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as { version: number }[]
+    ).map((row) => row.version);
+    expect(versions).toContain(8);
+    const columns = db.prepare("PRAGMA table_info(missions)").all() as { name: string }[];
+    expect(columns.map((column) => column.name)).toContain("baseline_commit");
+    db.close();
+  });
 });

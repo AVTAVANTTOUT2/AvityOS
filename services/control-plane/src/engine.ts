@@ -13,6 +13,7 @@ import {
   addMissionWorktree,
   changedFiles,
   commitAll,
+  composeDependencyBaseline,
   git,
   isCleanWorkingTree,
   listWorktrees,
@@ -513,6 +514,19 @@ export class Engine {
     if (!project.repoPath) return null;
     const branch = mission.branchName ?? missionBranchName(mission.id, mission.title);
     const worktreePath = mission.worktreePath ?? join(project.repoPath, ".avity", "worktrees", mission.id);
+    const dependencies = this.store
+      .listDependencies(project.id)
+      .filter((dependency) => dependency.missionId === mission.id)
+      .map((dependency) => this.store.getMission(dependency.dependsOnMissionId))
+      .sort((left, right) => (left?.id ?? "").localeCompare(right?.id ?? ""));
+    const invalidDependency = dependencies.find(
+      (dependency) => !dependency || dependency.state !== "completed" || !dependency.branchName,
+    );
+    if (invalidDependency !== undefined || dependencies.some((dependency) => dependency === null)) {
+      throw new Error(`mission ${mission.id} has an incomplete or unpublished dependency branch`);
+    }
+    const dependencyBranches = dependencies.map((dependency) => dependency!.branchName!);
+    let baselineCommit = mission.baselineCommit;
 
     // Confine the worktree location to <repo>/.avity/worktrees on canonical
     // paths. Rejects a persisted/redirected worktree path that escapes, and a
@@ -535,14 +549,46 @@ export class Engine {
       if (branchExists) {
         await git(project.repoPath, "worktree", "add", worktreePath, branch);
       } else {
-        await addMissionWorktree(project.repoPath, worktreePath, branch, project.defaultBranch);
+        baselineCommit ??= await composeDependencyBaseline(
+          project.repoPath,
+          project.defaultBranch,
+          dependencyBranches,
+        );
+        // Persist the immutable validation boundary before the Git side
+        // effect. A crash after worktree creation can then resume without
+        // mistaking inherited dependency changes for this mission's writes.
+        this.store.updateMissionMeta(
+          mission.id,
+          { branchName: branch, worktreePath, baselineCommit },
+          expectedPauseGeneration,
+        );
+        if (
+          this.fencePausedWork(
+            project.id,
+            mission.id,
+            "worktree baseline persistence",
+            expectedPauseGeneration,
+          )
+        ) return null;
+        await addMissionWorktree(project.repoPath, worktreePath, branch, baselineCommit);
       }
       if (this.fencePausedWork(project.id, mission.id, "worktree creation", expectedPauseGeneration)) return null;
     }
-    this.store.updateMissionMeta(mission.id, { branchName: branch, worktreePath }, expectedPauseGeneration);
+    if (!baselineCommit) {
+      baselineCommit = (
+        await git(project.repoPath, "merge-base", project.defaultBranch, branch)
+      ).trim();
+    }
+    this.store.updateMissionMeta(
+      mission.id,
+      { branchName: branch, worktreePath, baselineCommit },
+      expectedPauseGeneration,
+    );
     this.store.appendEvent("git.branch_created", { projectId: project.id, missionId: mission.id }, {
       branch,
       worktreePath,
+      baselineCommit,
+      dependencyBranches,
     });
     return worktreePath;
   }
@@ -858,12 +904,26 @@ export class Engine {
     // 1) path-scope enforcement on actual changed files
     let changedFilesForMission: string[] = [];
     if (mission.worktreePath && mission.branchName && project.repoPath) {
-      changedFilesForMission = await worktreeChangedFiles(
-        mission.worktreePath,
-        project.repoPath,
-        project.defaultBranch,
-        mission.branchName,
-      );
+      try {
+        changedFilesForMission = await worktreeChangedFiles(
+          mission.worktreePath,
+          project.repoPath,
+          mission.baselineCommit ?? project.defaultBranch,
+          mission.branchName,
+        );
+      } catch (err) {
+        const detail = `could not inspect mission diff: ${String(err).slice(0, 300)}`;
+        this.store.upsertCheckpoint(
+          project.id,
+          missionId,
+          "policy",
+          "failed",
+          detail,
+          pauseGeneration,
+        );
+        this.failValidation(mission, `validation failed: ${detail}`, pauseGeneration);
+        return;
+      }
       if (this.fencePausedWork(project.id, missionId, "validation path scan", pauseGeneration)) return;
       if ((mission.contract.workspaceChangesRequired ?? true) && changedFilesForMission.length === 0) {
         this.store.upsertCheckpoint(project.id, missionId, "policy", "failed", "coding mission produced no file changes", pauseGeneration);
@@ -1248,7 +1308,11 @@ export class Engine {
 
     let diff = "";
     if (mission.worktreePath && mission.branchName && project.repoPath) {
-      diff = await git(project.repoPath, "diff", `${project.defaultBranch}...${mission.branchName}`)
+      diff = await git(
+        project.repoPath,
+        "diff",
+        `${mission.baselineCommit ?? project.defaultBranch}...${mission.branchName}`,
+      )
         .then((d) => d.slice(0, 20_000))
         .catch(() => "");
       if (this.fencePausedWork(project.id, missionId, "review diff", pauseGeneration)) return;
@@ -1518,11 +1582,11 @@ function assertWorktreeConfined(repoPath: string, worktreePath: string): void {
 async function worktreeChangedFiles(
   worktreePath: string,
   repoPath: string,
-  baseBranch: string,
+  baselineRef: string,
   branch: string,
 ): Promise<string[]> {
-  const committed = await changedFiles(repoPath, baseBranch, branch).catch(() => [] as string[]);
-  const status = await git(worktreePath, "status", "--porcelain").catch(() => "");
+  const committed = await changedFiles(repoPath, baselineRef, branch);
+  const status = await git(worktreePath, "status", "--porcelain");
   const uncommitted = status
     .split("\n")
     .map((line) => line.slice(3).trim())

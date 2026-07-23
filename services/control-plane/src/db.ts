@@ -430,6 +430,12 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
         WHERE resume_pending = 1;
     `,
   },
+  {
+    version: 8,
+    sql: `
+      ALTER TABLE missions ADD COLUMN baseline_commit TEXT;
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {
