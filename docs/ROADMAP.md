@@ -51,7 +51,8 @@ reproductible dans `docs/TRACEABILITY.md`.
    - mission exécutée par Claude Code ;
    - mission exécutée par Cursor ;
    - rejet fonctionnel volontaire suivi d'une correction validée ;
-   - fallback entre deux éditeurs réels authentifiés et prêts.
+   - événement live de fallback entre deux providers réels prêts, via la chaîne
+     de raisonnement ou une chaîne de mission.
    C'est la **prochaine priorité produit**.
 
 5. **⚪ Non commencé comme chantier produit complet — Pont distant sécurisé.**
@@ -77,8 +78,8 @@ reproductible dans `docs/TRACEABILITY.md`.
 
 > AvityOS réalise une campagne certifiante sur un dépôt fixture externe avec
 > Claude Code et Cursor en plus de Codex et DeepSeek, prouve un fallback entre
-> deux éditeurs prêts ainsi qu'une correction fonctionnelle après rejet, puis
-> s'arrête avant toute fusion.
+> deux providers prêts ainsi qu'une correction fonctionnelle après rejet,
+> puis s'arrête avant toute fusion.
 
 Ce jalon clôturera :
 

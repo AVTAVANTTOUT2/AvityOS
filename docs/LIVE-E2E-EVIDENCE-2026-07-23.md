@@ -55,6 +55,13 @@ qui reproduit en campagne le correctif de la PR #68. Le control plane est
 resté disponible pendant toute la reprise et la clôture après le correctif
 d'annulation HTTP de la PR #69.
 
+Le checkpoint documentaire a été fusionné par la
+[PR #70](https://github.com/AVTAVANTTOUT2/AvityOS/pull/70). Son commit sur
+`main` a ensuite repassé la
+[CI macOS](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/30053975061)
+et la
+[CI Linux](https://github.com/AVTAVANTTOUT2/AvityOS/actions/runs/30053975096).
+
 AvityOS a poussé trois branches et créé trois PR draft, toutes laissées ouvertes
 et non fusionnées :
 
@@ -77,11 +84,13 @@ et ne doivent pas être fusionnées.
 | Mission Cursor | ⚪ | Credential sandbox-portable absent |
 | Reviewer différent de l'auteur | ✅ | Codex → DeepSeek et DeepSeek → Codex |
 | Correction après rejet | 🟡 | Boucle réelle observée, mais déclenchée par l'ancien parseur de verdict ; un rejet fonctionnel volontaire reste à certifier |
-| Fallback entre providers | 🟡 | Fallback Claude non authentifié → Codex observé ; le preflight exige encore deux éditeurs réels authentifiés dans une même chaîne |
+| Fallback entre providers | 🟡 | Des échecs d'auth Claude → Codex ont été observés, mais ne constituent pas une preuve certifiante entre providers prêts. Le preflight E2E déclare le scénario exécutable via la chaîne de raisonnement DeepSeek/Codex ; aucun événement live de fallback injecté n'a encore été certifié |
 | Push d'une branche | ✅ | Trois branches distantes publiées |
 | Création d'une PR draft | ✅ | Trois PR draft ouvertes |
 | Aucune auto-fusion | ✅ | Les trois PR restent ouvertes ; aucun chemin de merge dans le runner |
 
 Le chantier 4 reste donc ouvert. Sa clôture exige une campagne certifiante avec
-Claude Code et Cursor authentifiés, un fallback entre deux éditeurs réellement
-prêts et un rejet fonctionnel délibéré suivi d'une correction validée.
+Claude Code et Cursor authentifiés, un fallback live entre deux providers prêts
+(cerveau ou mission) et un rejet fonctionnel délibéré suivi d'une correction
+validée. L'indicateur `provider status` de fallback mission reste séparément
+bloqué tant qu'une même chaîne de rôle ne contient pas deux éditeurs prêts.
