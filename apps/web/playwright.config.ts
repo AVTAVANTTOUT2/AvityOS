@@ -8,6 +8,19 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const e2eHome = process.env.AVITY_LIVE_E2E_HOME ?? mkdtempSync(join(tmpdir(), "avity-web-live-e2e-"));
 const apiToken = process.env.AVITY_LIVE_E2E_TOKEN ?? "live-e2e-browser-token";
 
+function e2ePort(value: string | undefined, fallback: number): string {
+  const port = Number(value ?? fallback);
+  if (!Number.isSafeInteger(port) || port < 1_024 || port > 65_535) {
+    throw new Error("E2E ports must be integers between 1024 and 65535");
+  }
+  return String(port);
+}
+
+const controlPlanePort = e2ePort(process.env.AVITY_E2E_CONTROL_PLANE_PORT, 17_717);
+const webPort = e2ePort(process.env.AVITY_E2E_WEB_PORT, 15_173);
+const controlPlaneUrl = `http://127.0.0.1:${controlPlanePort}`;
+const webUrl = `http://127.0.0.1:${webPort}`;
+
 process.env.AVITY_LIVE_E2E_HOME = e2eHome;
 process.env.AVITY_LIVE_E2E_TOKEN = apiToken;
 
@@ -30,7 +43,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: webUrl,
     trace: "retain-on-failure",
   },
   projects: [
@@ -46,20 +59,28 @@ export default defineConfig({
   webServer: [
     ...(needsControlPlane
       ? [{
-          command: `pnpm --filter @avityos/control-plane build && AVITY_EXECUTION_MODE=test AVITY_API_TOKEN=${apiToken} AVITY_DB_PATH=${join(e2eHome, "cp.sqlite")} AVITY_HOME=${e2eHome} AVITY_PORT=7717 AVITY_HOST=127.0.0.1 node services/control-plane/dist/main.js`,
+          command: "pnpm --filter @avityos/control-plane build && node services/control-plane/dist/main.js",
           cwd: repoRoot,
-          url: "http://127.0.0.1:7717/v1/health",
-          reuseExistingServer: !process.env.CI,
+          env: {
+            AVITY_EXECUTION_MODE: "test",
+            AVITY_API_TOKEN: apiToken,
+            AVITY_DB_PATH: join(e2eHome, "cp.sqlite"),
+            AVITY_HOME: e2eHome,
+            AVITY_PORT: controlPlanePort,
+            AVITY_HOST: "127.0.0.1",
+            AVITY_ALLOWED_ORIGINS: webUrl,
+          },
+          url: `${controlPlaneUrl}/v1/health`,
+          reuseExistingServer: false,
           timeout: 180_000,
         }]
       : []),
     {
-      command: needsControlPlane
-        ? "VITE_AVITY_API=http://127.0.0.1:7717 pnpm dev --host 127.0.0.1 --port 5173"
-        : "pnpm dev --host 127.0.0.1 --port 5173",
+      command: `pnpm dev --host 127.0.0.1 --port ${webPort}`,
       cwd: join(repoRoot, "apps/web"),
-      url: "http://127.0.0.1:5173",
-      reuseExistingServer: !process.env.CI,
+      env: needsControlPlane ? { VITE_AVITY_API: controlPlaneUrl } : {},
+      url: webUrl,
+      reuseExistingServer: false,
       timeout: 120_000,
     },
   ],

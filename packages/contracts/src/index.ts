@@ -5,3 +5,4 @@ export * from "./brain.js";
 export * from "./clarification.js";
 export * from "./e2e.js";
 export * from "./api.js";
+export * from "./remote-bridge.js";

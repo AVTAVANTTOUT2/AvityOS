@@ -58,10 +58,14 @@ reproductible dans `docs/TRACEABILITY.md`.
    - rejet fonctionnel volontaire suivi d'une correction validée ;
    C'est la **prochaine priorité produit**.
 
-5. **⚪ Non commencé comme chantier produit complet — Pont distant sécurisé.**
-   Les briques réseau et worker actuelles ne constituent pas un pont distant
-   E2E terminé. Restent notamment : connexion sortante, chiffrement de bout en
-   bout, comptes, appareils, révocation et audit sans clair sur le relais.
+5. **🟡 Fondations en cours — Pont distant sécurisé.**
+   Le checkpoint 5.1 définit les contrats stricts, la racine de confiance
+   compte/appareil, les certificats Ed25519, l'appairage chiffré par secret
+   hors bande et les enveloppes E2E X25519 + HKDF-SHA-256 + AES-256-GCM,
+   signées et protégées contre le rejeu. Le relais n'est pas encore livré.
+   Restent : connexion sortante, relais ciphertext-only, persistance des
+   comptes/appareils, révocation, curseurs anti-rejeu durables et audit des
+   actions distantes sans clair sur le relais.
 
 6. **🟡 Client natif déjà présent, finition produit et distribution manquantes
    — Application macOS complète.** Déjà présents : SwiftUI, Keychain,
