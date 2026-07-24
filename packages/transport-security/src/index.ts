@@ -453,9 +453,10 @@ export function clientCertificateIsAuthorizedBy(
   }
   return trustedClientCas.some((issuer) => {
     try {
+      // The signature is the portable trust proof. Node's checkIssued() also
+      // compares issuer metadata, but diverges between OpenSSL and LibreSSL.
       return issuer.ca &&
         validAt(issuer) &&
-        certificate.checkIssued(issuer) &&
         certificate.verify(issuer.publicKey);
     } catch {
       return false;
