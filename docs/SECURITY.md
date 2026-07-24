@@ -89,6 +89,17 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   the old vault token, aborts pending and recertifies a fresh heartbeat.
   Active terminals, concurrent rotations, plaintext DB storage and positional
   token arguments are refused. See ADR-0019.
+- **Two-phase worker-certificate rotation (checkpoint 7.7)** —
+  `tls worker-certificate-rotate` validates a candidate X.509 leaf/private-key
+  pair from strict operator-owned paths, prepares only its SHA-256 fingerprint
+  and drains the idle worker. Current and pending certificates overlap until a
+  fresh worker request proves the pending private key through the configured
+  client CA and the unchanged bearer. Commit promotes only after proof and is
+  idempotent; rollback restores the previous protected paths, restarts only the
+  worker and recertifies the current identity. A third certificate signed by
+  the same CA is still rejected, bearer/certificate rotations cannot overlap,
+  and PEM/private-key material never enters SQLite, audit or output. See
+  ADR-0020.
 - **Remote bridge transport (checkpoints 5.1–5.2)** — account/device
   certificates and application envelopes are signed and end-to-end encrypted;
   the relay accepts only strict ciphertext structures and never imports
@@ -305,10 +316,9 @@ transport.
   Decrypted values necessarily exist in the authorized service process memory;
   loss of both the key store and separately held recovery escrow remains
   unrecoverable by design.
-- Native TLS 1.3 and certificate-bound worker mTLS are bundled, but certificate
-  issuance, private-CA custody, expiry monitoring and automated rotation remain
-  deployment responsibilities. A bound certificate change currently requires
-  worker revocation and re-enrollment.
+- Native TLS 1.3, certificate-bound worker mTLS and two-phase leaf-certificate
+  rotation are bundled. Certificate issuance, private-CA custody, expiry
+  monitoring and CA trust-anchor rollover remain deployment responsibilities.
 - Public macOS distribution still depends on an operator-owned Developer ID
   certificate and Apple notarization service. The repository implements and
   verifies the fail-closed signing/notary path, but CI deliberately cannot

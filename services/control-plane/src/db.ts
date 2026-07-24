@@ -481,6 +481,18 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       ALTER TABLE workers ADD COLUMN last_committed_token_rotation_id TEXT;
     `,
   },
+  {
+    // Worker mTLS certificate rotation overlaps the enrolled and candidate
+    // fingerprints until the candidate proves possession through a real TLS
+    // handshake authenticated with the worker's unchanged bearer.
+    version: 12,
+    sql: `
+      ALTER TABLE workers ADD COLUMN pending_mtls_fingerprint TEXT;
+      ALTER TABLE workers ADD COLUMN certificate_rotation_id TEXT;
+      ALTER TABLE workers ADD COLUMN pending_certificate_seen_at TEXT;
+      ALTER TABLE workers ADD COLUMN last_committed_certificate_rotation_id TEXT;
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {

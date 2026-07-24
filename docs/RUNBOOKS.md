@@ -214,10 +214,27 @@ need a worker certificate.
 Enabling `AVITY_TLS_CLIENT_CA_PATH` makes all worker data-plane calls require
 both the worker bearer and the certificate used during enrollment. Existing
 pre-mTLS rows intentionally remain unbound: revoke and re-enroll them under
-their assigned certificates. A compromised or replaced certificate likewise
-requires immediate worker revocation and re-enrollment. Certificate issuance,
-expiry monitoring and CA custody remain external operator duties until the
-dedicated rotation protocol is delivered. Never use
+their assigned certificates. Revoke a compromised worker immediately; for
+planned renewal to another leaf signed by the currently trusted worker CA, run:
+
+```sh
+avity tls worker-certificate-rotate \
+  --certificate /private/tls/worker-1-next.crt \
+  --private-key /private/tls/worker-1-next.key
+```
+
+The current worker must be idle and both local services must be running. The
+candidate key must be `0600` under an owner-only directory, and the certificate
+must be a currently valid non-CA leaf (optionally followed by its chain). The
+command drains the worker, atomically stages the protected paths, restarts only
+the worker, requires a fresh heartbeat authorized by the configured client CA
+and unchanged bearer, then promotes the fingerprint. Before commit, failure
+restores and recertifies the old pair. If the commit response is ambiguous,
+rerun with the same files.
+
+Do not use this leaf protocol to replace `AVITY_TLS_CLIENT_CA_PATH`. Certificate
+issuance, expiry monitoring, CA custody and trust-anchor rollover remain
+operator duties. Never use
 `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 
 Verify with a CA-aware client:
