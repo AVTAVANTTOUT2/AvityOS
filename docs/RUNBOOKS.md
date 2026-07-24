@@ -16,7 +16,8 @@ in production/campaign evidence paths.
 
 ## Control plane won't start
 
-1. `node --version` — must be ≥ 22.5 (`node:sqlite`).
+1. `node --version` — must be ≥ 22.5 (`node:sqlite`), or ≥ 24 on macOS
+   when private-CA TLS/mTLS is enabled.
 2. Check the DB path is writable; `AVITY_DB_PATH` overrides.
 3. Port conflict: `lsof -i :7717`; change `AVITY_PORT`.
 4. `avity vault status` — a wrong/missing master key or altered vault blocks
@@ -121,6 +122,8 @@ and escalates an approval otherwise. To change behavior, adjust engine config
 ## Native control-plane TLS and worker mTLS
 
 Use an operator-managed server certificate and a separate worker client CA.
+On macOS, run these private-CA paths with Node.js 24 or newer; startup fails
+closed on older runtimes. Linux retains the Node.js 22.5 lower bound.
 Keep every private key outside the repository and normal operator backup:
 its directory must be owned by the service account with mode `0700`, and the
 key itself must be a regular mode `0600` file. Certificate and CA files must
