@@ -3,6 +3,7 @@ import {
   RemoteBridgeSecurityError,
   acceptRemotePairingRequest,
   assertFreshRemoteSequence,
+  createRemotePairingBootstrap,
   createRemotePairingRequest,
   createRemotePairingSession,
   generateRemoteAccountIdentity,
@@ -10,6 +11,7 @@ import {
   issueRemoteDeviceCertificate,
   openRemoteEnvelope,
   openRemotePairingAcceptance,
+  openRemotePairingBootstrap,
   sealRemoteEnvelope,
   verifyRemoteDeviceCertificate,
 } from "./index.js";
@@ -133,6 +135,60 @@ describe("out-of-band pairing", () => {
     expect(certificate.deviceId).toBe(client.deviceId);
     expect(certificate.name).toBe("Paired iPhone");
     expect(JSON.stringify(accepted.acceptance)).not.toContain("Paired iPhone");
+  });
+
+  it("encrypts relay bootstrap configuration for only the paired device", () => {
+    const { account, host, client, hostCertificate } = setupDevices();
+    const created = createRemotePairingSession({
+      account,
+      hostIdentity: host,
+      hostCertificate,
+      now: NOW,
+    });
+    const request = createRemotePairingRequest({
+      offer: created.bundle.offer,
+      pairingSecret: created.bundle.pairingSecret,
+      device: client,
+      name: "Remote Mac",
+      now: NOW,
+    });
+    const accepted = acceptRemotePairingRequest({
+      session: created.session,
+      request,
+      pairingSecret: created.bundle.pairingSecret,
+      account,
+      now: NOW,
+    });
+    const relayAccessToken = "remote-device-token-".padEnd(32, "x");
+    const bootstrap = createRemotePairingBootstrap({
+      acceptance: accepted.acceptance,
+      pairingSecret: created.bundle.pairingSecret,
+      relayUrl: "https://relay.example/bridge",
+      relayAccessToken,
+    });
+    const serialized = JSON.stringify(bootstrap);
+    expect(serialized).not.toContain("relay.example");
+    expect(serialized).not.toContain(relayAccessToken);
+    expect(serialized).not.toContain("Remote Mac");
+
+    expect(openRemotePairingBootstrap({
+      offer: created.bundle.offer,
+      bootstrap,
+      pairingSecret: created.bundle.pairingSecret,
+      device: client,
+      now: NOW,
+    })).toEqual({
+      certificate: accepted.certificate,
+      relayUrl: "https://relay.example/bridge",
+      relayAccessToken,
+    });
+    expect(() => openRemotePairingBootstrap({
+      offer: created.bundle.offer,
+      bootstrap,
+      pairingSecret: Buffer.alloc(32, 9).toString("base64url"),
+      device: client,
+      now: NOW,
+    })).toThrow(/authentication/i);
   });
 
   it("rejects a wrong secret, replayed session, tampering and expiry", () => {

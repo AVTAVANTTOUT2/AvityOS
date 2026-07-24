@@ -86,6 +86,49 @@ export const RemotePairingAcceptance = z.object({
 }).strict();
 export type RemotePairingAcceptance = z.infer<typeof RemotePairingAcceptance>;
 
+export const RemotePairingBootstrapPayload = z.object({
+  acceptance: RemotePairingAcceptance,
+  relayUrl: z.string().trim().min(1).max(2_048),
+  relayAccessToken: z.string().min(32).max(4_096).regex(/^\S+$/),
+}).strict();
+export type RemotePairingBootstrapPayload = z.infer<typeof RemotePairingBootstrapPayload>;
+
+/**
+ * Encrypted out-of-band bootstrap returned by the host after it accepts a
+ * pairing request. The relay URL, per-device bearer and signed certificate
+ * remain opaque until the requesting device opens it with the pairing secret.
+ */
+export const RemotePairingBootstrap = z.object({
+  protocolVersion: z.literal(REMOTE_BRIDGE_PROTOCOL_VERSION),
+  sessionId: RemotePairingSessionId,
+  nonce: CipherMaterial,
+  ciphertext: Ciphertext,
+  authTag: CipherMaterial,
+}).strict();
+export type RemotePairingBootstrap = z.infer<typeof RemotePairingBootstrap>;
+
+export const REMOTE_CONTROL_REQUEST_CONTENT_TYPE =
+  "application/vnd.avityos.remote-control-request+json" as const;
+export const REMOTE_CONTROL_RESPONSE_CONTENT_TYPE =
+  "application/vnd.avityos.remote-control-response+json" as const;
+
+export const RemoteControlRequest = z.object({
+  protocolVersion: z.literal(REMOTE_BRIDGE_PROTOCOL_VERSION),
+  requestId: z.string().regex(/^rreq_[a-f0-9]{32}$/),
+  method: z.enum(["GET", "POST"]),
+  path: z.string().min(1).max(2_048).regex(/^\/v1\/[^\s]*$/),
+  body: z.unknown().optional(),
+}).strict();
+export type RemoteControlRequest = z.infer<typeof RemoteControlRequest>;
+
+export const RemoteControlResponse = z.object({
+  protocolVersion: z.literal(REMOTE_BRIDGE_PROTOCOL_VERSION),
+  requestId: z.string().regex(/^rreq_[a-f0-9]{32}$/),
+  status: z.number().int().min(100).max(599),
+  body: z.unknown(),
+}).strict();
+export type RemoteControlResponse = z.infer<typeof RemoteControlResponse>;
+
 export const RemoteEncryptedEnvelope = z.object({
   protocolVersion: z.literal(REMOTE_BRIDGE_PROTOCOL_VERSION),
   messageId: RemoteBridgeMessageId,

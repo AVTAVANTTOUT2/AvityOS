@@ -108,6 +108,32 @@ describe("API authentication", () => {
     const body = await ok.json() as { note: string };
     expect(body.note).toMatch(/never runs provider health checks/i);
   });
+
+  it("protects remote-host administration and reports unsupported platforms honestly", async () => {
+    expect((await fetch(`${baseUrl}/v1/remote-host`)).status).toBe(401);
+    const status = await fetch(`${baseUrl}/v1/remote-host`, { headers: auth });
+    expect(status.status).toBe(200);
+    expect(status.headers.get("cache-control")).toBe("no-store");
+    expect(await status.json()).toMatchObject({
+      supported: false,
+      configured: false,
+      connectorState: "unsupported",
+      devices: [],
+    });
+    const configure = await fetch(`${baseUrl}/v1/remote-host/configure`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        relayUrl: "https://relay.example",
+        relayAdminToken: "admin-token-".padEnd(32, "x"),
+        deviceName: "Host",
+      }),
+    });
+    expect(configure.status).toBe(409);
+    expect(await configure.json()).toMatchObject({
+      error: { code: "policy_denied" },
+    });
+  });
 });
 
 describe("worker liveness reporting", () => {

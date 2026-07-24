@@ -219,6 +219,8 @@ final class ApiClientTests: XCTestCase {
                 return .init(body: #"{"items":[]}"#)
             case "/v1/terminals":
                 return .init(body: #"{"items":[{"id":"term_1","projectId":"prj_1","command":"pnpm test","state":"succeeded","exitCode":0}]}"#)
+            case "/v1/remote-host":
+                return .init(body: #"{"supported":true,"configured":false,"connectorState":"unconfigured","relayUrl":null,"accountId":null,"hostDeviceId":null,"devices":[],"lastError":null}"#)
             default:
                 XCTFail("Unexpected request: \(path + query)")
                 return .init(status: 404, body: #"{"error":{"code":"not_found","message":"missing"}}"#)
@@ -237,7 +239,7 @@ final class ApiClientTests: XCTestCase {
         XCTAssertEqual(client.version, "test")
         XCTAssertEqual(client.projects.map(\.id), ["prj_1"])
         XCTAssertEqual(client.terminals.first?.command, "pnpm test")
-        XCTAssertEqual(protectedRequests, 5)
+        XCTAssertEqual(protectedRequests, 6)
         XCTAssertNil(client.lastError)
     }
 
@@ -295,6 +297,8 @@ final class ApiClientTests: XCTestCase {
                 return .init(body: #"{"status":"ok","version":"test"}"#)
             case "/v1/projects", "/v1/approvals", "/v1/runs", "/v1/terminals":
                 return .init(body: #"{"items":[]}"#)
+            case "/v1/remote-host":
+                return .init(body: #"{"supported":true,"configured":false,"connectorState":"unconfigured","relayUrl":null,"accountId":null,"hostDeviceId":null,"devices":[],"lastError":null}"#)
             default:
                 XCTFail("Unexpected request: \(path)")
                 return .init(status: 404, body: #"{"error":{"code":"not_found","message":"missing"}}"#)
@@ -313,6 +317,83 @@ final class ApiClientTests: XCTestCase {
         XCTAssertEqual(resolutionBody?["note"], "resolved from macOS app")
         XCTAssertTrue(client.connected)
         XCTAssertNil(client.lastError)
+    }
+
+    @MainActor
+    func testRemoteHostLifecycleUsesProtectedCanonicalEndpoints() async throws {
+        let context = URLProtocolTestContext()
+        defer { context.cleanUp() }
+        var configuredBody: [String: String]?
+        var acceptedBody: [String: String]?
+        let configuredStatus = #"{"supported":true,"configured":true,"connectorState":"online","relayUrl":"https://relay.example","accountId":"racc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","hostDeviceId":"rdev_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","devices":[{"deviceId":"rdev_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","name":"Host Mac","status":"active","validUntil":"2027-07-24T13:00:00.000Z","isHost":true}],"lastError":null}"#
+        context.install { request in
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "authorization"),
+                "Bearer native-client-token"
+            )
+            switch (request.httpMethod, request.url!.path) {
+            case ("POST", "/v1/remote-host/configure"):
+                configuredBody = try JSONSerialization.jsonObject(
+                    with: requestBody(request)
+                ) as? [String: String]
+                return .init(body: configuredStatus)
+            case ("POST", "/v1/remote-host/pairing-sessions"):
+                return .init(
+                    status: 201,
+                    body: #"{"sessionId":"rpair_cccccccccccccccccccccccccccccccc","expiresAt":"2026-07-24T13:05:00.000Z","pairingBundle":"{\"offer\":{},\"pairingSecret\":\"opaque\"}"}"#
+                )
+            case ("POST", "/v1/remote-host/pairing-sessions/rpair_cccccccccccccccccccccccccccccccc/accept"):
+                acceptedBody = try JSONSerialization.jsonObject(
+                    with: requestBody(request)
+                ) as? [String: String]
+                return .init(
+                    body: #"{"sessionId":"rpair_cccccccccccccccccccccccccccccccc","bootstrap":"{\"ciphertext\":\"opaque\"}"}"#
+                )
+            case ("GET", "/v1/remote-host"):
+                return .init(body: configuredStatus)
+            case ("POST", "/v1/remote-host/devices/rdev_dddddddddddddddddddddddddddddddd/revoke"):
+                return .init(body: configuredStatus)
+            default:
+                XCTFail("Unexpected request: \(request.httpMethod ?? "") \(request.url!.path)")
+                return .init(
+                    status: 404,
+                    body: #"{"error":{"code":"not_found","message":"missing"}}"#
+                )
+            }
+        }
+        let client = ApiClient(
+            baseURL: URL(string: "http://127.0.0.1:7717")!,
+            credentials: MemoryCredentialStore(token: "native-client-token"),
+            session: context.session,
+            defaults: context.defaults
+        )
+
+        await client.configureRemoteHost(
+            relayURL: "https://relay.example",
+            relayAdminToken: "admin-token-xxxxxxxxxxxxxxxxxxxx",
+            deviceName: "Host Mac"
+        )
+        let pairing = await client.createRemotePairing()
+        let bootstrap = await client.acceptRemotePairing(
+            sessionId: pairing!.sessionId,
+            request: #"{"protocolVersion":1}"#
+        )
+        await client.revokeRemoteDevice(
+            id: "rdev_dddddddddddddddddddddddddddddddd"
+        )
+
+        XCTAssertEqual(configuredBody?["relayUrl"], "https://relay.example")
+        XCTAssertEqual(configuredBody?["deviceName"], "Host Mac")
+        XCTAssertEqual(
+            configuredBody?["relayAdminToken"],
+            "admin-token-xxxxxxxxxxxxxxxxxxxx"
+        )
+        XCTAssertEqual(acceptedBody?["request"], #"{"protocolVersion":1}"#)
+        XCTAssertEqual(pairing?.sessionId, "rpair_cccccccccccccccccccccccccccccccc")
+        XCTAssertEqual(bootstrap?.bootstrap, #"{"ciphertext":"opaque"}"#)
+        XCTAssertTrue(client.remoteHostStatus.configured)
+        XCTAssertEqual(client.remoteHostStatus.connectorState, "online")
+        XCTAssertNil(client.remoteHostError)
     }
 
     @MainActor

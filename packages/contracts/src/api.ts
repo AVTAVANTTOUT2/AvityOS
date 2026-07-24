@@ -6,6 +6,11 @@ import {
 } from "./enums.js";
 import { ClarificationAnswerValue } from "./clarification.js";
 import { Id, MissionContract } from "./entities.js";
+import {
+  RemoteAccountId,
+  RemoteDeviceId,
+  RemotePairingSessionId,
+} from "./remote-bridge.js";
 
 /** Stable machine-readable API error codes. */
 export const ApiErrorCode = z.enum([
@@ -48,6 +53,66 @@ export function paginated<T extends z.ZodTypeAny>(item: T) {
     offset: z.number().int(),
   });
 }
+
+const RemoteRelayUrl = z.string().trim().min(1).max(2_048).refine(
+  (value) =>
+    /^https:\/\/[^/?#@\s]+(?::\d{1,5})?(?:\/[^?#\s]*)?$/.test(value) ||
+    /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?(?:\/[^?#\s]*)?$/.test(value),
+  "must use HTTPS outside loopback and contain no credentials, query or fragment",
+);
+
+export const ConfigureRemoteHostRequest = z.object({
+  relayUrl: RemoteRelayUrl,
+  relayAdminToken: z.string().min(32).max(4_096).regex(/^\S+$/),
+  deviceName: z.string().trim().min(1).max(120),
+}).strict();
+export type ConfigureRemoteHostRequest = z.infer<typeof ConfigureRemoteHostRequest>;
+
+export const AcceptRemotePairingRequest = z.object({
+  request: z.string().min(2).max(128 * 1024),
+}).strict();
+export type AcceptRemotePairingRequest = z.infer<typeof AcceptRemotePairingRequest>;
+
+export const RemoteHostDevice = z.object({
+  deviceId: RemoteDeviceId,
+  name: z.string().min(1).max(120),
+  status: z.enum(["active", "revoked"]),
+  validUntil: z.string().datetime(),
+  isHost: z.boolean(),
+}).strict();
+export type RemoteHostDevice = z.infer<typeof RemoteHostDevice>;
+
+export const RemoteHostStatus = z.object({
+  supported: z.boolean(),
+  configured: z.boolean(),
+  connectorState: z.enum([
+    "unsupported",
+    "unconfigured",
+    "stopped",
+    "connecting",
+    "online",
+    "degraded",
+  ]),
+  relayUrl: z.string().nullable(),
+  accountId: RemoteAccountId.nullable(),
+  hostDeviceId: RemoteDeviceId.nullable(),
+  devices: z.array(RemoteHostDevice),
+  lastError: z.string().max(500).nullable(),
+}).strict();
+export type RemoteHostStatus = z.infer<typeof RemoteHostStatus>;
+
+export const RemotePairingBundleResponse = z.object({
+  sessionId: RemotePairingSessionId,
+  expiresAt: z.string().datetime(),
+  pairingBundle: z.string().min(2).max(128 * 1024),
+}).strict();
+export type RemotePairingBundleResponse = z.infer<typeof RemotePairingBundleResponse>;
+
+export const RemotePairingBootstrapResponse = z.object({
+  sessionId: RemotePairingSessionId,
+  bootstrap: z.string().min(2).max(128 * 1024),
+}).strict();
+export type RemotePairingBootstrapResponse = z.infer<typeof RemotePairingBootstrapResponse>;
 
 // ── Requests ────────────────────────────────────────────────────────────────
 

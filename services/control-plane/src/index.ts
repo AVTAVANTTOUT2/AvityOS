@@ -30,3 +30,14 @@ export {
   type GitHubReadiness,
   type RepositoryReadinessTarget,
 } from "./github-readiness.js";
+export {
+  DEFAULT_REMOTE_HOST_RELAY_FACTORY,
+  RemoteControlPolicyError,
+  RemoteHostManager,
+  type RemoteControlDispatcher,
+  type RemoteHostManagerOptions,
+  type RemoteHostRelayFactory,
+  type RemoteHostSecretConfiguration,
+  type RemoteHostSecretStore,
+} from "./remote-host.js";
+export { MacOSRemoteHostKeychainStore } from "./remote-host-keychain.js";

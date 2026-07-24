@@ -79,6 +79,32 @@ device must reconnect within `AVITY_RELAY_TTL_MS` while messages are pending;
 an expired pending envelope creates a deliberate fail-closed cursor gap rather
 than silently dropping a remote action.
 
+### macOS host mode
+
+1. Run the relay behind HTTPS (or on loopback for development) and retain its
+   administrator token separately from the control-plane token.
+2. Run the control plane as the same macOS user as the native app. Public
+   bridge state defaults to `~/.avity/remote/bridge.sqlite`; override it with
+   `AVITY_REMOTE_BRIDGE_DB_PATH` only to a private directory.
+3. In AvityOS **Réglages → Pont distant — mode hôte**, enter the relay URL,
+   administrator token and host name. The control plane creates or reuses the
+   account/device identity, stores private material in Keychain and enrolls the
+   host with its own random device bearer.
+4. Create a one-time offer, transfer it out of band, paste the encrypted
+   request, then transfer the returned encrypted bootstrap. The raw pairing
+   secret is memory-only and expires after five minutes. The native consumer
+   workflow is delivered by checkpoint 6.3; until then the same protocol is
+   available through `@avityos/remote-bridge`.
+5. Revoke a lost device from the same screen. Local processing stops before the
+   relay call; retry the operation if the relay was unavailable so both sides
+   report `revoked`.
+
+If the status is `degraded`, inspect the displayed bounded error, verify relay
+HTTPS/certificate reachability and confirm that macOS Keychain is unlocked.
+Never paste the relay administrator token into a terminal command or pairing
+bundle. The relay URL cannot be changed in place: revoke devices and wait for
+the explicit reset/migration checkpoint instead of creating split relay state.
+
 ## Web UI shows "Hors ligne"
 
 The control plane is unreachable from the browser. Check it is running,

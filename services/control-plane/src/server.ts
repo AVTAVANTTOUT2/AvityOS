@@ -2,7 +2,9 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import cors from "@fastify/cors";
 import { z } from "zod";
 import {
+  AcceptRemotePairingRequest,
   AnswerClarificationRequest,
+  ConfigureRemoteHostRequest,
   CreateMissionRequest,
   CreateProjectRequest,
   E2EPreflightReport,
@@ -10,6 +12,7 @@ import {
   EventStreamQuery,
   PauseProjectRequest,
   ResolveApprovalRequest,
+  RemotePairingSessionId,
   ResumeProjectRequest,
   SubmitObjectiveRequest,
   TransitionMissionRequest,
@@ -26,6 +29,10 @@ import type { Engine } from "./engine.js";
 import { getCachedGitHubReadiness } from "./github-readiness.js";
 import type { ProviderStatusReport } from "./provider-status.js";
 import { ProjectValidationError, validateRepositoryConfiguration } from "./project-validation.js";
+import {
+  RemoteControlPolicyError,
+  type RemoteHostManager,
+} from "./remote-host.js";
 import {
   newId,
   now,
@@ -47,6 +54,8 @@ export interface ServerOptions {
   allowedOrigins?: readonly string[];
   /** Startup snapshot of provider readiness without vendor probes. */
   providerStatus?: ProviderStatusReport;
+  /** macOS-only local remote bridge host runtime. */
+  remoteHost?: RemoteHostManager;
 }
 
 /**
@@ -123,6 +132,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (err instanceof ProjectValidationError) {
       return apiError(reply, 400, "validation_failed", err.message);
     }
+    if (err instanceof RemoteControlPolicyError) {
+      return apiError(reply, 409, "policy_denied", err.message);
+    }
     return apiError(reply, 500, "internal", err instanceof Error ? err.message : "unexpected internal error");
   });
 
@@ -148,6 +160,59 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.delete("/v1/session", async (_req, reply) => {
     reply.header("set-cookie", "avity_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
     return { ok: true };
+  });
+
+  // ── native remote host ──────────────────────────────────────────────────
+
+  app.get("/v1/remote-host", async (_req, reply) => {
+    reply.header("cache-control", "no-store");
+    return opts.remoteHost?.status() ?? {
+      supported: false,
+      configured: false,
+      connectorState: "unsupported",
+      relayUrl: null,
+      accountId: null,
+      hostDeviceId: null,
+      devices: [],
+      lastError: null,
+    };
+  });
+
+  app.post("/v1/remote-host/configure", async (req, reply) => {
+    if (!opts.remoteHost) {
+      return apiError(reply, 409, "policy_denied", "remote host mode requires macOS Keychain");
+    }
+    const body = parse(ConfigureRemoteHostRequest, req.body);
+    reply.header("cache-control", "no-store");
+    return opts.remoteHost.configure(body);
+  });
+
+  app.post("/v1/remote-host/pairing-sessions", async (_req, reply) => {
+    if (!opts.remoteHost) {
+      return apiError(reply, 409, "policy_denied", "remote host mode requires macOS Keychain");
+    }
+    reply.header("cache-control", "no-store");
+    return reply.status(201).send(opts.remoteHost.createPairing());
+  });
+
+  app.post("/v1/remote-host/pairing-sessions/:id/accept", async (req, reply) => {
+    if (!opts.remoteHost) {
+      return apiError(reply, 409, "policy_denied", "remote host mode requires macOS Keychain");
+    }
+    const { id } = req.params as { id: string };
+    const sessionId = parse(RemotePairingSessionId, id);
+    const body = parse(AcceptRemotePairingRequest, req.body);
+    reply.header("cache-control", "no-store");
+    return opts.remoteHost.acceptPairing(sessionId, body.request);
+  });
+
+  app.post("/v1/remote-host/devices/:id/revoke", async (req, reply) => {
+    if (!opts.remoteHost) {
+      return apiError(reply, 409, "policy_denied", "remote host mode requires macOS Keychain");
+    }
+    const { id } = req.params as { id: string };
+    reply.header("cache-control", "no-store");
+    return opts.remoteHost.revokeDevice(id);
   });
 
   // ── projects ─────────────────────────────────────────────────────────────
