@@ -231,7 +231,8 @@ Implemented and covered by automated tests:
   execution;
 - live web state, native macOS client and first-class CLI;
 - macOS and Linux CI with build, tests, type checking, browser tests,
-  dependency/license checks, secret scanning and SBOM generation.
+  native XCUITest, universal `.app` packaging, dependency/license checks,
+  secret scanning and SBOM generation.
 
 Known remaining proof or product work:
 
@@ -242,7 +243,10 @@ Known remaining proof or product work:
 - live-provider E2E scenarios (Codex, Claude Code, Cursor), autonomous push
   and draft-PR creation still need a dedicated external fixture repository
   and GitHub credentials for end-to-end proof — this is the next milestone;
-- signed and notarized macOS packaging and broader native UI tests remain;
+- the macOS client now has native UI automation and a verified universal,
+  ad hoc signed installable bundle; public Developer ID signing/notarization
+  still requires operator-owned Apple credentials, and automatic updates
+  remain;
 - remote production exposure still requires operator-managed TLS termination,
   and a general encrypted cross-platform provider-key vault is not bundled.
 
@@ -272,7 +276,7 @@ deploy/                launchd and systemd deployment templates
 - Node.js **22.5 or newer** (`node:sqlite` is required);
 - pnpm 11;
 - Git;
-- Xcode 15+ for the native macOS application;
+- Xcode 16+ for native macOS UI tests and application packaging;
 - optional authenticated provider CLIs or API keys for live AI execution.
 
 ## Quick start
@@ -296,6 +300,9 @@ pnpm --filter @avityos/worker start
 
 # Optional native macOS app
 cd apps/macos && swift run AvityOS
+
+# Optional universal installable development bundle
+cd ../.. && ./scripts/build-macos-app.sh
 ```
 
 Drive the same control plane from the CLI:

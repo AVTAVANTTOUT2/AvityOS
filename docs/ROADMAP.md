@@ -71,8 +71,8 @@ reproductible dans `docs/TRACEABILITY.md`.
    l'appairage atomiquement et chaîne l'audit local des actions distantes.
    L'expérience native d'appairage et de mode distant appartient au chantier 6.
 
-6. **🟡 Client natif déjà présent, finition produit et distribution manquantes
-   — Application macOS complète.** Déjà présents : SwiftUI, Keychain,
+6. **🟡 Client natif installable, distribution publique et cycle de vie
+   manquants — Application macOS complète.** Déjà présents : SwiftUI, Keychain,
    REST/SSE, reconnexion, polling de secours, vues projets/missions/runs,
    notifications, Dock badge, menu bar, terminaux et deep links. Le checkpoint
    6.1 aligne le client sur les contrats réels (dont `TerminalSession.command`),
@@ -87,9 +87,13 @@ reproductible dans `docs/TRACEABILITY.md`.
    protocole Node, identité/certificats/bearer/curseurs dans Keychain,
    appairage offre → requête → bootstrap, transport relay publish/poll/ack
    reprenable après crash et réutilisation des écrans existants en mode
-   chiffré. Restent notamment : tests UI, bundle signé, notarisation,
-   installation propre, renouvellement des certificats et stratégie de mise à
-   jour.
+   chiffré. Le checkpoint 6.4 ajoute un vrai projet Xcode partagé, deux
+   XCUITests couvrant navigation et deep link, une icône native, un bundle
+   Release universel `arm64`/`x86_64`, signature ad hoc vérifiée, ZIP/checksum,
+   installation atomique avec sauvegarde et chemins Developer ID/notarisation
+   fail-closed. Restent : exécuter la signature/notarisation avec un certificat
+   Apple réel, renouveler les certificats du pont et définir/tester la mise à
+   jour applicative.
 
 7. **🟡 Fondations présentes, industrialisation manquante — Durcissement de
    distribution.** Déjà présents : CI Linux et macOS, audits, licences,

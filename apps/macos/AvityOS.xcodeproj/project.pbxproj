@@ -1,0 +1,463 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0BB3D5A911540B9AF863BE6E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3238979E27B4EC864C4D9CB9 /* Models.swift */; };
+		2A43D8E1D4FD5D11A8C53248 /* ApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A6C70AF248FBF96B0DAF2DA /* ApiClient.swift */; };
+		390B76D7A0930F51FF5AC6E5 /* RemoteBridgeCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = E568F97F0DBC5E6E00D27CAD /* RemoteBridgeCrypto.swift */; };
+		61DE181A21A799810693F0EA /* AvityOSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 073ECDE389106B5E3F06ECDE /* AvityOSUITests.swift */; };
+		6C9E63F92D68E8493654CAFE /* AvityOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79DD0C14B717CA340A953729 /* AvityOSApp.swift */; };
+		B66B6C6662DFCC68B5059B8D /* RemoteDeviceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E73BBEC3E1131AEFFC26AA7 /* RemoteDeviceStore.swift */; };
+		EA4330102DA4E11E4B6C2C63 /* RemoteBridgeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74ECEA4D9C42B24126813902 /* RemoteBridgeModels.swift */; };
+		EFC356A380F0C24065B4E418 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = E3B250CE4879BAA70C66E946 /* AppIcon.icns */; };
+		F4E465E1E6242B6398BBB5CA /* RemoteDeviceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F7AE3D9542F3346516E808 /* RemoteDeviceClient.swift */; };
+		FB651BBB96E43B876A54E997 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB76186DF75802227FBB05C8 /* KeychainStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BB8E55D88B15F92E297C0A79 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AD516916C7CAC1B7B10EAF7F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DCDFFFCDA38286FB03CD6BEA;
+			remoteInfo = AvityOS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		073ECDE389106B5E3F06ECDE /* AvityOSUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvityOSUITests.swift; sourceTree = "<group>"; };
+		1B357519AEFADFF729300927 /* AvityOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AvityOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3238979E27B4EC864C4D9CB9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		74ECEA4D9C42B24126813902 /* RemoteBridgeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteBridgeModels.swift; sourceTree = "<group>"; };
+		79DD0C14B717CA340A953729 /* AvityOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvityOSApp.swift; sourceTree = "<group>"; };
+		7E73BBEC3E1131AEFFC26AA7 /* RemoteDeviceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteDeviceStore.swift; sourceTree = "<group>"; };
+		8A6C70AF248FBF96B0DAF2DA /* ApiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApiClient.swift; sourceTree = "<group>"; };
+		BBA7DAB66F9A68302E8B4541 /* AvityOSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AvityOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C1F7AE3D9542F3346516E808 /* RemoteDeviceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteDeviceClient.swift; sourceTree = "<group>"; };
+		E3B250CE4879BAA70C66E946 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
+		E568F97F0DBC5E6E00D27CAD /* RemoteBridgeCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteBridgeCrypto.swift; sourceTree = "<group>"; };
+		FB76186DF75802227FBB05C8 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		15AAA0E49C9F9D7BE72FBBE6 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				E3B250CE4879BAA70C66E946 /* AppIcon.icns */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		36EE21DDD0AD7F8FE5AC9A15 /* AvityOS */ = {
+			isa = PBXGroup;
+			children = (
+				8A6C70AF248FBF96B0DAF2DA /* ApiClient.swift */,
+				79DD0C14B717CA340A953729 /* AvityOSApp.swift */,
+				FB76186DF75802227FBB05C8 /* KeychainStore.swift */,
+				3238979E27B4EC864C4D9CB9 /* Models.swift */,
+				E568F97F0DBC5E6E00D27CAD /* RemoteBridgeCrypto.swift */,
+				74ECEA4D9C42B24126813902 /* RemoteBridgeModels.swift */,
+				C1F7AE3D9542F3346516E808 /* RemoteDeviceClient.swift */,
+				7E73BBEC3E1131AEFFC26AA7 /* RemoteDeviceStore.swift */,
+			);
+			name = AvityOS;
+			path = Sources/AvityOS;
+			sourceTree = "<group>";
+		};
+		47D5EBA52CC685A56EEFB693 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1B357519AEFADFF729300927 /* AvityOS.app */,
+				BBA7DAB66F9A68302E8B4541 /* AvityOSUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		6443F6373F893DED092FE850 = {
+			isa = PBXGroup;
+			children = (
+				36EE21DDD0AD7F8FE5AC9A15 /* AvityOS */,
+				9114F5A03E8C586F86AD8969 /* AvityOSUITests */,
+				15AAA0E49C9F9D7BE72FBBE6 /* Resources */,
+				47D5EBA52CC685A56EEFB693 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		9114F5A03E8C586F86AD8969 /* AvityOSUITests */ = {
+			isa = PBXGroup;
+			children = (
+				073ECDE389106B5E3F06ECDE /* AvityOSUITests.swift */,
+			);
+			name = AvityOSUITests;
+			path = UITests/AvityOSUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B142693DE9C94CD1FF99E095 /* AvityOSUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D5893A7B859E0EF99DA0E916 /* Build configuration list for PBXNativeTarget "AvityOSUITests" */;
+			buildPhases = (
+				4008310440EE59189D962BCC /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B8C0619AC8BAB9D8A6EDA4D6 /* PBXTargetDependency */,
+			);
+			name = AvityOSUITests;
+			packageProductDependencies = (
+			);
+			productName = AvityOSUITests;
+			productReference = BBA7DAB66F9A68302E8B4541 /* AvityOSUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		DCDFFFCDA38286FB03CD6BEA /* AvityOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 44C0552F82BFCB4B5CC8F0F7 /* Build configuration list for PBXNativeTarget "AvityOS" */;
+			buildPhases = (
+				592F7A58173C6E388D58219E /* Sources */,
+				0D764CF59DDE53581D988E37 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AvityOS;
+			packageProductDependencies = (
+			);
+			productName = AvityOS;
+			productReference = 1B357519AEFADFF729300927 /* AvityOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AD516916C7CAC1B7B10EAF7F /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					B142693DE9C94CD1FF99E095 = {
+						ProvisioningStyle = Manual;
+						TestTargetID = DCDFFFCDA38286FB03CD6BEA;
+					};
+					DCDFFFCDA38286FB03CD6BEA = {
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = 415D7A1994E0EF668C9F820B /* Build configuration list for PBXProject "AvityOS" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 6443F6373F893DED092FE850;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 47D5EBA52CC685A56EEFB693 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				DCDFFFCDA38286FB03CD6BEA /* AvityOS */,
+				B142693DE9C94CD1FF99E095 /* AvityOSUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0D764CF59DDE53581D988E37 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EFC356A380F0C24065B4E418 /* AppIcon.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4008310440EE59189D962BCC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				61DE181A21A799810693F0EA /* AvityOSUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		592F7A58173C6E388D58219E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2A43D8E1D4FD5D11A8C53248 /* ApiClient.swift in Sources */,
+				6C9E63F92D68E8493654CAFE /* AvityOSApp.swift in Sources */,
+				FB651BBB96E43B876A54E997 /* KeychainStore.swift in Sources */,
+				0BB3D5A911540B9AF863BE6E /* Models.swift in Sources */,
+				390B76D7A0930F51FF5AC6E5 /* RemoteBridgeCrypto.swift in Sources */,
+				EA4330102DA4E11E4B6C2C63 /* RemoteBridgeModels.swift in Sources */,
+				F4E465E1E6242B6398BBB5CA /* RemoteDeviceClient.swift in Sources */,
+				B66B6C6662DFCC68B5059B8D /* RemoteDeviceStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B8C0619AC8BAB9D8A6EDA4D6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DCDFFFCDA38286FB03CD6BEA /* AvityOS */;
+			targetProxy = BB8E55D88B15F92E297C0A79 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0FB57E456E2BF9B2673D876C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.avityos.app;
+				PRODUCT_NAME = AvityOS;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		1B564DBC0BBCE03CEFCF5271 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.avityos.app.uitests;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = AvityOS;
+			};
+			name = Debug;
+		};
+		77FD87AEC61C1466D7E9745D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.avityos.app.uitests;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = AvityOS;
+			};
+			name = Release;
+		};
+		9C4FF1DE40A8EE398CE0723F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		DBDA68D32DA3CC2699A424DA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.avityos.app;
+				PRODUCT_NAME = AvityOS;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		F27DA52035900F77E9D64D48 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		415D7A1994E0EF668C9F820B /* Build configuration list for PBXProject "AvityOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F27DA52035900F77E9D64D48 /* Debug */,
+				9C4FF1DE40A8EE398CE0723F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		44C0552F82BFCB4B5CC8F0F7 /* Build configuration list for PBXNativeTarget "AvityOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DBDA68D32DA3CC2699A424DA /* Debug */,
+				0FB57E456E2BF9B2673D876C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D5893A7B859E0EF99DA0E916 /* Build configuration list for PBXNativeTarget "AvityOSUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1B564DBC0BBCE03CEFCF5271 /* Debug */,
+				77FD87AEC61C1466D7E9745D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AD516916C7CAC1B7B10EAF7F /* Project object */;
+}

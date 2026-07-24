@@ -38,7 +38,12 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   acquittement, ce qui interdit la réutilisation après crash et permet de
   reprendre un ack ambigu sans réexécuter l'action. En mode distant, SSE reste
   désactivé et les mêmes lectures/actions bornées passent par des enveloppes
-  strictes. Voir ADR-0006 à ADR-0010.
+  strictes. Le checkpoint 6.4 formalise l'artefact natif : projet Xcode
+  partagé, métadonnées/URL scheme vérifiées, binaire universel, hardened
+  runtime et signature contrôlée. La CI ne possède aucun secret Apple et
+  produit explicitement une signature ad hoc ; le chemin public refuse
+  l'absence de Team ID ou de profil notarytool, puis exige soumission, staple
+  et évaluation Gatekeeper. Voir ADR-0006 à ADR-0011.
 - **Validation** — shared zod schemas validate bodies/enums. Project onboarding
   resolves repository paths with `realpath`, requires a readable/writable Git
   working tree, verifies the local default branch and matches GitHub identity
@@ -176,8 +181,10 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   fallback storage is owner-only mode 0600 and may be replaced by a host vault.
   The native client refuses clear HTTP away from loopback, sends its bearer only
   in Authorization headers, and resumes SSE with a non-secret event cursor.
-- **Supply chain** — CI blocks on tests, typechecks, browser/Swift tests,
-  dependency audit, 508-package license policy, Gitleaks and SPDX SBOM creation.
+- **Supply chain** — CI blocks on tests, typechecks, browser/Swift/XCUITests,
+  universal macOS bundle verification, dependency audit, license policy,
+  Gitleaks and SPDX SBOM creation. The uploaded ad hoc app is short-lived CI
+  evidence and is never labelled as a notarized release.
 
 Security tests cover malicious origins, missing auth, SSE query-token denial,
 client cwd injection, symlink escape (including symlinked artifacts, worktree
@@ -200,6 +207,11 @@ transport.
   native user token is protected by Keychain.
 - HTTPS termination and certificate lifecycle for a remote control plane are a
   deployment responsibility; the worker enforces HTTPS but mTLS is not bundled.
+- Public macOS distribution still depends on an operator-owned Developer ID
+  certificate and Apple notarization service. The repository implements and
+  verifies the fail-closed signing/notary path, but CI deliberately cannot
+  certify a notarization without those credentials. In-app update delivery and
+  rollback policy are not yet implemented.
 - CLI coding agents run inside the AvityOS OS sandbox (isolated HOME, no network
   unless the provider opts in, worktree-only writes, and a **fail-closed read
   boundary** — no general host-filesystem read access) in addition to their own

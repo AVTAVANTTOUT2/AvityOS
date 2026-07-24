@@ -10,8 +10,10 @@ struct AvityOSApp: App {
             ContentView()
                 .environmentObject(client)
                 .onAppear {
-                    NotificationCoordinator.requestAuthorization()
-                    client.startPolling()
+                    if !AppRuntime.isUITesting {
+                        NotificationCoordinator.requestAuthorization()
+                        client.startPolling()
+                    }
                 }
                 .onChange(of: client.approvals.count) { previous, count in
                     NSApplication.shared.dockTile.badgeLabel = count > 0 ? String(count) : nil
@@ -32,6 +34,12 @@ struct AvityOSApp: App {
         Settings {
             SettingsView().environmentObject(client).frame(minWidth: 520, minHeight: 320)
         }
+    }
+}
+
+enum AppRuntime {
+    static var isUITesting: Bool {
+        ProcessInfo.processInfo.environment["AVITY_UI_TEST_MODE"] == "1"
     }
 }
 
@@ -62,6 +70,16 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case terminals = "Terminaux"
     case settings = "Réglages"
     var id: String { rawValue }
+    var accessibilityIdentifier: String {
+        switch self {
+        case .projects: "sidebar.projects"
+        case .missions: "sidebar.missions"
+        case .interventions: "sidebar.interventions"
+        case .runs: "sidebar.runs"
+        case .terminals: "sidebar.terminals"
+        case .settings: "sidebar.settings"
+        }
+    }
     var icon: String {
         switch self {
         case .projects: "folder"
@@ -83,6 +101,8 @@ struct ContentView: View {
             List(SidebarItem.allCases, selection: $selection) { item in
                 Label(item.rawValue, systemImage: item.icon)
                     .badge(item == .interventions ? client.approvals.count : 0)
+                    .tag(item)
+                    .accessibilityIdentifier(item.accessibilityIdentifier)
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 210)
             .navigationTitle("AvityOS")
@@ -106,6 +126,7 @@ struct ContentView: View {
                         Text(connectionLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("connection.status")
                     }
                 }
             }
@@ -121,6 +142,7 @@ struct ContentView: View {
             default: selection = .projects
             }
         }
+        .frame(minWidth: 900, minHeight: 600)
     }
 
     private var connectionLabel: String {
@@ -166,6 +188,7 @@ struct ProjectsView: View {
             }
         }
         .navigationTitle("Projets")
+        .accessibilityIdentifier("screen.projects")
     }
 
     private func statusColor(_ status: String) -> Color {
@@ -190,6 +213,7 @@ struct MissionsView: View {
             TableColumn("Priorité") { mission in Text("\(mission.priority)") }.width(60)
         }
         .navigationTitle("Missions")
+        .accessibilityIdentifier("screen.missions")
     }
 }
 
@@ -223,6 +247,7 @@ struct InterventionsView: View {
             }
         }
         .navigationTitle("Interventions")
+        .accessibilityIdentifier("screen.interventions")
     }
 }
 
@@ -237,6 +262,7 @@ struct RunsView: View {
             TableColumn("Coût") { run in Text(String(format: "$%.2f", run.costUsd)) }.width(70)
         }
         .navigationTitle("Exécutions")
+        .accessibilityIdentifier("screen.runs")
     }
 }
 
@@ -254,6 +280,7 @@ struct TerminalsView: View {
                 }
                 .tag(terminal)
             }
+            .accessibilityIdentifier("screen.terminals")
             .frame(minWidth: 260)
             ScrollView {
                 Text(logs.map(\.text).joined())
@@ -266,6 +293,7 @@ struct TerminalsView: View {
             .foregroundStyle(Color.white.opacity(0.9))
         }
         .navigationTitle("Terminaux")
+        .accessibilityIdentifier("screen.terminals")
         .task(id: selected?.id) {
             if let selected {
                 logs = await client.terminalLogs(id: selected.id)
@@ -297,7 +325,9 @@ struct SettingsView: View {
         Form {
             Section("Control plane") {
                 TextField("URL", text: $endpoint)
+                    .accessibilityIdentifier("settings.endpoint")
                 SecureField("Token API", text: $token)
+                    .accessibilityIdentifier("settings.apiToken")
                 HStack {
                     Button("Enregistrer") {
                         guard let url = URL(string: endpoint), !token.isEmpty else { return }
@@ -305,6 +335,7 @@ struct SettingsView: View {
                         token = ""
                     }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("settings.save")
                     Button("Supprimer le token", role: .destructive) { client.clearCredentials() }
                 }
                 LabeledContent("État", value: client.tokenConfigured ? "Token protégé dans Keychain" : "Authentification requise")
@@ -555,6 +586,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Réglages")
+        .accessibilityIdentifier("screen.settings")
         .onAppear {
             endpoint = client.baseURL.absoluteString
             relayURL = client.remoteHostStatus.relayUrl ?? relayURL

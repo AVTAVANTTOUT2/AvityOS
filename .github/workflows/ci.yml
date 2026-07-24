@@ -66,6 +66,34 @@ jobs:
         working-directory: apps/macos
         run: swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
+      - name: Run native macOS UI tests
+        working-directory: apps/macos
+        run: |
+          xcodebuild test \
+            -quiet \
+            -project AvityOS.xcodeproj \
+            -scheme AvityOS \
+            -destination "platform=macOS" \
+            -derivedDataPath "$RUNNER_TEMP/AvityOSUITests" \
+            -resultBundlePath "$RUNNER_TEMP/AvityOSUITests.xcresult" \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual
+
+      - name: Build verified universal macOS application
+        run: ./scripts/build-macos-app.sh
+
+      - name: Upload native macOS evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-macos-evidence
+          path: |
+            ${{ runner.temp }}/AvityOSUITests.xcresult
+            dist/macos/AvityOS-macos-universal.zip
+            dist/macos/AvityOS-macos-universal.zip.sha256
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Audit production dependencies
         run: pnpm audit --audit-level high
 

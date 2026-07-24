@@ -15,33 +15,73 @@ stores its identity/bearer/replay state in Keychain and routes the existing
 native screens through the ciphertext relay. Local and remote credentials stay
 independent and the active transport is explicit in the toolbar and menu bar.
 
-## Development build (no certificate required)
+## Development and UI tests
 
 ```sh
 cd apps/macos
 swift build            # compile
 swift test             # deterministic transport, contract and Keychain tests
 swift run AvityOS      # launch against http://127.0.0.1:7717
+
+# Genuine application-level macOS automation
+xcodebuild test \
+  -project AvityOS.xcodeproj \
+  -scheme AvityOS \
+  -destination "platform=macOS" \
+  CODE_SIGN_IDENTITY=- \
+  CODE_SIGN_STYLE=Manual
 ```
 
 CI compiles both the application and tests with complete strict-concurrency
-checking and treats every Swift warning as an error.
+checking, treats every Swift warning as an error, runs XCUITest against the
+actual `.app`, and packages a verified universal development artifact.
 
-Requires Xcode (or the Command Line Tools with the macOS SDK) and macOS 14+.
-Start the control plane first: `pnpm --filter @avityos/control-plane start`.
+SwiftPM development requires the Command Line Tools with the macOS SDK;
+XCUITest and bundle packaging require Xcode 16+. The application supports
+macOS 14+. Start the control plane first:
+`pnpm --filter @avityos/control-plane start`.
 
-## Signing & notarization (release builds)
+## Installable application bundle
 
-Development builds run unsigned locally. For distribution:
+From the repository root:
 
-1. Wrap the executable in an `.app` bundle (an `Info.plist` with
-   `LSUIElement=false`, bundle id `com.avityos.app`).
-2. Sign: `codesign --deep --options runtime -s "Developer ID Application: <team>" AvityOS.app`
-3. Notarize: `xcrun notarytool submit AvityOS.zip --keychain-profile <profile> --wait`
-4. Staple: `xcrun stapler staple AvityOS.app`
+```sh
+./scripts/build-macos-app.sh
+```
 
-An Apple Developer ID certificate is required for steps 2–4; nothing in the
-development workflow depends on it.
+This emits `dist/macos/AvityOS.app`, a tested
+`AvityOS-macos-universal.zip`, and its SHA-256 checksum. The binary contains
+both `arm64` and `x86_64`, registers `avity://`, includes the native icon and is
+ad hoc signed for development/CI. Install by dragging the verified app to
+Applications, or use an explicit writable destination:
+
+```sh
+./scripts/install-macos-app.sh \
+  "$PWD/dist/macos/AvityOS.app" \
+  "/Applications"
+```
+
+The installer preserves an existing app as a timestamped backup. It never
+removes Gatekeeper quarantine metadata.
+
+## Developer ID signing and notarization
+
+Build with an installed Developer ID identity, then notarize with an existing
+notarytool Keychain profile:
+
+```sh
+AVITY_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
+  ./scripts/build-macos-app.sh
+
+AVITY_NOTARY_PROFILE="avityos-notary" \
+  ./scripts/notarize-macos-app.sh \
+  "$PWD/dist/macos/AvityOS.app"
+```
+
+The notarization script refuses ad hoc signatures and missing profiles,
+waits for Apple, staples and validates the ticket, runs Gatekeeper assessment,
+then recreates the ZIP/checksum from the stapled app. Apple credentials are
+never required for development or pull-request CI.
 
 ## Security notes
 

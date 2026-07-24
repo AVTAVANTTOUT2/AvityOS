@@ -1,0 +1,85 @@
+name: AvityOS
+
+options:
+  bundleIdPrefix: com.avityos
+  deploymentTarget:
+    macOS: "14.0"
+  groupSortPosition: top
+  generateEmptyDirectories: true
+  xcodeVersion: "16.0"
+
+settings:
+  base:
+    CURRENT_PROJECT_VERSION: 1
+    DEAD_CODE_STRIPPING: true
+    ENABLE_HARDENED_RUNTIME: true
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MARKETING_VERSION: "0.1.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: true
+    SWIFT_VERSION: "5.9"
+
+targets:
+  AvityOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/AvityOS
+      - path: Resources/AppIcon.icns
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: "$(DEVELOPMENT_LANGUAGE)"
+        CFBundleExecutable: "$(EXECUTABLE_NAME)"
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        CFBundleIconFile: AppIcon
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: "$(PRODUCT_NAME)"
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Viewer
+            CFBundleURLName: com.avityos.app
+            CFBundleURLSchemes:
+              - avity
+        LSApplicationCategoryType: public.app-category.developer-tools
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSHighResolutionCapable: true
+        NSHumanReadableCopyright: Copyright © 2026 AvityOS
+        NSPrincipalClass: NSApplication
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        PRODUCT_BUNDLE_IDENTIFIER: com.avityos.app
+        PRODUCT_NAME: AvityOS
+
+  AvityOSUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: UITests/AvityOSUITests
+    dependencies:
+      - target: AvityOS
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: false
+        GENERATE_INFOPLIST_FILE: true
+        PRODUCT_BUNDLE_IDENTIFIER: com.avityos.app.uitests
+        TEST_TARGET_NAME: AvityOS
+
+schemes:
+  AvityOS:
+    build:
+      targets:
+        AvityOS: all
+        AvityOSUITests:
+          - test
+    test:
+      gatherCoverageData: true
+      targets:
+        - name: AvityOSUITests
+          parallelizable: false
