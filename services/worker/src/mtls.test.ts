@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdtempSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,8 +54,11 @@ function createSignedCertificate(
   writeFileSync(
     extensions,
     [
-      `extendedKeyUsage=${usage}`,
-      "keyUsage=digitalSignature,keyEncipherment",
+      "basicConstraints=critical,CA:FALSE",
+      "subjectKeyIdentifier=hash",
+      "authorityKeyIdentifier=keyid,issuer",
+      `extendedKeyUsage=critical,${usage}`,
+      "keyUsage=critical,digitalSignature,keyEncipherment",
       ...(usage === "serverAuth" ? ["subjectAltName=IP:127.0.0.1"] : []),
       "",
     ].join("\n"),
@@ -117,6 +121,8 @@ function createTestPki(): TestPki {
     "basicConstraints=critical,CA:TRUE",
     "-addext",
     "keyUsage=critical,keyCertSign,cRLSign",
+    "-addext",
+    "subjectKeyIdentifier=hash",
     "-keyout",
     caKey,
     "-out",
@@ -130,6 +136,16 @@ function createTestPki(): TestPki {
     caKey,
     "server",
     "serverAuth",
+  );
+  const serverChain = join(root, "server-chain.crt");
+  writeFileSync(
+    serverChain,
+    Buffer.concat([
+      readFileSync(server.cert),
+      Buffer.from("\n"),
+      readFileSync(caCert),
+    ]),
+    { mode: 0o644 },
   );
   const worker = createSignedCertificate(
     root,
@@ -148,7 +164,7 @@ function createTestPki(): TestPki {
   return {
     root,
     caCert,
-    serverCert: server.cert,
+    serverCert: serverChain,
     serverKey: server.key,
     workerCert: worker.cert,
     workerKey: worker.key,
