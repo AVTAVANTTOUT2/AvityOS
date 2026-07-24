@@ -87,7 +87,10 @@ function readOwnedPem(
   }
   const descriptor = openSync(path, "r");
   try {
-    const bytes = Buffer.allocUnsafe(stats.size + 1);
+    // Keep native TLS material in an isolated, exact-length backing store.
+    // Pooled or sliced buffers can otherwise expose a larger ArrayBuffer to
+    // native consumers even though their JavaScript view is correctly sized.
+    const bytes = Buffer.allocUnsafeSlow(stats.size);
     let total = 0;
     while (total < bytes.byteLength) {
       const count = readSync(
@@ -103,7 +106,11 @@ function readOwnedPem(
     if (total !== stats.size) {
       throw new Error(`${label} changed while being read`);
     }
-    return bytes.subarray(0, total);
+    const growthProbe = Buffer.allocUnsafeSlow(1);
+    if (readSync(descriptor, growthProbe, 0, 1, null) !== 0) {
+      throw new Error(`${label} changed while being read`);
+    }
+    return bytes;
   } finally {
     closeSync(descriptor);
   }
