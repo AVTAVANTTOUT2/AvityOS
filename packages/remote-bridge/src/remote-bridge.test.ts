@@ -16,6 +16,10 @@ import {
 
 const NOW = "2026-07-24T09:00:00.000Z";
 
+function tamperBase64Url(value: string): string {
+  return `${value.startsWith("A") ? "B" : "A"}${value.slice(1)}`;
+}
+
 function setupDevices() {
   const account = generateRemoteAccountIdentity();
   const host = generateRemoteDeviceIdentity();
@@ -157,7 +161,7 @@ describe("out-of-band pairing", () => {
 
     const tampered = {
       ...request,
-      ciphertext: `${request.ciphertext.slice(0, -1)}${request.ciphertext.endsWith("A") ? "B" : "A"}`,
+      ciphertext: tamperBase64Url(request.ciphertext),
     };
     expect(() => acceptRemotePairingRequest({
       session: created.session,
@@ -267,7 +271,7 @@ describe("end-to-end encrypted envelopes", () => {
     });
     const tampered = {
       ...envelope,
-      ciphertext: `${envelope.ciphertext.slice(0, -1)}${envelope.ciphertext.endsWith("A") ? "B" : "A"}`,
+      ciphertext: tamperBase64Url(envelope.ciphertext),
     };
     expect(() => openRemoteEnvelope({
       envelope: tampered,

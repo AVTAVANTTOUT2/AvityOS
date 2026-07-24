@@ -4,6 +4,8 @@ import {
   RemoteEncryptedEnvelope,
   RemotePairingOffer,
   RemotePairingRequest,
+  RemoteRelayAckRequest,
+  RemoteRelayInbox,
 } from "./remote-bridge.js";
 
 describe("remote bridge contracts", () => {
@@ -34,5 +36,18 @@ describe("remote bridge contracts", () => {
       contentType: "application/json",
       plaintext: "{}",
     }).success).toBe(false);
+  });
+
+  it("bounds relay inboxes and acknowledgements", () => {
+    expect(RemoteRelayInbox.safeParse({
+      items: [],
+      nextCursor: 0,
+      plaintext: "forbidden",
+    }).success).toBe(false);
+    expect(RemoteRelayInbox.safeParse({
+      items: Array.from({ length: 101 }, () => ({})),
+      nextCursor: 0,
+    }).success).toBe(false);
+    expect(RemoteRelayAckRequest.safeParse({ throughCursor: 0 }).success).toBe(false);
   });
 });

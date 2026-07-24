@@ -45,6 +45,27 @@ and escalates an approval otherwise. To change behavior, adjust engine config
 - Compromised: `avity worker revoke <id>` immediately invalidates its
   token (hash comparison fails on next call). Re-enroll a clean host.
 
+## Remote relay checkpoint 5.2
+
+Build and start the transient ciphertext relay on loopback:
+
+```sh
+pnpm --filter @avityos/remote-relay build
+AVITY_RELAY_ACCESS_TOKEN="<random value of at least 32 characters>" \
+  pnpm --filter @avityos/remote-relay start
+```
+
+For a remote deployment, place an HTTPS reverse proxy on the same host in front
+of the loopback relay and configure clients with that `https://` URL. The relay
+binary refuses a non-loopback bind and the client refuses clear HTTP outside
+loopback. Keep the relay access token in an environment file readable only by
+the service account. Never reuse the control-plane token.
+
+Checkpoint 5.2 queues are intentionally in memory. A relay or connector
+restart loses pending state; per-device authorization, persistence, revocation
+and crash-safe audit arrive in 5.3. Do not present 5.2 alone as durable or
+exactly-once.
+
 ## Web UI shows "Hors ligne"
 
 The control plane is unreachable from the browser. Check it is running,
