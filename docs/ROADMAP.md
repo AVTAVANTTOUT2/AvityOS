@@ -47,12 +47,15 @@ reproductible dans `docs/TRACEABILITY.md`.
    finaux, le push de trois branches et la création de trois PR draft jamais
    fusionnées. Les preuves et limites exactes sont consignées dans
    [`LIVE-E2E-EVIDENCE-2026-07-23.md`](./LIVE-E2E-EVIDENCE-2026-07-23.md).
+   La campagne du 24 juillet ajoute une preuve certifiante
+   DeepSeek → Codex (`ev_1b3ba1cc91114d26bd90`) et valide en conditions
+   réelles l'escalade sûre d'une revue rejetée à `3/3` après la PR #74 ;
+   voir
+   [`LIVE-E2E-EVIDENCE-2026-07-24.md`](./LIVE-E2E-EVIDENCE-2026-07-24.md).
    Restent obligatoires pour ✅ :
    - mission exécutée par Claude Code ;
    - mission exécutée par Cursor ;
    - rejet fonctionnel volontaire suivi d'une correction validée ;
-   - événement live de fallback entre deux providers réels prêts, via la chaîne
-     de raisonnement ou une chaîne de mission.
    C'est la **prochaine priorité produit**.
 
 5. **⚪ Non commencé comme chantier produit complet — Pont distant sécurisé.**
@@ -76,10 +79,10 @@ reproductible dans `docs/TRACEABILITY.md`.
 
 ## Prochain jalon
 
-> AvityOS réalise une campagne certifiante sur un dépôt fixture externe avec
-> Claude Code et Cursor en plus de Codex et DeepSeek, prouve un fallback entre
-> deux providers prêts ainsi qu'une correction fonctionnelle après rejet,
-> puis s'arrête avant toute fusion.
+> AvityOS termine la campagne certifiante sur un dépôt fixture externe avec
+> Claude Code et Cursor, puis obtient une correction fonctionnelle approuvée
+> après rejet. Le fallback réel DeepSeek → Codex est déjà certifié. Les PR de
+> preuve restent ouvertes et ne sont jamais fusionnées.
 
 Ce jalon clôturera :
 
