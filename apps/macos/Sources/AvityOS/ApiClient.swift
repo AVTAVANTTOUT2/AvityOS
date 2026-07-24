@@ -51,6 +51,11 @@ struct SSEEventCursor {
     }
 }
 
+enum ConnectionMode: String {
+    case local
+    case remote
+}
+
 /// Authenticated control-plane client. The bearer lives only in Keychain and
 /// every protected REST/SSE request carries it in an Authorization header.
 @MainActor
@@ -66,11 +71,15 @@ final class ApiClient: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var remoteHostStatus = RemoteHostStatus.unsupported
     @Published private(set) var remoteHostError: String?
+    @Published private(set) var connectionMode: ConnectionMode
+    @Published private(set) var remoteDeviceStatus: RemoteDeviceStatus
+    @Published private(set) var remoteDeviceError: String?
     @Published private(set) var tokenConfigured: Bool
 
     private static let defaultEndpoint = URL(string: "http://127.0.0.1:7717/")!
     private static let endpointDefaultsKey = "controlPlaneURL"
     private static let eventSequenceDefaultsKey = "controlPlaneEventSequence"
+    private static let connectionModeDefaultsKey = "connectionMode"
 
     private var pollingTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
@@ -81,17 +90,46 @@ final class ApiClient: ObservableObject {
     private let credentials: CredentialStore
     private let session: URLSession
     private let defaults: UserDefaults
+    private let remoteDeviceController: RemoteDeviceController
+    private let remoteDeviceTransport: RemoteDeviceTransport
     private var apiToken: String?
 
     init(
         baseURL: URL? = nil,
         credentials: CredentialStore = KeychainCredentialStore(),
         session: URLSession = .shared,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        remoteStore: any RemoteDeviceConfigurationStore =
+            KeychainRemoteDeviceStore(),
+        remoteNow: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.credentials = credentials
         self.session = session
         self.defaults = defaults
+        let remoteDeviceController = RemoteDeviceController(
+            store: remoteStore,
+            now: remoteNow
+        )
+        self.remoteDeviceController = remoteDeviceController
+        self.remoteDeviceTransport = RemoteDeviceTransport(
+            store: remoteStore,
+            session: session,
+            now: remoteNow
+        )
+        let remoteStatusResult = Result {
+            try remoteDeviceController.status()
+        }
+        let remoteDeviceStatus =
+            (try? remoteStatusResult.get()) ?? .unconfigured
+        self.remoteDeviceStatus = remoteDeviceStatus
+        let savedMode = defaults.string(
+            forKey: Self.connectionModeDefaultsKey
+        )
+        self.connectionMode =
+            savedMode == ConnectionMode.remote.rawValue &&
+            remoteDeviceStatus.configured
+                ? .remote
+                : .local
 
         let savedURL = defaults.string(forKey: Self.endpointDefaultsKey).flatMap(URL.init(string:))
         let candidate = baseURL ?? savedURL ?? Self.defaultEndpoint
@@ -116,6 +154,9 @@ final class ApiClient: ObservableObject {
         } else if loadedToken != nil && !self.tokenConfigured {
             self.lastError = ApiClientError.invalidToken.localizedDescription
         }
+        if case .failure(let error) = remoteStatusResult {
+            self.remoteDeviceError = error.localizedDescription
+        }
     }
 
     deinit {
@@ -139,7 +180,10 @@ final class ApiClient: ObservableObject {
             throw ApiClientError.invalidEndpoint
         }
         let loopbackHosts = Set(["127.0.0.1", "::1", "localhost"])
-        if scheme == "http" && !loopbackHosts.contains(host) {
+        let policyHost = host.trimmingCharacters(
+            in: CharacterSet(charactersIn: "[]")
+        )
+        if scheme == "http" && !loopbackHosts.contains(policyHost) {
             throw ApiClientError.insecureRemoteEndpoint
         }
         components.scheme = scheme
@@ -205,6 +249,24 @@ final class ApiClient: ObservableObject {
         }
     }
 
+    func setConnectionMode(_ mode: ConnectionMode) {
+        if mode == .remote && !remoteDeviceStatus.configured {
+            remoteDeviceError = RemoteDeviceClientError.notConfigured
+                .localizedDescription
+            return
+        }
+        connectionMode = mode
+        defaults.set(mode.rawValue, forKey: Self.connectionModeDefaultsKey)
+        eventTask?.cancel()
+        eventTask = nil
+        eventRefreshTask?.cancel()
+        eventRefreshTask = nil
+        if mode == .local {
+            startEventStream()
+        }
+        Task { await refresh() }
+    }
+
     func clearCredentials() {
         do {
             try credentials.deleteToken()
@@ -249,9 +311,10 @@ final class ApiClient: ObservableObject {
             )
             let runResponse: ItemsResponse<RunInfo> = try await get("/v1/runs")
             let terminalResponse: ItemsResponse<TerminalInfo> = try await get("/v1/terminals")
-            let loadedRemoteHostStatus: RemoteHostStatus? = try? await get(
-                "/v1/remote-host"
-            )
+            let loadedRemoteHostStatus: RemoteHostStatus? =
+                connectionMode == .local
+                    ? try? await get("/v1/remote-host")
+                    : nil
 
             version = health.version
             projects = projectResponse.items
@@ -372,6 +435,63 @@ final class ApiClient: ObservableObject {
         }
     }
 
+    func beginRemoteDevicePairing(
+        bundle: String,
+        deviceName: String
+    ) -> String? {
+        do {
+            let request = try remoteDeviceController.beginPairing(
+                bundleJSON: bundle,
+                deviceName: deviceName
+            )
+            remoteDeviceStatus = try remoteDeviceController.status()
+            remoteDeviceError = nil
+            return request
+        } catch {
+            remoteDeviceError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func completeRemoteDevicePairing(bootstrap: String) {
+        do {
+            try remoteDeviceController.completePairing(
+                bootstrapJSON: bootstrap
+            )
+            remoteDeviceStatus = try remoteDeviceController.status()
+            remoteDeviceError = nil
+        } catch {
+            remoteDeviceError = error.localizedDescription
+        }
+    }
+
+    func pendingRemoteDevicePairingRequest() -> String? {
+        do {
+            return try remoteDeviceController.pendingRequestJSON()
+        } catch {
+            remoteDeviceError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func clearRemoteDevice() {
+        do {
+            try remoteDeviceController.clear()
+            if connectionMode == .remote {
+                connectionMode = .local
+                defaults.set(
+                    ConnectionMode.local.rawValue,
+                    forKey: Self.connectionModeDefaultsKey
+                )
+                startEventStream()
+            }
+            remoteDeviceStatus = try remoteDeviceController.status()
+            remoteDeviceError = nil
+        } catch {
+            remoteDeviceError = error.localizedDescription
+        }
+    }
+
     private func get<T: Codable>(_ path: String) async throws -> T {
         try await send(path: path, method: "GET", body: Optional<Data>.none)
     }
@@ -389,6 +509,18 @@ final class ApiClient: ObservableObject {
     }
 
     private func send<T: Codable>(path: String, method: String, body: Data?) async throws -> T {
+        if connectionMode == .remote {
+            let data = try await remoteDeviceTransport.send(
+                path: path,
+                method: method,
+                body: body
+            )
+            do {
+                return try JSONDecoder().decode(T.self, from: data)
+            } catch {
+                throw ApiClientError.invalidResponse
+            }
+        }
         var request = URLRequest(url: try endpointURL(for: path))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "accept")
@@ -423,7 +555,7 @@ final class ApiClient: ObservableObject {
         eventTask?.cancel()
         eventRefreshTask?.cancel()
         eventRefreshTask = nil
-        guard tokenConfigured else { return }
+        guard tokenConfigured, connectionMode == .local else { return }
         eventTask = Task { [weak self] in
             var backoff: UInt64 = 1
             while !Task.isCancelled {

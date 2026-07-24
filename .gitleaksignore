@@ -1,0 +1,3 @@
+# Historical synthetic Slack-shaped fixture in the credential-rejection test.
+# Ignore only the exact finding; no secret-shaped value is repeated here.
+c18efbced9829a7e38907947059e942f57c983e2:packages/contracts/src/contracts.test.ts:slack-legacy-bot-token:480

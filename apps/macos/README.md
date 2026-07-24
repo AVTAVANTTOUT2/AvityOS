@@ -10,6 +10,10 @@ event cursor instead of replaying the full history after every reconnect. Its
 host-mode settings initialize the end-to-end encrypted remote bridge, create
 one-time pairing offers, accept encrypted requests, return encrypted device
 bootstraps and revoke paired devices.
+As a paired remote device it implements the same protocol with CryptoKit,
+stores its identity/bearer/replay state in Keychain and routes the existing
+native screens through the ciphertext relay. Local and remote credentials stay
+independent and the active transport is explicit in the toolbar and menu bar.
 
 ## Development build (no certificate required)
 
@@ -47,12 +51,14 @@ development workflow depends on it.
   Authorization headers and never appear in URLs.
 - Remote-host private identities and relay credentials are held in macOS
   Keychain. Public certificates, replay cursors and metadata-only audit use the
-  private mode-0600 bridge database. Pairing secrets are process-memory-only;
-  the per-device relay bearer is transferred only inside the encrypted
-  bootstrap.
+  private mode-0600 bridge database. Host pairing secrets are
+  process-memory-only; the per-device relay bearer is transferred only inside
+  the encrypted bootstrap.
+- Remote-device identity, private keys, certificates, bearer, sequences,
+  cursor and pending acknowledgement are also Keychain-only. The app persists
+  the outbound sequence before publish and the inbound sequence before ack, so
+  a crash creates at most a gap and never nonce/sequence reuse or an
+  unauthenticated replay. The committed Node vector certifies CryptoKit wire
+  interoperability.
 - The wire models in `ApiClient.swift` mirror `packages/contracts`; update
   them together.
-
-The native remote-device consumer is the next checkpoint. This checkpoint's
-UI deliberately exposes the manual offer/request/bootstrap handoff so every
-secret boundary is inspectable without claiming an unfinished remote mode.

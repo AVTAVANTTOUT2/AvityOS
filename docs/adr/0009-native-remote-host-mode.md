@@ -57,7 +57,7 @@ private keys in SQLite or let a remote client call arbitrary API routes.
 - A control action whose external side effect finishes immediately before a
   host process crash remains honestly at-least-once.
 - The checkpoint supplies the complete host runtime and manual native
-  offer/request/bootstrap workflow. The native remote-device mode that creates
-  the request and consumes the bootstrap is checkpoint 6.3.
+  offer/request/bootstrap workflow. The native remote-device consumer is
+  delivered by checkpoint 6.3 and ADR-0010.
 - Signed/notarized distribution and automated UI coverage remain later
   chantier 6 checkpoints.

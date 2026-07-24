@@ -30,7 +30,15 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   appareil et l'URL du relais sont inclus dans un bootstrap AES-GCM opaque. Le
   connecteur n'ouvre aucun listener et n'accepte qu'une allowlist stricte de
   lectures natives plus la résolution d'approbations. La révocation locale est
-  fail-closed avant la tentative relais. Voir ADR-0006 à ADR-0009.
+  fail-closed avant la tentative relais. Checkpoint 6.3 ajoute le consommateur
+  macOS CryptoKit interopérable avec Node : identité, clés, certificats, bearer,
+  curseurs et ack pending sont Keychain-only ; le bearer reste dans
+  Authorization et l'URL impose HTTPS hors loopback. La séquence sortante est
+  persistée avant publication, puis la séquence entrante et l'ack pending avant
+  acquittement, ce qui interdit la réutilisation après crash et permet de
+  reprendre un ack ambigu sans réexécuter l'action. En mode distant, SSE reste
+  désactivé et les mêmes lectures/actions bornées passent par des enveloppes
+  strictes. Voir ADR-0006 à ADR-0010.
 - **Validation** — shared zod schemas validate bodies/enums. Project onboarding
   resolves repository paths with `realpath`, requires a readable/writable Git
   working tree, verifies the local default branch and matches GitHub identity

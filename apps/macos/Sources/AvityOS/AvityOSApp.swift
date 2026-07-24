@@ -103,7 +103,7 @@ struct ContentView: View {
                         Circle()
                             .fill(client.connected ? .green : .orange)
                             .frame(width: 8, height: 8)
-                        Text(client.connected ? "Control plane v\(client.version)" : "Hors ligne — reconnexion…")
+                        Text(connectionLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -121,6 +121,14 @@ struct ContentView: View {
             default: selection = .projects
             }
         }
+    }
+
+    private var connectionLabel: String {
+        guard client.connected else { return "Hors ligne — reconnexion…" }
+        if client.connectionMode == .remote {
+            return "Relais chiffré · Control plane v\(client.version)"
+        }
+        return "Control plane local v\(client.version)"
     }
 }
 
@@ -280,6 +288,10 @@ struct SettingsView: View {
     @State private var pairingRequest = ""
     @State private var pairingBootstrap = ""
     @State private var remoteOperationInProgress = false
+    @State private var remotePairingOffer = ""
+    @State private var remoteDeviceName = Host.current().localizedName ?? "Mac distant"
+    @State private var remoteDevicePairingRequest = ""
+    @State private var remoteDeviceBootstrap = ""
 
     var body: some View {
         Form {
@@ -329,6 +341,7 @@ struct SettingsView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(
                             remoteOperationInProgress ||
+                            client.connectionMode == .remote ||
                             relayURL.isEmpty ||
                             relayAdminToken.isEmpty ||
                             hostDeviceName.isEmpty
@@ -357,6 +370,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .disabled(remoteOperationInProgress)
+                                .disabled(client.connectionMode == .remote)
 
                                 if !pairingBundle.isEmpty {
                                     Text("1. Transférez cette offre par un canal hors bande.")
@@ -389,6 +403,7 @@ struct SettingsView: View {
                                     }
                                     .disabled(
                                         remoteOperationInProgress ||
+                                        client.connectionMode == .remote ||
                                         pairingRequest.isEmpty
                                     )
                                 }
@@ -430,10 +445,97 @@ struct SettingsView: View {
                                                 )
                                             }
                                         }
+                                        .disabled(client.connectionMode == .remote)
                                     }
                                 }
                             }
                         }
+                    }
+                }
+            }
+            Section("Cet appareil — mode distant") {
+                if client.remoteDeviceStatus.configured {
+                    LabeledContent(
+                        "Appareil",
+                        value: client.remoteDeviceStatus.deviceName ?? "—"
+                    )
+                    LabeledContent(
+                        "Hôte",
+                        value: client.remoteDeviceStatus.hostName ?? "—"
+                    )
+                    LabeledContent(
+                        "Relais",
+                        value: client.remoteDeviceStatus.relayURL ?? "—"
+                    )
+                    HStack {
+                        if client.connectionMode == .local {
+                            Button("Utiliser le relais chiffré") {
+                                client.setConnectionMode(.remote)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        } else {
+                            Button("Revenir au control plane local") {
+                                client.setConnectionMode(.local)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        Button("Oublier cet appareil", role: .destructive) {
+                            client.clearRemoteDevice()
+                            remoteDevicePairingRequest = ""
+                            remoteDeviceBootstrap = ""
+                        }
+                    }
+                } else {
+                    Text(
+                        "Collez l’offre créée sur le Mac hôte. L’identité privée "
+                        + "et le secret temporaire seront protégés dans Keychain."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    TextField("Nom de cet appareil", text: $remoteDeviceName)
+                    TextEditor(text: $remotePairingOffer)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(minHeight: 76)
+                    Button("Créer la requête chiffrée") {
+                        if let request = client.beginRemoteDevicePairing(
+                            bundle: remotePairingOffer,
+                            deviceName: remoteDeviceName
+                        ) {
+                            remoteDevicePairingRequest = request
+                        }
+                    }
+                    .disabled(
+                        remotePairingOffer.isEmpty || remoteDeviceName.isEmpty
+                    )
+
+                    if !remoteDevicePairingRequest.isEmpty {
+                        Text(
+                            "Retournez cette requête au Mac hôte, puis collez "
+                            + "son bootstrap chiffré ci-dessous."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        TextEditor(text: $remoteDevicePairingRequest)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(minHeight: 76)
+                        Button("Copier la requête") {
+                            copyToPasteboard(remoteDevicePairingRequest)
+                        }
+                        TextEditor(text: $remoteDeviceBootstrap)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(minHeight: 76)
+                        Button("Ouvrir le bootstrap et terminer") {
+                            client.completeRemoteDevicePairing(
+                                bootstrap: remoteDeviceBootstrap
+                            )
+                            if client.remoteDeviceStatus.configured {
+                                remotePairingOffer = ""
+                                remoteDevicePairingRequest = ""
+                                remoteDeviceBootstrap = ""
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(remoteDeviceBootstrap.isEmpty)
                     }
                 }
             }
@@ -445,12 +547,19 @@ struct SettingsView: View {
                     Text(error).foregroundStyle(.red).textSelection(.enabled)
                 }
             }
+            if let error = client.remoteDeviceError {
+                Section("Erreur du mode distant") {
+                    Text(error).foregroundStyle(.red).textSelection(.enabled)
+                }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Réglages")
         .onAppear {
             endpoint = client.baseURL.absoluteString
             relayURL = client.remoteHostStatus.relayUrl ?? relayURL
+            remoteDevicePairingRequest =
+                client.pendingRemoteDevicePairingRequest() ?? ""
         }
         .onChange(of: client.remoteHostStatus.relayUrl) { _, value in
             if let value { relayURL = value }
@@ -478,7 +587,10 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Text(client.connected ? "Connecté (v\(client.version))" : "Hors ligne")
+        Text(client.connected
+            ? "\(client.connectionMode == .remote ? "Relais chiffré" : "Local") (v\(client.version))"
+            : "Hors ligne"
+        )
         Text("\(client.projects.count) projet(s) · \(client.approvals.count) intervention(s)")
         Divider()
         Button("Ouvrir AvityOS") {
