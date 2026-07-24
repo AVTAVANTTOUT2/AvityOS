@@ -38,6 +38,14 @@ are rejected on the next call.
 `pnpm --filter @avityos/web build` produces a static `dist/`; serve it from
 any static host and set `VITE_AVITY_API` at build time.
 
+## Native macOS release channel
+
+The public `.app` must be Developer ID signed and notarized. Stable updates are
+published through the separately Ed25519-signed, HTTPS-only manifest and
+applied with explicit install/rollback recovery. Follow
+[`RUNBOOKS.md`](./RUNBOOKS.md#publish-and-apply-a-signed-macos-update); never
+publish the ad hoc CI artifact as a public release.
+
 ## Not in scope yet
 
 Production deployment of *user projects* (the things AvityOS builds) is

@@ -6,3 +6,4 @@ export * from "./clarification.js";
 export * from "./e2e.js";
 export * from "./api.js";
 export * from "./remote-bridge.js";
+export * from "./macos-update.js";

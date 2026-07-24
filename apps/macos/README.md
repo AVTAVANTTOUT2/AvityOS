@@ -17,6 +17,12 @@ independent and the active transport is explicit in the toolbar and menu bar.
 The host and remote device renew their account-signed certificates
 automatically with 30 days remaining, without rotating device keys or the relay
 bearer; Settings displays both expiries and exposes the same check manually.
+Public application updates use a separately pinned Ed25519 manifest key,
+Developer ID Team ID, notarization and Gatekeeper validation before an atomic
+replacement. The explicit operator workflow keeps a recoverable prior bundle;
+see the
+[release runbook](../../docs/RUNBOOKS.md#publish-and-apply-a-signed-macos-update)
+and [ADR-0013](../../docs/adr/0013-signed-macos-update-and-rollback.md).
 
 ## Development and UI tests
 
