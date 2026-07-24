@@ -19,6 +19,71 @@ in production/campaign evidence paths.
 1. `node --version` — must be ≥ 22.5 (`node:sqlite`).
 2. Check the DB path is writable; `AVITY_DB_PATH` overrides.
 3. Port conflict: `lsof -i :7717`; change `AVITY_PORT`.
+4. `avity vault status` — a wrong/missing master key or altered vault blocks
+   service launch before any credential is injected.
+
+## Encrypted operator credential vault
+
+Run `avity setup` first. On macOS, initialize or migrate with the dedicated
+Keychain-backed random master key:
+
+```sh
+avity vault migrate
+avity vault status
+avity vault list
+```
+
+`migrate` reads only owner-owned, non-symlink `0600` `operator.env`,
+`control-plane.env` and `worker.env`. It writes all recognized credentials in
+one encrypted generation, reads them back, then removes those names from the
+plaintext files. Existing precedence is preserved and conflicts are reported
+by name only. A legacy plaintext `apiToken` is also removed from an owner-only
+`cli.json`; subsequent CLI API requests use the vault bearer. Re-running is
+idempotent.
+
+Linux has no implicit fallback key. Select an owner-only path outside both the
+repository and `~/.avity/operator`; the CLI creates the key file and stores
+this non-secret path in `operator.env` for future service launches:
+
+```sh
+install -d -m 0700 /secure/avityos
+avity vault migrate --key-file /secure/avityos/operator-vault.key
+avity vault status
+```
+
+Keep the external key and encrypted vault under separate backup policies.
+Never copy the key into the repository, operator directory or the same backup
+archive. `AVITY_VAULT_KEY_FILE` may also point at an owner-only secret mounted
+by the service supervisor.
+
+Rotate a credential without placing it in argv, shell history or output:
+
+```sh
+read -r -s AVITY_SECRET
+printf '%s' "$AVITY_SECRET" |
+  avity vault set DEEPSEEK_API_KEY --stdin
+unset AVITY_SECRET
+avity restart --service control-plane
+avity doctor
+```
+
+Supported names are closed: `AVITY_API_TOKEN`, `AVITY_WORKER_TOKEN`,
+`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`,
+`CODEX_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CURSOR_API_KEY`, `GH_TOKEN`
+and `GITHUB_TOKEN`. The Web receives none; the worker receives only its
+worker token. `vault list` exposes names/scopes/timestamps, never values.
+
+Removal is explicit and normally followed by a service restart:
+
+```sh
+avity vault remove CURSOR_API_KEY --confirm CURSOR_API_KEY
+avity restart --service control-plane
+```
+
+If a process crashes during mutation, a dead lock is renamed as
+`credentials.vault.lock.stale-*` and retained for inspection. A live, invalid,
+symlinked or foreign lock blocks changes. Do not delete a lock until its PID,
+owner and active process have been investigated.
 
 ## Mission stuck in `blocked`
 

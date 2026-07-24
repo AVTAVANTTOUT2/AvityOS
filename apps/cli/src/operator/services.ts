@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   openSync,
   readFileSync,
   statSync,
@@ -11,6 +12,10 @@ import type { OperatorPaths, OperatorServiceName, OperatorServicePaths } from ".
 import { redactText } from "./redact.js";
 import { loadOperatorEnvironment } from "./setup.js";
 import { readEnvFile } from "./env.js";
+import {
+  filterKnownCredentialsForService,
+  loadOperatorVaultEnvironment,
+} from "./vault.js";
 
 const DEFAULT_MAX_LOG_FILE_BYTES = 256 * 1024;
 
@@ -34,6 +39,9 @@ export interface ServiceLifecycleDependencies {
   readonly spawnDetached?: (service: OperatorServiceName, env: Record<string, string>) => SpawnResult;
   readonly terminatePid?: (pid: number) => Promise<boolean>;
   readonly prepareLogFileForAppend?: (service: OperatorServiceName) => void;
+  readonly loadVaultEnvironment?: (
+    service: "control-plane" | "worker",
+  ) => Record<string, string>;
 }
 
 function parsePid(path: string): number | null {
@@ -72,16 +80,49 @@ function protectedServiceEnvironment(
     : paths.serviceEnvPaths.worker;
   if (!existsSync(environmentPath)) return operatorEnvironment;
 
-  const mode = statSync(environmentPath).mode & 0o777;
-  if ((mode & 0o077) !== 0) {
+  const stats = lstatSync(environmentPath);
+  const mode = stats.mode & 0o777;
+  const expectedUid = process.getuid?.();
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isFile() ||
+    mode !== 0o600 ||
+    (expectedUid !== undefined && stats.uid !== expectedUid)
+  ) {
     throw new Error(
-      `service environment ${environmentPath} has overly permissive mode ${mode.toString(8)}; run: chmod 600 ${environmentPath}`,
+      `service environment ${environmentPath} must be a mode 0600 regular file owned by this user`,
     );
   }
 
   return {
     ...readEnvFile(environmentPath),
     ...operatorEnvironment,
+  };
+}
+
+export function loadOperatorServiceEnvironment(
+  paths: OperatorPaths,
+  service: OperatorServiceName,
+  loadVaultEnvironment?: (
+    service: "control-plane" | "worker",
+  ) => Record<string, string>,
+): Record<string, string> {
+  const operatorEnvironment = loadOperatorEnvironment(paths);
+  const legacyEnvironment = filterKnownCredentialsForService(
+    protectedServiceEnvironment(paths, service, operatorEnvironment),
+    service,
+  );
+  const vaultLoader = loadVaultEnvironment ?? ((name) =>
+    loadOperatorVaultEnvironment(paths, name, {
+      env: { ...process.env, ...operatorEnvironment },
+    })
+  );
+  const vaultEnvironment = service === "web"
+    ? {}
+    : vaultLoader(service);
+  return {
+    ...legacyEnvironment,
+    ...vaultEnvironment,
   };
 }
 
@@ -114,10 +155,18 @@ function defaultSpawnDetached(paths: OperatorPaths, service: OperatorServiceName
       : ["--filter", "@avityos/worker", "start"];
   const servicePaths = resolveService(paths, service);
   const outFd = openSync(servicePaths.logFilePath, "a", 0o600);
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).flatMap(([name, value]) =>
+      value === undefined ? [] : [[name, value]]
+    ),
+  );
   const child = spawn(command, args, {
     cwd: paths.repositoryRoot,
     detached: true,
-    env: { ...process.env, ...env },
+    env: {
+      ...filterKnownCredentialsForService(inherited, service),
+      ...env,
+    },
     stdio: ["ignore", outFd, outFd],
   });
   child.unref();
@@ -161,6 +210,12 @@ export class OperatorServiceLifecycle {
         const servicePaths = resolveService(this.paths, service);
         boundLogFileForAppend(servicePaths.logFilePath);
       }),
+      loadVaultEnvironment: deps.loadVaultEnvironment ?? ((service) => {
+        const operatorEnvironment = loadOperatorEnvironment(this.paths);
+        return loadOperatorVaultEnvironment(this.paths, service, {
+          env: { ...process.env, ...operatorEnvironment },
+        });
+      }),
     };
   }
 
@@ -183,11 +238,14 @@ export class OperatorServiceLifecycle {
   }
 
   async start(services: readonly OperatorServiceName[]): Promise<void> {
-    const operatorEnvironment = loadOperatorEnvironment(this.paths);
     for (const service of services) {
       const status = this.clearPidIfStale(service);
       if (status.state === "running") continue;
-      const env = protectedServiceEnvironment(this.paths, service, operatorEnvironment);
+      const env = loadOperatorServiceEnvironment(
+        this.paths,
+        service,
+        this.deps.loadVaultEnvironment,
+      );
       if (service === "control-plane" && !env.AVITY_API_TOKEN) {
         throw new Error("control-plane start blocked: AVITY_API_TOKEN is missing in protected operator env");
       }

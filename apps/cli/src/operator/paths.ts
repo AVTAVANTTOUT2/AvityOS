@@ -18,6 +18,7 @@ export interface OperatorPaths {
   readonly logsDir: string;
   readonly reportsDir: string;
   readonly operatorEnvPath: string;
+  readonly credentialVaultPath: string;
   readonly serviceEnvPaths: {
     readonly controlPlane: string;
     readonly worker: string;
@@ -61,6 +62,7 @@ export function resolveOperatorPaths(options: ResolveOperatorPathsOptions): Oper
     logsDir,
     reportsDir,
     operatorEnvPath: join(configDir, "operator.env"),
+    credentialVaultPath: join(configDir, "credentials.vault"),
     serviceEnvPaths: {
       controlPlane: join(serviceConfigDir, "control-plane.env"),
       worker: join(serviceConfigDir, "worker.env"),

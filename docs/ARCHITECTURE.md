@@ -22,6 +22,9 @@
       \              |              /
        ─────── REST + SSE ─────────
                    |
+    credential vault ── scoped in-memory injection
+     AES-256-GCM       Keychain/external master key
+                   |
         services/control-plane
         ┌───────────────────────────────┐
         │ Fastify API  (server.ts)      │  contract validation, error codes,
@@ -40,6 +43,13 @@
 tables, dependency DAG resolution, correction-loop decisions, fallback
 policy, deterministic scheduler. `services/control-plane` composes it with
 persistence and providers.
+
+`packages/credential-vault` keeps the closed set of operator credentials in a
+versioned AES-256-GCM envelope. The CLI decrypts it only when launching or
+diagnosing a service, removes vault-control paths and unrelated credentials
+from inherited environments, and injects only the destination service's
+scope. The Web process receives neither registered credentials nor the
+external master-key path.
 
 ## Central AI brain
 

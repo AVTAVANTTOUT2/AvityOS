@@ -111,6 +111,26 @@ completed a real authenticated run.
 
 ### Authenticated operator checks (manual, not CI)
 
+Store portable environment credentials in the encrypted operator vault. Values
+are accepted only through piped stdin and are decrypted only into the
+control-plane service scope:
+
+```sh
+avity vault migrate
+read -r -s AVITY_SECRET
+printf '%s' "$AVITY_SECRET" | avity vault set CLAUDE_CODE_OAUTH_TOKEN --stdin
+unset AVITY_SECRET
+avity restart --service control-plane
+avity vault list
+avity doctor
+```
+
+`list` exposes only credential names/scopes/timestamps. On macOS the vault key
+is in Keychain. Linux requires `AVITY_VAULT_KEY_FILE` outside the repository
+and operator directory; see the runbook. File-based provider login stores
+remain supported because a vendor CLI may require its own structured auth
+format.
+
 With real credentials present, an operator may additionally verify:
 
 1. `CODEX_API_KEY` or `~/.codex/auth.json` → `codex login status` inside a

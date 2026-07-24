@@ -18,6 +18,10 @@ node services/control-plane/dist/main.js
 - `AVITY_API_TOKEN` is required for any non-loopback exposure.
 - Run under a process supervisor (launchd/systemd); the engine reconciles
   safely on restart (no duplicate side effects).
+- Store API/provider/worker credentials in the encrypted operator vault.
+  macOS uses Keychain; Linux must supply an owner-only
+  `AVITY_VAULT_KEY_FILE` outside repository and operator state. Follow the
+  [vault runbook](./RUNBOOKS.md#encrypted-operator-credential-vault).
 
 ## Workers
 

@@ -26,6 +26,9 @@ importers:
       '@avityos/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@avityos/credential-vault':
+        specifier: workspace:*
+        version: link:../../packages/credential-vault
       '@avityos/providers':
         specifier: workspace:*
         version: link:../../packages/providers
@@ -279,6 +282,22 @@ importers:
         specifier: 3.24.1
         version: 3.24.1
     devDependencies:
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: 3.2.6
+        version: 3.2.6(@types/node@22.13.1)(jiti@2.7.0)(jsdom@29.1.1)(lightningcss@1.30.1)
+
+  packages/credential-vault:
+    dependencies:
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
+    devDependencies:
+      '@types/node':
+        specifier: 22.13.1
+        version: 22.13.1
       typescript:
         specifier: 5.7.3
         version: 5.7.3

@@ -63,6 +63,7 @@ export interface DoctorDependencies {
   readonly serviceProbe?: () => Promise<ServiceProbeResult>;
   readonly apiProbe?: () => Promise<ApiProbeResult>;
   readonly sandboxProbe?: () => Promise<SandboxProbeResult>;
+  readonly vaultProbe?: () => Promise<ToolProbeResult>;
   readonly sandboxBinaryProbe?: (binary: SandboxBinary) => Promise<ToolProbeResult>;
   readonly nodeVersion?: string;
   readonly platform?: NodeJS.Platform;
@@ -177,7 +178,7 @@ async function defaultSandboxProbe(
 
 function resolveReadiness(checks: readonly DoctorCheck[]): ReadinessState {
   if (checks.some((check) => ["pnpm", "git", "gh", "node"].includes(check.id) && !check.ok)) return "blocked_missing_tool";
-  if (checks.some((check) => check.id === "sandbox" && !check.ok)) return "blocked_operator_configuration";
+  if (checks.some((check) => ["sandbox", "vault"].includes(check.id) && !check.ok)) return "blocked_operator_configuration";
   if (checks.some((check) => check.id === "providers" && !check.ok)) return "blocked_missing_credentials";
   if (checks.some((check) => !check.ok)) return "blocked_product_gap";
   return "ready";
@@ -195,13 +196,18 @@ export async function collectDoctorReport(deps: DoctorDependencies = {}): Promis
   const platform = deps.platform ?? process.platform;
   const sandboxBinaryProbe = deps.sandboxBinaryProbe ?? defaultSandboxBinaryProbe;
   const sandboxProbe = deps.sandboxProbe ?? (() => defaultSandboxProbe(platform, sandboxBinaryProbe));
+  const vaultProbe = deps.vaultProbe ?? (async () => ({
+    ok: true,
+    detail: "credential vault not configured for this diagnostic",
+  }));
 
-  const [node, pnpm, git, gh, sandbox, providers, services, api] = await Promise.all([
+  const [node, pnpm, git, gh, sandbox, vault, providers, services, api] = await Promise.all([
     Promise.resolve({ ok: compareVersions(nodeVersion, "22.5.0") >= 0, detail: nodeVersion }),
     commandProbe("pnpm"),
     commandProbe("git"),
     commandProbe("gh"),
     sandboxProbe(),
+    vaultProbe(),
     providerProbe(),
     serviceProbe(),
     apiProbe(),
@@ -215,6 +221,7 @@ export async function collectDoctorReport(deps: DoctorDependencies = {}): Promis
     { id: "git", ok: git.ok, detail: git.detail },
     { id: "gh", ok: gh.ok, detail: gh.detail },
     { id: "sandbox", ok: sandbox.ok, detail: sandbox.detail },
+    { id: "vault", ok: vault.ok, detail: vault.detail },
     {
       id: "providers",
       ok: providerBinaryOk && providerAuthOk,
