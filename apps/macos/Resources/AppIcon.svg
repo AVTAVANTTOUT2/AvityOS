@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="120" y1="80" x2="904" y2="944" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1B2B4A"/>
+      <stop offset="0.52" stop-color="#101827"/>
+      <stop offset="1" stop-color="#080D17"/>
+    </linearGradient>
+    <linearGradient id="core" x1="380" y1="332" x2="650" y2="692" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8CF4E8"/>
+      <stop offset="0.5" stop-color="#4BC7E8"/>
+      <stop offset="1" stop-color="#5576F7"/>
+    </linearGradient>
+    <linearGradient id="orbit" x1="208" y1="224" x2="824" y2="808" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A4FFF3" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#6E86FF" stop-opacity="0.38"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#54E1DF" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#54E1DF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="28" stdDeviation="32" flood-color="#02050B" flood-opacity="0.55"/>
+    </filter>
+    <filter id="node-shadow" x="-80%" y="-80%" width="260%" height="260%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#3BE2DC" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect x="52" y="52" width="920" height="920" rx="206" fill="url(#background)"/>
+  <rect x="68" y="68" width="888" height="888" rx="190" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="4"/>
+  <circle cx="512" cy="512" r="342" fill="url(#glow)"/>
+
+  <g fill="none" stroke="url(#orbit)" stroke-linecap="round">
+    <ellipse cx="512" cy="512" rx="316" ry="190" stroke-width="22" transform="rotate(-20 512 512)"/>
+    <ellipse cx="512" cy="512" rx="190" ry="316" stroke-width="16" stroke-opacity="0.62" transform="rotate(42 512 512)"/>
+  </g>
+
+  <g filter="url(#node-shadow)">
+    <circle cx="251" cy="375" r="34" fill="#9CF8EC"/>
+    <circle cx="764" cy="344" r="30" fill="#78D8F1"/>
+    <circle cx="699" cy="744" r="36" fill="#718AFA"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <path d="M512 298C630.19 298 726 393.81 726 512S630.19 726 512 726 298 630.19 298 512 393.81 298 512 298Z" fill="#0D1626"/>
+    <path d="M512 326C614.73 326 698 409.27 698 512S614.73 698 512 698 326 614.73 326 512 409.27 326 512 326Z" fill="url(#core)"/>
+    <path d="M512 388L619.39 450V574L512 636 404.61 574V450L512 388Z" fill="#101A2B" fill-opacity="0.92"/>
+    <circle cx="512" cy="512" r="56" fill="url(#core)"/>
+    <circle cx="512" cy="512" r="28" fill="#E9FFFC"/>
+  </g>
+</svg>

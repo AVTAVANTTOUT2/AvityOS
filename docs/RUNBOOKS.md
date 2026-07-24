@@ -127,6 +127,53 @@ Never paste the relay administrator token into a terminal command or pairing
 bundle. The relay URL cannot be changed in place: revoke devices and wait for
 the explicit reset/migration checkpoint instead of creating split relay state.
 
+## Build, install and release the macOS app
+
+Create the reproducible development/CI artifact from the repository root:
+
+```sh
+./scripts/build-macos-app.sh
+(
+  cd dist/macos
+  shasum -a 256 -c AvityOS-macos-universal.zip.sha256
+)
+```
+
+The command performs a clean Release build, creates a universal
+`arm64`/`x86_64` app, signs it ad hoc, verifies its metadata, executable,
+signature, URL scheme and architecture set, then tests the ZIP. The result is
+appropriate for local development and CI evidence, not public Gatekeeper
+distribution.
+
+Install by dragging `AvityOS.app` into Applications. For a scripted install,
+pass an explicit existing writable directory:
+
+```sh
+./scripts/install-macos-app.sh \
+  "$PWD/dist/macos/AvityOS.app" \
+  "/Applications"
+```
+
+An existing installation is moved to a timestamped backup. The script does not
+invoke `sudo`, delete that backup or remove quarantine metadata.
+
+For a public release, first install the operator-owned Developer ID certificate
+and create a notarytool Keychain profile outside the repository. Then:
+
+```sh
+AVITY_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
+  ./scripts/build-macos-app.sh
+AVITY_NOTARY_PROFILE="avityos-notary" \
+  ./scripts/notarize-macos-app.sh \
+  "$PWD/dist/macos/AvityOS.app"
+```
+
+The second command rejects ad hoc signatures and absent profiles, submits and
+waits, staples, validates with stapler and Gatekeeper, then recreates the ZIP
+and checksum. If Apple rejects the submission, do not distribute the earlier
+archive; inspect the notarytool submission log, correct the signing/runtime
+issue and rebuild from a clean checkout.
+
 ## Web UI shows "Hors ligne"
 
 The control plane is unreachable from the browser. Check it is running,
