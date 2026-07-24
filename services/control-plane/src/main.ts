@@ -50,7 +50,13 @@ const VERSION = "0.1.0";
 function loadOrCreateApiToken(): string {
   if (process.env.AVITY_API_TOKEN) return process.env.AVITY_API_TOKEN;
   const tokenPath = process.env.AVITY_API_TOKEN_PATH ?? join(homedir(), ".avity", "api-token");
-  if (existsSync(tokenPath)) return readFileSync(tokenPath, "utf8").trim();
+  if (existsSync(tokenPath)) {
+    const stored = readFileSync(tokenPath, "utf8").trim();
+    if (!stored) {
+      throw new Error(`stored API token at ${tokenPath} is empty`);
+    }
+    return stored;
+  }
   const token = randomBytes(24).toString("hex");
   mkdirSync(dirname(tokenPath), { recursive: true });
   writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
@@ -143,6 +149,7 @@ async function main(): Promise<void> {
     : [...DEFAULT_ALLOWED_ORIGINS];
 
   const apiToken = loadOrCreateApiToken();
+  let activeApiToken = apiToken;
   let app: Awaited<ReturnType<typeof buildServer>> | null = null;
   let remoteStateStore: RemoteBridgeStateStore | null = null;
   let remoteHost: RemoteHostManager | undefined;
@@ -160,7 +167,7 @@ async function main(): Promise<void> {
         url: request.path,
         headers: {
           accept: "application/json",
-          authorization: `Bearer ${apiToken}`,
+          authorization: `Bearer ${activeApiToken}`,
           "content-type": "application/json",
         },
         payload: request.body === undefined
@@ -195,6 +202,9 @@ async function main(): Promise<void> {
     remoteHost,
     ...(transport.serverOptions ? { https: transport.serverOptions } : {}),
     workerMtlsRequired: transport.workerMtlsRequired,
+    onApiTokenCommitted: (token) => {
+      activeApiToken = token;
+    },
   });
 
   const shutdown = async () => {

@@ -23,6 +23,10 @@ node services/control-plane/dist/main.js
   macOS uses Keychain; Linux must supply an owner-only
   `AVITY_VAULT_KEY_FILE` outside repository and operator state. Follow the
   [vault runbook](./RUNBOOKS.md#encrypted-operator-credential-vault).
+- Rotate an existing administrator bearer with
+  `avity vault credential-rotate AVITY_API_TOKEN --stdin`. The durable
+  current/pending protocol keeps one valid client throughout the transition;
+  do not replace the environment value out of band.
 
 ## Workers
 

@@ -46,7 +46,7 @@ describe("persistent database file security", () => {
     );
   });
 
-  it("applies the worker certificate-fingerprint migration on a fresh database", () => {
+  it("applies current worker and administrator-auth migrations on a fresh database", () => {
     const db = openDatabase(":memory:");
     try {
       const versions = db.prepare(
@@ -55,9 +55,20 @@ describe("persistent database file security", () => {
       const workerColumns = db.prepare(
         "PRAGMA table_info(workers)",
       ).all() as { name: string }[];
-      expect(versions.at(-1)?.version).toBe(9);
+      const authColumns = db.prepare(
+        "PRAGMA table_info(api_auth_tokens)",
+      ).all() as { name: string }[];
+      expect(versions.at(-1)?.version).toBe(10);
       expect(workerColumns.map((column) => column.name)).toContain(
         "mtls_fingerprint",
+      );
+      expect(authColumns.map((column) => column.name)).toEqual(
+        expect.arrayContaining([
+          "current_hash",
+          "pending_hash",
+          "pending_rotation_id",
+          "last_committed_rotation_id",
+        ]),
       );
     } finally {
       db.close();

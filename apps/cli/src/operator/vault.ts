@@ -77,6 +77,7 @@ export interface OperatorServiceCredentialRotationResult {
   readonly service: VaultService;
   readonly previousGeneration: number;
   readonly generation: number;
+  readonly resumed: false;
 }
 
 export interface OperatorServiceCredentialRotationDependencies {
@@ -84,6 +85,32 @@ export interface OperatorServiceCredentialRotationDependencies {
     service: VaultService,
     name: VaultSecretName,
   ) => Promise<void>;
+}
+
+export interface ApiTokenRotationStatus {
+  readonly state: "stable" | "prepared";
+  readonly rotationId: string | null;
+  readonly tokenRole: "current" | "pending";
+}
+
+export interface OperatorApiTokenRotationDependencies {
+  readonly status: (token: string) => Promise<ApiTokenRotationStatus>;
+  readonly prepare: (
+    currentToken: string,
+    nextToken: string,
+  ) => Promise<{ readonly rotationId: string }>;
+  readonly verify: (token: string) => Promise<void>;
+  readonly commit: (rotationId: string, nextToken: string) => Promise<void>;
+  readonly abort: (rotationId: string, currentToken: string) => Promise<void>;
+}
+
+export interface OperatorApiTokenRotationResult {
+  readonly name: "AVITY_API_TOKEN";
+  readonly service: "control-plane";
+  readonly rotationId: string | null;
+  readonly previousGeneration: number;
+  readonly generation: number;
+  readonly resumed: boolean;
 }
 
 const VAULT_CONTROL_ENVIRONMENT = new Set([
@@ -295,6 +322,149 @@ export async function rotateOperatorServiceCredential(
     service,
     previousGeneration: staged.generation - 1,
     generation: staged.generation,
+    resumed: false,
+  };
+}
+
+/**
+ * Coordinate the encrypted operator vault with the control plane's durable
+ * current/pending token authority. No service restart is required: the new
+ * bearer proves itself while both hashes are accepted, then commits.
+ *
+ * A failure before commit restores the old vault value and aborts the pending
+ * server state. Once commit is attempted, an ambiguous response never rolls
+ * the vault back because the server may already have revoked the old token.
+ */
+export async function rotateOperatorApiToken(
+  paths: OperatorPaths,
+  nextValue: string,
+  dependencies: OperatorApiTokenRotationDependencies,
+  options: OperatorVaultOptions = {},
+): Promise<OperatorApiTokenRotationResult> {
+  const { vault } = openOperatorVault(paths, {
+    ...options,
+    create: false,
+  });
+  const previousValue =
+    vault.environmentFor("control-plane").AVITY_API_TOKEN;
+  if (!previousValue) {
+    throw new Error(
+      "credential AVITY_API_TOKEN is not initialized; store it before rotating",
+    );
+  }
+  const before = vault.snapshot();
+  if (previousValue === nextValue) {
+    const status = await dependencies.status(nextValue);
+    if (
+      status.state === "prepared" &&
+      status.tokenRole === "pending" &&
+      status.rotationId
+    ) {
+      await dependencies.verify(nextValue);
+      await dependencies.commit(status.rotationId, nextValue);
+      return {
+        name: "AVITY_API_TOKEN",
+        service: "control-plane",
+        rotationId: status.rotationId,
+        previousGeneration: before.generation,
+        generation: before.generation,
+        resumed: true,
+      };
+    }
+    if (status.state === "stable" && status.tokenRole === "current") {
+      await dependencies.verify(nextValue);
+      return {
+        name: "AVITY_API_TOKEN",
+        service: "control-plane",
+        rotationId: null,
+        previousGeneration: before.generation,
+        generation: before.generation,
+        resumed: true,
+      };
+    }
+    throw new Error(
+      "another API token rotation is prepared; abort or complete it before retrying",
+    );
+  }
+
+  const prepared = await dependencies.prepare(previousValue, nextValue);
+  let staged: CredentialVaultSnapshot;
+  try {
+    staged = vault.compareAndSwap(
+      "AVITY_API_TOKEN",
+      previousValue,
+      nextValue,
+    );
+  } catch (stagingError) {
+    try {
+      await dependencies.abort(prepared.rotationId, previousValue);
+    } catch (abortError) {
+      throw new Error(
+        `API token vault staging failed and prepared rotation could not be aborted: ${
+          abortError instanceof Error ? abortError.message : String(abortError)
+        }`,
+        { cause: stagingError },
+      );
+    }
+    throw stagingError;
+  }
+
+  try {
+    await dependencies.verify(nextValue);
+  } catch (verificationError) {
+    try {
+      vault.compareAndSwap("AVITY_API_TOKEN", nextValue, previousValue);
+      await dependencies.abort(prepared.rotationId, previousValue);
+      await dependencies.verify(previousValue);
+    } catch (rollbackError) {
+      throw new Error(
+        `API token verification failed and rollback could not be certified: ${
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError)
+        }`,
+        { cause: verificationError },
+      );
+    }
+    throw new Error(
+      "API token verification failed; previous credential restored",
+      { cause: verificationError },
+    );
+  }
+
+  if (
+    vault.environmentFor("control-plane").AVITY_API_TOKEN !== nextValue
+  ) {
+    try {
+      await dependencies.abort(prepared.rotationId, previousValue);
+    } catch (abortError) {
+      throw new Error(
+        `API token changed concurrently and prepared rotation could not be aborted: ${
+          abortError instanceof Error ? abortError.message : String(abortError)
+        }`,
+      );
+    }
+    throw new Error(
+      "API token changed concurrently after verification; pending rotation aborted without overwriting the newer vault value",
+    );
+  }
+
+  try {
+    await dependencies.commit(prepared.rotationId, nextValue);
+  } catch (commitError) {
+    throw new Error(
+      "new API token is active and stored, but commit finalization is ambiguous; rerun the same rotation to resume safely",
+      { cause: commitError },
+    );
+  }
+
+  return {
+    name: "AVITY_API_TOKEN",
+    service: "control-plane",
+    rotationId: prepared.rotationId,
+    previousGeneration: staged.generation - 1,
+    generation: staged.generation,
+    resumed: false,
   };
 }
 

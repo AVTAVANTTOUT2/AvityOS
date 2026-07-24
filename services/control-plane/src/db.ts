@@ -449,6 +449,27 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       ALTER TABLE workers ADD COLUMN mtls_fingerprint TEXT;
     `,
   },
+  {
+    // The administrator bearer is rotated through a durable two-phase
+    // authority. Only hashes are stored; a prepared rotation accepts current
+    // and pending tokens until explicit commit or abort.
+    version: 10,
+    sql: `
+      CREATE TABLE api_auth_tokens (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        current_hash TEXT NOT NULL,
+        pending_hash TEXT,
+        pending_rotation_id TEXT,
+        last_committed_rotation_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (
+          (pending_hash IS NULL AND pending_rotation_id IS NULL) OR
+          (pending_hash IS NOT NULL AND pending_rotation_id IS NOT NULL)
+        )
+      );
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {

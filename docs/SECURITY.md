@@ -62,8 +62,21 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   provider-registration probes. Failed activation compare-and-swaps the
   previous value back and restarts/probes again; a concurrent newer rotation
   is never overwritten. Output contains only the credential name, service and
-  generations. Control-plane and worker bearers are excluded because safe
-  rotation requires a dedicated server-side two-phase protocol. See ADR-0017.
+  generations. Control-plane and worker bearers are excluded from this
+  restart-based flow because safe rotation requires a dedicated server-side
+  two-phase protocol. See ADR-0017.
+- **Two-phase administrator-bearer rotation (checkpoint 7.5)** —
+  `vault credential-rotate AVITY_API_TOKEN --stdin` prepares a pending hash in
+  durable SQLite while the current hash remains valid, compare-and-swaps the
+  encrypted vault, proves a protected request with the pending bearer, then
+  commits it and immediately updates internal authenticated dispatch. The
+  database, audit, logs and output never receive token plaintext. Prepare,
+  commit and abort are transactional; commit is idempotent, startup accepts
+  either side of a prepared rotation, and a lost commit response is resumed
+  with the same stdin value rather than rolling back a possibly committed
+  token. Verification failure before commit restores the old vault value and
+  aborts the pending hash. Browser sessions using the retired token must log
+  in again. Worker-bearer rotation remains separate. See ADR-0018.
 - **Remote bridge transport (checkpoints 5.1–5.2)** — account/device
   certificates and application envelopes are signed and end-to-end encrypted;
   the relay accepts only strict ciphertext structures and never imports
