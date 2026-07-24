@@ -26,7 +26,13 @@ import type { Engine } from "./engine.js";
 import { getCachedGitHubReadiness } from "./github-readiness.js";
 import type { ProviderStatusReport } from "./provider-status.js";
 import { ProjectValidationError, validateRepositoryConfiguration } from "./project-validation.js";
-import { newId, now, StoreConflictError, type Store } from "./store.js";
+import {
+  newId,
+  now,
+  StoreConflictError,
+  WORKER_HEARTBEAT_WINDOW_MS,
+  type Store,
+} from "./store.js";
 
 export interface ServerOptions {
   store: Store;
@@ -760,11 +766,16 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   app.get("/v1/workers", async () => {
     const rows = store.db.prepare("SELECT id, name, status, capabilities, last_heartbeat_at, max_concurrent_runs, created_at, updated_at FROM workers").all() as Record<string, unknown>[];
+    const heartbeatCutoff = new Date(Date.now() - WORKER_HEARTBEAT_WINDOW_MS).toISOString();
     return {
       items: rows.map((r) => ({
         id: r.id,
         name: r.name,
-        status: r.status,
+        status:
+          r.status === "online" &&
+          (typeof r.last_heartbeat_at !== "string" || r.last_heartbeat_at <= heartbeatCutoff)
+            ? "offline"
+            : r.status,
         capabilities: JSON.parse(r.capabilities as string),
         lastHeartbeatAt: r.last_heartbeat_at ?? null,
         maxConcurrentRuns: r.max_concurrent_runs,
