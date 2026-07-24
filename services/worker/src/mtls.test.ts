@@ -39,6 +39,8 @@ interface TestPki {
   readonly workerKey: string;
   readonly rogueCert: string;
   readonly rogueKey: string;
+  readonly otherCert: string;
+  readonly otherKey: string;
 }
 
 function openssl(args: readonly string[]): void {
@@ -183,6 +185,7 @@ function createTestPki(): TestPki {
   const workerCa = createSelfSignedTrustAnchor(root, "worker-ca");
   const worker = createSignedClientCertificate(root, workerCa, "worker");
   const rogue = createSignedClientCertificate(root, workerCa, "rogue");
+  const other = createSignedClientCertificate(root, workerCa, "other");
   return {
     root,
     serverCert: server.cert,
@@ -192,6 +195,8 @@ function createTestPki(): TestPki {
     workerKey: worker.key,
     rogueCert: rogue.cert,
     rogueKey: rogue.key,
+    otherCert: other.cert,
+    otherKey: other.key,
   };
 }
 
@@ -267,6 +272,11 @@ describe("worker mutual TLS transport", () => {
       pki.serverCert,
       pki.rogueCert,
       pki.rogueKey,
+    );
+    const other = clientTransport(
+      pki.serverCert,
+      pki.otherCert,
+      pki.otherKey,
     );
     const db = openDatabase(":memory:");
     const store = new Store(db);
@@ -426,6 +436,21 @@ describe("worker mutual TLS transport", () => {
         ),
       )).not.toContain(rotation.token);
 
+      const certificateDuringTokenRotation = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer admin-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            certificate: readFileSync(pki.rogueCert, "utf8"),
+          }),
+        },
+      );
+      expect(certificateDuringTokenRotation.status).toBe(409);
+
       const roguePending = await rogue.fetch(
         `${baseUrl}/v1/workers/lease`,
         {
@@ -500,6 +525,288 @@ describe("worker mutual TLS transport", () => {
       );
       expect(rotatedBearer.status).toBe(200);
 
+      const certificateRotationResponse = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer admin-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            certificate: readFileSync(pki.rogueCert, "utf8"),
+          }),
+        },
+      );
+      expect(certificateRotationResponse.status).toBe(201);
+      const certificateRotation = await certificateRotationResponse.json() as {
+        rotationId: string;
+      };
+      expect(certificateRotation.rotationId).toMatch(/^wcr_[a-f0-9]{32}$/);
+      const tokenDuringCertificateRotation = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/token-rotations`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer admin-token" },
+        },
+      );
+      expect(tokenDuringCertificateRotation.status).toBe(409);
+      const persistedDuringCertificateRotation = store.db.prepare(
+        `SELECT status, pending_mtls_fingerprint,
+                pending_certificate_seen_at
+         FROM workers
+         WHERE id = ?`,
+      ).get(credentials.id) as {
+        status: string;
+        pending_mtls_fingerprint: string;
+        pending_certificate_seen_at: string | null;
+      };
+      expect(persistedDuringCertificateRotation.status).toBe("draining");
+      expect(persistedDuringCertificateRotation.pending_mtls_fingerprint)
+        .toMatch(/^[a-f0-9]{64}$/);
+      expect(persistedDuringCertificateRotation.pending_certificate_seen_at)
+        .toBeNull();
+      expect(JSON.stringify(
+        store.db.prepare("SELECT * FROM workers WHERE id = ?").get(
+          credentials.id,
+        ),
+      )).not.toContain(readFileSync(pki.rogueCert, "utf8"));
+
+      const prematureCertificateCommit = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations/${certificateRotation.rotationId}/commit`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer admin-token" },
+        },
+      );
+      expect(prematureCertificateCommit.status).toBe(409);
+
+      const unrelatedCertificate = await other.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(unrelatedCertificate.status).toBe(401);
+      const certificateStillUnproven = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotation`,
+        { headers: { authorization: "Bearer admin-token" } },
+      );
+      expect(await certificateStillUnproven.json()).toMatchObject({
+        rotationId: certificateRotation.rotationId,
+        pendingSeen: false,
+      });
+
+      const currentCertificateDuringOverlap = await trusted.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(currentCertificateDuringOverlap.status).toBe(200);
+
+      const pendingCertificateProof = await rogue.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(pendingCertificateProof.status).toBe(200);
+      const certificateProven = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotation`,
+        { headers: { authorization: "Bearer admin-token" } },
+      );
+      expect(await certificateProven.json()).toMatchObject({
+        rotationId: certificateRotation.rotationId,
+        pendingSeen: true,
+      });
+
+      const certificateCommitted = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations/${certificateRotation.rotationId}/commit`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer admin-token" },
+        },
+      );
+      expect(certificateCommitted.status).toBe(200);
+      const certificateCommittedAgain = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations/${certificateRotation.rotationId}/commit`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer admin-token" },
+        },
+      );
+      expect(await certificateCommittedAgain.json()).toMatchObject({
+        state: "committed",
+        idempotent: true,
+      });
+
+      const retiredCertificate = await trusted.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(retiredCertificate.status).toBe(401);
+      const rotatedCertificate = await rogue.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(rotatedCertificate.status).toBe(200);
+
+      const activeCertificateTerminal = store.createTerminal(
+        project.id,
+        ["echo", "certificate-rotation-active-work"],
+        process.cwd(),
+      );
+      const activeCertificateLeaseResponse = await rogue.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(activeCertificateLeaseResponse.status).toBe(200);
+      const activeCertificateLease = await activeCertificateLeaseResponse
+        .json() as {
+          lease: { id: string; leaseToken: string } | null;
+        };
+      expect(activeCertificateLease.lease?.id).toBe(
+        activeCertificateTerminal.id,
+      );
+      const certificateRotationWithActiveWork = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer admin-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            certificate: readFileSync(pki.otherCert, "utf8"),
+          }),
+        },
+      );
+      expect(certificateRotationWithActiveWork.status).toBe(409);
+      const activeCertificateExit = await rogue.fetch(
+        `${baseUrl}/v1/terminals/${activeCertificateTerminal.id}/exit`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: JSON.stringify({
+            exitCode: 0,
+            state: "succeeded",
+            leaseToken: activeCertificateLease.lease?.leaseToken,
+          }),
+        },
+      );
+      expect(activeCertificateExit.status).toBe(200);
+
+      const abortedCertificateRotationResponse = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer admin-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            certificate: readFileSync(pki.otherCert, "utf8"),
+          }),
+        },
+      );
+      expect(abortedCertificateRotationResponse.status).toBe(201);
+      const abortedCertificateRotation =
+        await abortedCertificateRotationResponse.json() as {
+          rotationId: string;
+        };
+      const certificateAbort = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations/${abortedCertificateRotation.rotationId}/abort`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer admin-token" },
+        },
+      );
+      expect(certificateAbort.status).toBe(200);
+      const certificateAbortAgain = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/certificate-rotations/${abortedCertificateRotation.rotationId}/abort`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer admin-token" },
+        },
+      );
+      expect(await certificateAbortAgain.json()).toMatchObject({
+        state: "aborted",
+        idempotent: true,
+      });
+      const abortedCandidate = await other.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(abortedCandidate.status).toBe(401);
+      const currentAfterAbort = await rogue.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(currentAfterAbort.status).toBe(200);
+
       const listed = await caOnly.fetch(`${baseUrl}/v1/workers`, {
         headers: { authorization: "Bearer admin-token" },
       });
@@ -524,6 +831,7 @@ describe("worker mutual TLS transport", () => {
       caOnly.close();
       trusted.close();
       rogue.close();
+      other.close();
     }
   });
 });

@@ -56,6 +56,10 @@ For a local operator-managed worker with an initialized credential vault, use
 `avity vault worker-token-rotate`; it drains the idle worker, restarts only
 that service and requires proof with the same mTLS enrollment certificate
 before revoking the old bearer.
+For planned renewal under the currently trusted worker CA, use
+`avity tls worker-certificate-rotate --certificate <leaf-chain.pem>
+--private-key <0600-key.pem>`; it keeps the bearer unchanged and promotes the
+new fingerprint only after a fresh mTLS heartbeat.
 
 ## Web
 

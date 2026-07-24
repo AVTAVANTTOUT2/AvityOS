@@ -35,6 +35,10 @@ import {
   WorkerTokenAuthority,
   WorkerTokenRotationError,
 } from "./worker-token-authority.js";
+import {
+  WorkerCertificateAuthority,
+  WorkerCertificateRotationError,
+} from "./worker-certificate-authority.js";
 import type { Engine } from "./engine.js";
 import { getCachedGitHubReadiness } from "./github-readiness.js";
 import type { ProviderStatusReport } from "./provider-status.js";
@@ -113,6 +117,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     ? new ApiTokenAuthority(store.db, opts.apiToken)
     : null;
   const workerTokenAuthority = new WorkerTokenAuthority(store.db);
+  const workerCertificateAuthority = new WorkerCertificateAuthority(store.db);
   const app = Fastify({
     logger: false,
     forceCloseConnections: true,
@@ -885,24 +890,18 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const workerId = expectedWorkerId ??
       ((req.headers["x-worker-id"] as string) ?? "");
     const token = (req.headers["x-worker-token"] as string) ?? "";
-    const row = store.db.prepare(
-      "SELECT status, mtls_fingerprint FROM workers WHERE id = ?",
-    ).get(workerId) as
-      | {
-          status: string;
-          mtls_fingerprint: string | null;
-        }
-      | undefined;
     const authenticated = workerTokenAuthority.authenticate(workerId, token);
     const peerFingerprint = opts.workerMtlsRequired
       ? authorizedPeerCertificateFingerprint(req.raw.socket)
       : null;
+    const certificateAuthentication =
+      opts.workerMtlsRequired && peerFingerprint
+        ? workerCertificateAuthority.authenticate(workerId, peerFingerprint)
+        : null;
     if (
-      !row ||
       !authenticated ||
-      row.status === "revoked" ||
       (opts.workerMtlsRequired &&
-        (!peerFingerprint || row.mtls_fingerprint !== peerFingerprint))
+        !certificateAuthentication)
     ) {
       void apiError(reply, 401, "policy_denied", "invalid worker credentials");
       return null;
@@ -914,6 +913,15 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       workerTokenAuthority.markPendingSeen(
         workerId,
         authenticated.rotationId,
+      );
+    }
+    if (
+      certificateAuthentication?.role === "pending" &&
+      certificateAuthentication.rotationId
+    ) {
+      workerCertificateAuthority.markPendingSeen(
+        workerId,
+        certificateAuthentication.rotationId,
       );
     }
     return workerId;
@@ -1159,6 +1167,140 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       return workerRotationError(reply, error);
     }
   });
+
+  function workerCertificateRotationError(
+    reply: FastifyReply,
+    error: unknown,
+  ) {
+    if (!(error instanceof WorkerCertificateRotationError)) throw error;
+    const status =
+      error.code === "invalid_certificate" ? 400
+        : error.code === "not_found" ? 404
+          : error.code === "unauthorized" ? 403
+            : 409;
+    const code: ApiErrorCode =
+      error.code === "invalid_certificate" ? "validation_failed"
+        : error.code === "not_found" ? "not_found"
+          : error.code === "unauthorized" ? "policy_denied"
+            : "conflict";
+    return apiError(reply, status, code, error.message);
+  }
+
+  const WorkerCertificateCandidate = z.object({
+    certificate: z.string().min(1).max(512 * 1024),
+  }).strict();
+
+  app.get("/v1/workers/:id/certificate-rotation", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    reply.header("cache-control", "no-store");
+    try {
+      return workerCertificateAuthority.status(id);
+    } catch (error) {
+      return workerCertificateRotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/workers/:id/certificate-rotation/role", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = parse(WorkerCertificateCandidate, req.body);
+    reply.header("cache-control", "no-store");
+    try {
+      return {
+        role: workerCertificateAuthority.certificateRole(
+          id,
+          body.certificate,
+        ),
+      };
+    } catch (error) {
+      return workerCertificateRotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/workers/:id/certificate-rotations", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = parse(WorkerCertificateCandidate, req.body);
+    reply.header("cache-control", "no-store");
+    try {
+      const prepared = workerCertificateAuthority.prepare(
+        id,
+        body.certificate,
+      );
+      store.appendEvent("worker.status_changed", {}, {
+        workerId: id,
+        status: "draining",
+      });
+      store.appendAudit(
+        null,
+        "user",
+        "worker_certificate.prepare",
+        `${id}:${prepared.rotationId}`,
+      );
+      return reply.status(201).send(prepared);
+    } catch (error) {
+      return workerCertificateRotationError(reply, error);
+    }
+  });
+
+  app.post(
+    "/v1/workers/:id/certificate-rotations/:rotationId/commit",
+    async (req, reply) => {
+      const { id, rotationId } = req.params as {
+        id: string;
+        rotationId: string;
+      };
+      reply.header("cache-control", "no-store");
+      try {
+        const committed = workerCertificateAuthority.commit(id, rotationId);
+        if (!committed.idempotent) {
+          store.appendEvent("worker.status_changed", {}, {
+            workerId: id,
+            status: "online",
+          });
+          store.appendAudit(
+            null,
+            "user",
+            "worker_certificate.commit",
+            `${id}:${rotationId}`,
+          );
+        }
+        return committed;
+      } catch (error) {
+        return workerCertificateRotationError(reply, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/workers/:id/certificate-rotations/:rotationId/abort",
+    async (req, reply) => {
+      const { id, rotationId } = req.params as {
+        id: string;
+        rotationId: string;
+      };
+      reply.header("cache-control", "no-store");
+      try {
+        const aborted = workerCertificateAuthority.abort(id, rotationId);
+        if (!aborted.idempotent) {
+          const row = store.db.prepare(
+            "SELECT status FROM workers WHERE id = ?",
+          ).get(id) as { status: string };
+          store.appendEvent("worker.status_changed", {}, {
+            workerId: id,
+            status: row.status,
+          });
+          store.appendAudit(
+            null,
+            "user",
+            "worker_certificate.abort",
+            `${id}:${rotationId}`,
+          );
+        }
+        return aborted;
+      } catch (error) {
+        return workerCertificateRotationError(reply, error);
+      }
+    },
+  );
 
   app.post("/v1/workers/:id/revoke", async (req, reply) => {
     const { id } = req.params as { id: string };

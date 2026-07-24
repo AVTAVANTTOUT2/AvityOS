@@ -14,6 +14,7 @@ interface WorkerTokenRow {
   token_rotation_id: string | null;
   pending_token_seen_at: string | null;
   last_committed_token_rotation_id: string | null;
+  certificate_rotation_id: string | null;
 }
 
 export class WorkerTokenRotationError extends Error {
@@ -82,10 +83,14 @@ export class WorkerTokenAuthority {
           "revoked worker credentials cannot be rotated",
         );
       }
-      if (row.pending_token_hash || row.token_rotation_id) {
+      if (
+        row.pending_token_hash ||
+        row.token_rotation_id ||
+        row.certificate_rotation_id
+      ) {
         throw new WorkerTokenRotationError(
           "conflict",
-          "another worker token rotation is already prepared",
+          "another worker credential rotation is already prepared",
         );
       }
       const active = this.db.prepare(
@@ -238,7 +243,8 @@ export class WorkerTokenAuthority {
   private read(workerId: string): WorkerTokenRow | undefined {
     return this.db.prepare(
       `SELECT status, token_hash, pending_token_hash, token_rotation_id,
-              pending_token_seen_at, last_committed_token_rotation_id
+              pending_token_seen_at, last_committed_token_rotation_id,
+              certificate_rotation_id
        FROM workers
        WHERE id = ?`,
     ).get(workerId) as WorkerTokenRow | undefined;

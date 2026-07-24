@@ -130,8 +130,11 @@ reproductible dans `docs/TRACEABILITY.md`.
    redémarrage. Le checkpoint 7.6 applique le même principe au bearer worker :
    token généré côté serveur, état draining sans nouvelle lease, CAS du coffre,
    redémarrage du seul worker, preuve par heartbeat pending avec le certificat
-   mTLS enrôlé, puis promotion ou rollback. Restent notamment : rotation des
-   certificats et de la CA,
+   mTLS enrôlé, puis promotion ou rollback. Le checkpoint 7.7 ajoute la
+   rotation transactionnelle du certificat worker : migration v12, overlap
+   borné des fingerprints, preuve TLS réelle avec bearer inchangé, promotion,
+   rollback et reprise idempotente, sans PEM ni clé privée en base. Restent
+   notamment : rollover de la CA,
    automatisation des releases versionnées et preuve de
    signature/notarisation Apple réelle. La politique de mise à jour signée et
    le rollback macOS sont livrés au checkpoint 6.6.

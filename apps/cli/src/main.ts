@@ -37,6 +37,7 @@ import {
   OperatorServiceLifecycle,
   loadOperatorServiceEnvironment,
 } from "./operator/services.js";
+import { rotateOperatorWorkerCertificate } from "./operator/worker-certificate-rotation.js";
 import { createExternalLiveFixture } from "./operator/fixture.js";
 import { prepareLiveCampaign, runLiveCampaign } from "./operator/campaign.js";
 import {
@@ -292,6 +293,33 @@ function assertWorkerTokenRotationInvocation(ctx: Ctx): void {
       "vault worker-token-rotate accepts no token or positional argument; the server generates the credential",
     );
   }
+}
+
+function assertWorkerCertificateRotationInvocation(ctx: Ctx): {
+  readonly certificatePath: string;
+  readonly privateKeyPath: string;
+} {
+  const certificatePath = flag(ctx, "certificate");
+  const privateKeyPath = flag(ctx, "private-key");
+  if (!certificatePath || !privateKeyPath) {
+    throw new UsageError(
+      "tls worker-certificate-rotate requires --certificate <path> and --private-key <0600-path>",
+    );
+  }
+  for (let index = 1; index < ctx.args.length; index += 1) {
+    const argument = ctx.args[index];
+    if (argument === "--certificate" || argument === "--private-key") {
+      if (!ctx.args[index + 1] || ctx.args[index + 1]?.startsWith("--")) {
+        throw new UsageError(`${argument} requires a path`);
+      }
+      index += 1;
+      continue;
+    }
+    throw new UsageError(
+      "tls worker-certificate-rotate accepts only --certificate and --private-key",
+    );
+  }
+  return { certificatePath, privateKeyPath };
 }
 
 function numberFlag(ctx: Ctx, name: string): number | undefined {
@@ -681,6 +709,100 @@ async function commitWorkerTokenRotation(
     try {
       await client.post(
         `/v1/workers/${workerId}/token-rotations/${rotationId}/commit`,
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function activateWorkerCertificate(
+  paths: ReturnType<typeof resolveOperatorPaths>,
+  client: Client,
+  workerId: string,
+  certificate: string,
+  expectedRole: "current" | "pending",
+): Promise<void> {
+  const before = await client.get<{
+    items: Array<{
+      id: string;
+      lastHeartbeatAt: string | null;
+    }>;
+  }>("/v1/workers");
+  const previousHeartbeat = before.items.find(
+    (entry) => entry.id === workerId,
+  )?.lastHeartbeatAt ?? null;
+  const previousHeartbeatMs = previousHeartbeat
+    ? Date.parse(previousHeartbeat)
+    : Number.NEGATIVE_INFINITY;
+  const startedAt = Date.now();
+  const lifecycle = new OperatorServiceLifecycle(paths);
+  await lifecycle.restart(["worker"]);
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
+    try {
+      const role = await client.post<{
+        role: "current" | "pending";
+      }>(
+        `/v1/workers/${workerId}/certificate-rotation/role`,
+        { certificate },
+      );
+      const status = await client.get<{
+        state: "stable" | "prepared";
+        rotationId: string | null;
+        pendingSeen: boolean;
+      }>(`/v1/workers/${workerId}/certificate-rotation`);
+      const workers = await client.get<{
+        items: Array<{
+          id: string;
+          status: string;
+          lastHeartbeatAt: string | null;
+        }>;
+      }>("/v1/workers");
+      const worker = workers.items.find((entry) => entry.id === workerId);
+      const freshHeartbeat =
+        worker?.lastHeartbeatAt !== null &&
+        worker?.lastHeartbeatAt !== undefined &&
+        Date.parse(worker.lastHeartbeatAt) >= startedAt &&
+        Date.parse(worker.lastHeartbeatAt) > previousHeartbeatMs;
+      const pendingProven =
+        expectedRole === "current" || status.pendingSeen;
+      const expectedWorkerStatus =
+        expectedRole === "pending" ? "draining" : "online";
+      if (
+        role.role === expectedRole &&
+        worker?.status === expectedWorkerStatus &&
+        freshHeartbeat &&
+        pendingProven
+      ) {
+        return;
+      }
+    } catch {
+      // The restarted worker may not have completed its first mTLS poll yet.
+    }
+    if (attempt < 20) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new Error(
+    `worker ${workerId} did not authenticate with its ${expectedRole} certificate within 20 bounded probes`,
+  );
+}
+
+async function commitWorkerCertificateRotation(
+  client: Client,
+  workerId: string,
+  rotationId: string,
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await client.post(
+        `/v1/workers/${workerId}/certificate-rotations/${rotationId}/commit`,
       );
       return;
     } catch (error) {
@@ -1169,6 +1291,84 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
           `key storage: ${payload.keyStorage}`,
           `vault generation: ${payload.generation}`,
           `recovery file: ${payload.path}`,
+        ].join("\n")
+      );
+    },
+  },
+
+  tls: {
+    "worker-certificate-rotate": async (ctx) => {
+      const {
+        certificatePath,
+        privateKeyPath,
+      } = assertWorkerCertificateRotationInvocation(ctx);
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const lifecycle = new OperatorServiceLifecycle(paths);
+      const serviceStatus = await lifecycle.status();
+      if (
+        serviceStatus.controlPlane.state !== "running" ||
+        serviceStatus.worker.state !== "running"
+      ) {
+        throw new Error(
+          "worker certificate rotation requires running control-plane and worker services",
+        );
+      }
+      const workerEnvironment = loadOperatorServiceEnvironment(paths, "worker");
+      const workerId = workerEnvironment.AVITY_WORKER_ID;
+      if (!workerId) {
+        throw new Error("worker certificate rotation requires AVITY_WORKER_ID");
+      }
+      const result = await rotateOperatorWorkerCertificate(
+        paths,
+        workerId,
+        certificatePath,
+        privateKeyPath,
+        {
+          status: () =>
+            ctx.client.get(
+              `/v1/workers/${workerId}/certificate-rotation`,
+            ),
+          role: async (certificate) => {
+            const response = await ctx.client.post<{
+              role: "current" | "pending";
+            }>(
+              `/v1/workers/${workerId}/certificate-rotation/role`,
+              { certificate },
+            );
+            return response.role;
+          },
+          prepare: (certificate) =>
+            ctx.client.post(
+              `/v1/workers/${workerId}/certificate-rotations`,
+              { certificate },
+            ),
+          activate: (certificate, role) =>
+            activateWorkerCertificate(
+              paths,
+              ctx.client,
+              workerId,
+              certificate,
+              role,
+            ),
+          commit: (rotationId) =>
+            commitWorkerCertificateRotation(
+              ctx.client,
+              workerId,
+              rotationId,
+            ),
+          abort: (rotationId) =>
+            ctx.client.post(
+              `/v1/workers/${workerId}/certificate-rotations/${rotationId}/abort`,
+            ),
+        },
+      );
+      out(ctx, result, (payload: typeof result) =>
+        [
+          `${payload.resumed ? "resumed" : "rotated and activated"} worker certificate`,
+          `worker: ${payload.workerId}`,
+          `certificate: ${payload.certificatePath}`,
         ].join("\n")
       );
     },
@@ -2045,6 +2245,7 @@ commands:
   vault set <credential-name> --stdin [--key-file <0600-path>]
   vault credential-rotate <credential-name> --stdin [--key-file <0600-path>]
   vault worker-token-rotate [--key-file <0600-path>]
+  tls worker-certificate-rotate --certificate <path> --private-key <0600-path>
   vault remove <credential-name> --confirm <credential-name>
   vault migrate [--key-file <0600-path>]
   vault recovery-export --output <path> --passphrase-stdin [--key-file <path>]
