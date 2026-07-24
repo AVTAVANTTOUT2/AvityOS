@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { X509Certificate } from "node:crypto";
 import {
   chmodSync,
   mkdtempSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -200,6 +202,31 @@ async function probeRawTls(port: number, caPath: string): Promise<void> {
   });
 }
 
+async function inspectPeerCertificate(
+  port: number,
+): Promise<X509Certificate> {
+  return await new Promise<X509Certificate>((resolve, reject) => {
+    const socket = connectTls(
+      {
+        host: "127.0.0.1",
+        port,
+        minVersion: "TLSv1.3",
+        rejectUnauthorized: false,
+      },
+      () => {
+        const raw = socket.getPeerCertificate().raw;
+        socket.end();
+        if (!raw) {
+          reject(new Error("TLS peer did not present a certificate"));
+          return;
+        }
+        resolve(new X509Certificate(raw));
+      },
+    );
+    socket.once("error", reject);
+  });
+}
+
 async function waitFor(
   condition: () => boolean,
   timeoutMs = 8_000,
@@ -262,8 +289,14 @@ describe("worker mutual TLS transport", () => {
         await probeRawTls(port, pki.caCert);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
+        const peer = await inspectPeerCertificate(port);
+        const expected = new X509Certificate(readFileSync(pki.serverCert));
+        const ca = new X509Certificate(readFileSync(pki.caCert));
         throw new Error(
-          `raw TLS trust probe failed on ${process.version}: ${detail}`,
+          `raw TLS trust probe failed on ${process.version}: ${detail}; ` +
+            `peerMatches=${peer.fingerprint256 === expected.fingerprint256}; ` +
+            `issuerMatches=${expected.issuer === ca.subject}; ` +
+            `signatureValid=${expected.verify(ca.publicKey)}`,
           { cause: error },
         );
       }
