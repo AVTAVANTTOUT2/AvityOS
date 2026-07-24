@@ -82,6 +82,11 @@ jobs:
       - name: Build verified universal macOS application
         run: ./scripts/build-macos-app.sh
 
+      - name: Test macOS install and rollback recovery
+        run: |
+          ./scripts/test-macos-install-rollback.sh \
+            "$PWD/dist/macos/AvityOS.app"
+
       - name: Upload native macOS evidence
         if: always()
         uses: actions/upload-artifact@v7

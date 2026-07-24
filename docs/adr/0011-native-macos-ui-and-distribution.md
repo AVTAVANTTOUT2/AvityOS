@@ -60,5 +60,6 @@ and notarized public release without weakening either path.
 - A public Gatekeeper release still requires an operator-owned Apple Developer
   ID certificate and notarytool Keychain profile. No such identity is installed
   in CI, so notarization cannot be truthfully certified there.
-- Certificate renewal and in-application update delivery remain later chantier
-  6/7 checkpoints.
+- Certificate renewal is delivered by ADR-0012. Signed application update
+  delivery and rollback are delivered as an explicit operator workflow by
+  ADR-0013; background in-app self-update remains intentionally out of scope.

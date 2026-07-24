@@ -95,15 +95,22 @@ reproductible dans `docs/TRACEABILITY.md`.
    des certificats hôte/appareil via le pont E2E, sans rotation des clés ni du
    bearer relais, avec persistance SQLite, refus des appareils révoqués,
    validation CryptoKit avant remplacement Keychain et action manuelle dans
-   Réglages. Restent : exécuter la signature/notarisation avec un certificat
-   Apple réel et définir/tester la mise à jour applicative avec rollback.
+   Réglages. Le checkpoint 6.6 ajoute un manifeste stable signé Ed25519,
+   téléchargement HTTPS borné sans redirection, garde anti-downgrade,
+   validation Team ID/notarisation/Gatekeeper, extraction sandboxée,
+   installation atomique et rollback strictement lié à la sauvegarde locale ;
+   la CI reproduit extraction, changement de version, restauration et rejet
+   des artefacts ad hoc comme release publique. Reste à exécuter une vraie
+   signature/notarisation avec les credentials Apple de l'opérateur et à
+   publier le premier canal HTTPS réel.
 
 7. **🟡 Fondations présentes, industrialisation manquante — Durcissement de
    distribution.** Déjà présents : CI Linux et macOS, audits, licences,
    Gitleaks, SBOM, templates launchd et systemd.
    Restent notamment : coffre de secrets, sauvegarde et restauration,
-   TLS/mTLS, rotation des credentials, releases versionnées, signature,
-   notarisation, rollback et politique de mise à jour.
+   TLS/mTLS, rotation des credentials, automatisation des releases versionnées
+   et preuve de signature/notarisation Apple réelle. La politique de mise à
+   jour signée et le rollback macOS sont livrés au checkpoint 6.6.
 
 ## Prochain jalon
 

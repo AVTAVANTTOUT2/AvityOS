@@ -52,6 +52,18 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   intervalles non régressifs avant le remplacement Keychain. Une expiration
   déjà atteinte reste fail-closed et impose un nouvel appairage. Voir ADR-0006
   à ADR-0012.
+- **macOS application updates (checkpoint 6.6)** — the stable manifest is
+  canonical, strict and Ed25519-signed by an offline operator key distinct from
+  Apple code signing. The locally provisioned public key is the trust anchor;
+  the feed cannot rotate it. HTTPS URLs reject credentials, fragments and
+  redirects. Manifest/archive/expanded sizes and file counts are bounded,
+  SHA-256 and byte count are signed, and both semantic downgrade and
+  non-increasing build replay fail closed. Extraction runs in a private
+  deny-default macOS sandbox and accepts one non-symlink `AvityOS.app`.
+  Installation additionally pins the Apple Team ID, stapled notarization,
+  Gatekeeper result and signed bundle metadata. Rollback accepts only an exact
+  installer backup in the same canonical directory, revalidates the public
+  trust chain and retains both recovery copies. See ADR-0013.
 - **Validation** — shared zod schemas validate bodies/enums. Project onboarding
   resolves repository paths with `realpath`, requires a readable/writable Git
   working tree, verifies the local default branch and matches GitHub identity
@@ -218,8 +230,11 @@ transport.
 - Public macOS distribution still depends on an operator-owned Developer ID
   certificate and Apple notarization service. The repository implements and
   verifies the fail-closed signing/notary path, but CI deliberately cannot
-  certify a notarization without those credentials. In-app update delivery and
-  rollback policy are not yet implemented.
+  certify a notarization without those credentials. The signed update and
+  rollback policy is implemented as an explicit operator workflow; a real
+  public feed still requires the operator's Apple credentials, protected
+  Ed25519 key and HTTPS publishing origin. Background in-app self-update is not
+  implemented and no ad hoc CI artifact is represented as publicly trusted.
 - CLI coding agents run inside the AvityOS OS sandbox (isolated HOME, no network
   unless the provider opts in, worktree-only writes, and a **fail-closed read
   boundary** — no general host-filesystem read access) in addition to their own

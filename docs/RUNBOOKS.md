@@ -191,6 +191,78 @@ and checksum. If Apple rejects the submission, do not distribute the earlier
 archive; inspect the notarytool submission log, correct the signing/runtime
 issue and rebuild from a clean checkout.
 
+### Publish and apply a signed macOS update
+
+The update-signing key is independent from the Apple Developer ID identity.
+Create it once in an operator-owned secret directory outside the repository,
+record the public-key fingerprint through a separate trusted channel, and
+provision that public key beside the installed updater:
+
+```sh
+umask 077
+openssl genpkey -algorithm ED25519 -out /secure/avity-update-private.pem
+openssl pkey \
+  -in /secure/avity-update-private.pem \
+  -pubout \
+  -out /secure/avity-update-public.pem
+chmod 0644 /secure/avity-update-public.pem
+pnpm --filter @avityos/app-update build
+```
+
+After building, Developer ID signing and notarization above, create the stable
+manifest. Both the supplied app and the app extracted from the ZIP must have
+the exact pinned Team ID, a valid stapled ticket and a successful Gatekeeper
+assessment:
+
+```sh
+AVITY_UPDATE_TEAM_ID="ABCDE12345" \
+AVITY_UPDATE_SIGNING_KEY_PATH="/secure/avity-update-private.pem" \
+AVITY_UPDATE_PUBLIC_KEY_PATH="/secure/avity-update-public.pem" \
+  ./scripts/create-macos-update-manifest.sh \
+    "$PWD/dist/macos/AvityOS.app" \
+    "$PWD/dist/macos/AvityOS-macos-universal.zip" \
+    "https://updates.example/1.2.0/AvityOS-macos-universal.zip" \
+    "https://updates.example/releases/1.2.0" \
+    "/secure/stable.json"
+```
+
+Publish immutable release notes and archive first. Verify their HTTPS URLs,
+then publish `stable.json` last with an atomic object replacement. Never
+overwrite an archive URL with different bytes and never distribute the private
+manifest-signing key. Schema v1 deliberately has no feed-driven key rotation.
+
+Apply an update to an existing public installation with the separately
+provisioned public key:
+
+```sh
+AVITY_UPDATE_TEAM_ID="ABCDE12345" \
+  ./scripts/update-macos-app.sh \
+    "https://updates.example/stable.json" \
+    "/secure/avity-update-public.pem" \
+    "/Applications"
+```
+
+The command refuses redirects, downgrade/build replay, checksum or size
+mismatch, unsupported macOS, a different Team ID, absent notarization and
+Gatekeeper failure. It extracts inside a bounded sandbox and leaves the
+previous app as
+`/Applications/AvityOS.app.backup-YYYYMMDDTHHMMSSZ-PID`. Quit and relaunch
+AvityOS after a successful replacement.
+
+If smoke tests fail, use the exact printed backup path:
+
+```sh
+AVITY_UPDATE_TEAM_ID="ABCDE12345" \
+  ./scripts/rollback-macos-app.sh \
+    "/Applications/AvityOS.app.backup-YYYYMMDDTHHMMSSZ-PID" \
+    "/Applications"
+```
+
+Rollback refuses a copied or renamed backup outside that installation
+directory. It preserves the failed replacement as
+`AvityOS.app.failed-YYYYMMDDTHHMMSSZ-PID` and retains the original backup for
+forensics. Inspect both before deliberate cleanup.
+
 ## Web UI shows "Hors ligne"
 
 The control plane is unreachable from the browser. Check it is running,
