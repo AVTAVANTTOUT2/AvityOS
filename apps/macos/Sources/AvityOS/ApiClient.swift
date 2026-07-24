@@ -1,4 +1,4 @@
-import Foundation
+@preconcurrency import Foundation
 
 enum ApiClientError: LocalizedError, Equatable {
     case invalidEndpoint
