@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -225,6 +226,132 @@ describe("operator services", () => {
     expect(spawnDetached).toHaveBeenCalledWith("web", expect.objectContaining({
       AVITY_CONTROL_PLANE_URL: "http://127.0.0.1:7717",
     }));
+  });
+
+  it("loads only the protected service environment and reloads it on restart", async () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-operator-"));
+    const paths = resolveOperatorPaths({
+      repositoryRoot: root,
+      operatorHome: join(root, ".operator"),
+      serviceConfigDir: join(root, ".service-config"),
+    });
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.serviceConfigDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      paths.operatorEnvPath,
+      [
+        "AVITY_API_TOKEN=current-operator-token",
+        "AVITY_CONTROL_PLANE_URL=http://127.0.0.1:7717",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      paths.serviceEnvPaths.controlPlane,
+      [
+        "AVITY_API_TOKEN=stale-service-token",
+        "DEEPSEEK_API_KEY=protected-provider-token",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      paths.serviceEnvPaths.worker,
+      "CURSOR_API_KEY=worker-only-token\n",
+      { mode: 0o600 },
+    );
+    const spawnDetached = vi.fn(() => ({ pid: 12345 }));
+    const lifecycle = new OperatorServiceLifecycle(paths, {
+      isPidRunning: () => false,
+      spawnDetached,
+      terminatePid: async () => true,
+      prepareLogFileForAppend: () => {},
+    });
+
+    await lifecycle.start(["control-plane"]);
+
+    expect(spawnDetached).toHaveBeenNthCalledWith(1, "control-plane", expect.objectContaining({
+      AVITY_API_TOKEN: "current-operator-token",
+      DEEPSEEK_API_KEY: "protected-provider-token",
+    }));
+    writeFileSync(
+      paths.serviceEnvPaths.controlPlane,
+      "DEEPSEEK_API_KEY=refreshed-provider-token\n",
+      { mode: 0o600 },
+    );
+
+    await lifecycle.restart(["control-plane"]);
+    await lifecycle.start(["web"]);
+
+    expect(spawnDetached).toHaveBeenNthCalledWith(2, "control-plane", expect.objectContaining({
+      AVITY_API_TOKEN: "current-operator-token",
+      DEEPSEEK_API_KEY: "refreshed-provider-token",
+    }));
+    expect(spawnDetached).toHaveBeenNthCalledWith(3, "web", expect.not.objectContaining({
+      DEEPSEEK_API_KEY: expect.anything(),
+      CURSOR_API_KEY: expect.anything(),
+    }));
+  });
+
+  it("refuses a service environment readable by group or other users", async () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-operator-"));
+    const paths = resolveOperatorPaths({
+      repositoryRoot: root,
+      operatorHome: join(root, ".operator"),
+      serviceConfigDir: join(root, ".service-config"),
+    });
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.serviceConfigDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+    writeFileSync(paths.operatorEnvPath, "AVITY_API_TOKEN=current-token\n", { mode: 0o600 });
+    writeFileSync(paths.serviceEnvPaths.controlPlane, "DEEPSEEK_API_KEY=protected-token\n", {
+      mode: 0o600,
+    });
+    chmodSync(paths.serviceEnvPaths.controlPlane, 0o640);
+    const spawnDetached = vi.fn(() => ({ pid: 12345 }));
+    const lifecycle = new OperatorServiceLifecycle(paths, {
+      isPidRunning: () => false,
+      spawnDetached,
+      terminatePid: async () => true,
+      prepareLogFileForAppend: () => {},
+    });
+
+    await expect(lifecycle.start(["control-plane"])).rejects.toThrow(/overly permissive mode 640/);
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it("never includes a malformed protected environment value in an error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-operator-"));
+    const paths = resolveOperatorPaths({
+      repositoryRoot: root,
+      operatorHome: join(root, ".operator"),
+      serviceConfigDir: join(root, ".service-config"),
+    });
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.serviceConfigDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+    writeFileSync(paths.operatorEnvPath, "AVITY_API_TOKEN=current-token\n", { mode: 0o600 });
+    writeFileSync(
+      paths.serviceEnvPaths.controlPlane,
+      "provider-secret-that-must-not-reach-stderr\n",
+      { mode: 0o600 },
+    );
+    const lifecycle = new OperatorServiceLifecycle(paths, {
+      isPidRunning: () => false,
+      spawnDetached: () => ({ pid: 12345 }),
+      terminatePid: async () => true,
+      prepareLogFileForAppend: () => {},
+    });
+
+    const error = await lifecycle.start(["control-plane"]).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("invalid env entry at line 1");
+    expect(String(error)).not.toContain("provider-secret");
   });
 
   it("start → status running → stop → status stopped for worker with credentials", async () => {

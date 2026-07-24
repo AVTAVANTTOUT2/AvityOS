@@ -63,9 +63,17 @@ Ne jamais committer de secrets. Stocker les valeurs réelles dans :
 | Emplacement | Usage |
 | --- | --- |
 | `~/.avity/operator/config/operator.env` | URL control plane, token API, worker (0600) |
-| `~/.config/avityos/control-plane.env` | Variables du control plane sous launchd (0600) |
-| `~/.config/avityos/worker.env` | Variables du worker sous launchd (0600) |
+| `~/.config/avityos/control-plane.env` | Variables et credentials providers du control plane (0600) |
+| `~/.config/avityos/worker.env` | Variables propres au worker (0600) |
 | Variables d’environnement du shell | Clés providers (`CODEX_API_KEY`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CURSOR_API_KEY`, …) |
+
+`avity start` et `avity restart` chargent automatiquement le fichier protégé
+propre au service lorsqu'il existe. Les credentials renouvelés conservés dans
+`operator.env` (`AVITY_API_TOKEN`, `AVITY_WORKER_ID`,
+`AVITY_WORKER_TOKEN`, URL du control plane) ont priorité sur une ancienne
+valeur du fichier de service. Le Web ne reçoit jamais les variables du control
+plane ou du worker. Un fichier de service lisible par le groupe ou les autres
+utilisateurs bloque le démarrage.
 
 Connexion CLI (refuse `--token` en clair) :
 

@@ -10,16 +10,16 @@ export type EnvMap = Record<string, string>;
  */
 export function parseEnvText(content: string): EnvMap {
   const map: EnvMap = {};
-  for (const rawLine of content.split(/\r?\n/)) {
+  for (const [index, rawLine] of content.split(/\r?\n/).entries()) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
     const separator = line.indexOf("=");
     if (separator <= 0) {
-      throw new Error(`invalid env entry "${rawLine}"`);
+      throw new Error(`invalid env entry at line ${index + 1}`);
     }
     const key = line.slice(0, separator).trim();
     if (!ENV_KEY.test(key)) {
-      throw new Error(`invalid env key "${key}"`);
+      throw new Error(`invalid env key at line ${index + 1}`);
     }
     const value = line.slice(separator + 1);
     map[key] = value;
