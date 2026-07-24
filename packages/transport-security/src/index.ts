@@ -204,6 +204,7 @@ export function loadControlPlaneTlsConfiguration(
     cert,
     key,
     ...(ca ? { ca } : {}),
+    ...(ca ? { allowPartialTrustChain: true } : {}),
     minVersion: "TLSv1.3",
   });
   return {
@@ -216,6 +217,7 @@ export function loadControlPlaneTlsConfiguration(
       ...(ca
         ? {
             ca,
+            allowPartialTrustChain: true,
             requestCert: true,
             // Admin/browser clients may authenticate with the bearer without
             // a client certificate. Worker routes enforce authorization and
@@ -273,6 +275,7 @@ export function loadClientTlsConfiguration(
   };
   createSecureContext({
     ...configuration,
+    ...(configuration.ca ? { allowPartialTrustChain: true } : {}),
     minVersion: "TLSv1.3",
   });
   return configuration;
@@ -292,6 +295,7 @@ export function createSecureFetchTransport(
 ): SecureFetchTransport {
   const secureContext = createSecureContext({
     ...configuration,
+    ...(configuration.ca ? { allowPartialTrustChain: true } : {}),
     minVersion: "TLSv1.3",
   });
   const agent = new HttpsAgent({
@@ -300,6 +304,7 @@ export function createSecureFetchTransport(
     maxFreeSockets: 2,
     timeout: 30_000,
     ...configuration,
+    ...(configuration.ca ? { allowPartialTrustChain: true } : {}),
     secureContext,
     minVersion: "TLSv1.3",
     rejectUnauthorized: true,
@@ -332,6 +337,7 @@ export function createSecureFetchTransport(
           // does not depend on Agent option inheritance across supported
           // Node builds.
           ...configuration,
+          ...(configuration.ca ? { allowPartialTrustChain: true } : {}),
           method,
           headers: Object.fromEntries(headers.entries()),
           signal: init.signal ?? undefined,

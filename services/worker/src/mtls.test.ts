@@ -188,6 +188,7 @@ async function probeRawTls(port: number, caPath: string): Promise<void> {
         host: "127.0.0.1",
         port,
         ca: configuration.ca,
+        allowPartialTrustChain: true,
         minVersion: "TLSv1.3",
         rejectUnauthorized: true,
       },
