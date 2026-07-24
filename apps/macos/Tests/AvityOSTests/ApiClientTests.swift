@@ -173,6 +173,11 @@ final class ApiClientTests: XCTestCase {
             "http://localhost:7717/api/"
         )
         XCTAssertEqual(
+            try ApiClient.validatedEndpoint(URL(string: "http://[::1]:7717")!)
+                .absoluteString,
+            "http://[::1]:7717/"
+        )
+        XCTAssertEqual(
             try ApiClient.validatedEndpoint(URL(string: "https://control.example")!)
                 .absoluteString,
             "https://control.example/"

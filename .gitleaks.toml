@@ -2,7 +2,7 @@
 useDefault = true
 
 [allowlist]
-description = "Exact non-secret fixture strings used by the redaction and credential-rejection unit tests"
+description = "Synthetic non-secret values used only by security and interoperability tests"
 regexTarget = "match"
 regexes = [
   # Redaction unit test (control-plane contracts): deliberately secret-shaped
@@ -21,4 +21,9 @@ regexes = [
   '''ghp_secret''',
   '''ghp_should_never_be_persisted''',
   '''sk-live-secret''',
+]
+paths = [
+  # Public, generated interoperability vector. Its keypairs and pairing
+  # material are synthetic, test-only and tied only to relay.example data.
+  '''apps/macos/Tests/AvityOSTests/Fixtures/remote-bridge-vector\.json''',
 ]

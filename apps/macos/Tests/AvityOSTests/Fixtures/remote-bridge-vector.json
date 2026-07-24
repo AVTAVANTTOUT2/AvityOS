@@ -1,0 +1,84 @@
+{
+  "now": "2026-07-24T12:30:00.000Z",
+  "accountSigningPublicKey": "MCowBQYDK2VwAyEAckCP4IIKgZRs2D3lTpYWu5eirS5d8Ttm_iNM5Liw8Z8",
+  "hostIdentity": {
+    "deviceId": "rdev_139aeb4a59dce76564bee16497dbf70e",
+    "signingPublicKey": "MCowBQYDK2VwAyEAhqjzXrEllK-OXOUFJfWMhX2YrYqvJ8flxeqcf5SAOQ4",
+    "signingPrivateKey": "MC4CAQAwBQYDK2VwBCIEINL913Xm0vr2V3_ZNBVYLZ58qOj2clK4x15XdAiU8561",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAIJYduHnwYqyUlFNcLm4c6c3ySpnbiyWRDKujedK3GB0",
+    "agreementPrivateKey": "MC4CAQAwBQYDK2VuBCIEIIjGjftkgc_cnq2OM7sirXkq_LmfZw9F5xdEEjf55vJ4"
+  },
+  "remoteIdentity": {
+    "deviceId": "rdev_6be3e7e780c1227e981ce33fd11aac57",
+    "signingPublicKey": "MCowBQYDK2VwAyEAxsexL1kfydKPYxgrNdfTyD0WbJoPwUHz2q6VgMaTcOc",
+    "signingPrivateKey": "MC4CAQAwBQYDK2VwBCIEIENQZeZPBaxzF5MGbDPxaezz4LqJy6cTjT1S7d2rPCqa",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAKak_Yk6Twr-ZzEwLWFBtEYv_LFAKBPXc5CVs6g3G3GQ",
+    "agreementPrivateKey": "MC4CAQAwBQYDK2VuBCIEIJgHHbuMqhf6mr61Q6k3OWDjWRt9bjfCh0-u6vbYE6hq"
+  },
+  "hostCertificate": {
+    "protocolVersion": 1,
+    "accountId": "racc_03e8c52b3e90f762f4f4f0f4a4d30969",
+    "deviceId": "rdev_139aeb4a59dce76564bee16497dbf70e",
+    "name": "Vector Host",
+    "signingPublicKey": "MCowBQYDK2VwAyEAhqjzXrEllK-OXOUFJfWMhX2YrYqvJ8flxeqcf5SAOQ4",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAIJYduHnwYqyUlFNcLm4c6c3ySpnbiyWRDKujedK3GB0",
+    "issuedAt": "2026-07-24T12:30:00.000Z",
+    "validUntil": "2027-07-24T12:30:00.000Z",
+    "signature": "zqVGevbEt6qP2cCHk-zUWuaoDpC55hiUZg-e1_TdUCPpEJWpDVgkkU78WN-aXiadDyQeIhBLelBLC4TNtbksDA"
+  },
+  "remoteCertificate": {
+    "protocolVersion": 1,
+    "accountId": "racc_03e8c52b3e90f762f4f4f0f4a4d30969",
+    "deviceId": "rdev_6be3e7e780c1227e981ce33fd11aac57",
+    "name": "Vector Remote",
+    "signingPublicKey": "MCowBQYDK2VwAyEAxsexL1kfydKPYxgrNdfTyD0WbJoPwUHz2q6VgMaTcOc",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAKak_Yk6Twr-ZzEwLWFBtEYv_LFAKBPXc5CVs6g3G3GQ",
+    "issuedAt": "2026-07-24T12:30:00.000Z",
+    "validUntil": "2027-07-24T12:30:00.000Z",
+    "signature": "5IQLlfK6mT8Ppx-ApvyMzxN2UkIXgMT_sxWlKArfXA595WctMcQ4ON6Y2OCeqqhONvVlWSJ2w4tc96_ZpG76CQ"
+  },
+  "pairingBundle": {
+    "offer": {
+      "protocolVersion": 1,
+      "sessionId": "rpair_e220158ed5b7df26591e83dd0b8a4c36",
+      "accountId": "racc_03e8c52b3e90f762f4f4f0f4a4d30969",
+      "accountSigningPublicKey": "MCowBQYDK2VwAyEAckCP4IIKgZRs2D3lTpYWu5eirS5d8Ttm_iNM5Liw8Z8",
+      "hostCertificate": {
+        "protocolVersion": 1,
+        "accountId": "racc_03e8c52b3e90f762f4f4f0f4a4d30969",
+        "deviceId": "rdev_139aeb4a59dce76564bee16497dbf70e",
+        "name": "Vector Host",
+        "signingPublicKey": "MCowBQYDK2VwAyEAhqjzXrEllK-OXOUFJfWMhX2YrYqvJ8flxeqcf5SAOQ4",
+        "agreementPublicKey": "MCowBQYDK2VuAyEAIJYduHnwYqyUlFNcLm4c6c3ySpnbiyWRDKujedK3GB0",
+        "issuedAt": "2026-07-24T12:30:00.000Z",
+        "validUntil": "2027-07-24T12:30:00.000Z",
+        "signature": "zqVGevbEt6qP2cCHk-zUWuaoDpC55hiUZg-e1_TdUCPpEJWpDVgkkU78WN-aXiadDyQeIhBLelBLC4TNtbksDA"
+      },
+      "expiresAt": "2026-07-24T12:35:00.000Z"
+    },
+    "pairingSecret": "FwnjwnuGGt_f5uFGZR0j2ELhbLFuqt4z-i1OmkexXgo"
+  },
+  "bootstrap": {
+    "protocolVersion": 1,
+    "sessionId": "rpair_e220158ed5b7df26591e83dd0b8a4c36",
+    "nonce": "mncLNAtOKOqhJV72",
+    "ciphertext": "Tbc9u3dQ6-OiOJoTWk7jPCLXXSXBL1ly-F-3PCwC2tf3LUMSs3wFSXa5BiWfki4Uz4yMhANJYnS_5hOsTrCQjdwJLpvUxaJKMvHQ6Qf0hYFbt8jdtY6iCz5d6LPr7jHfvxRJxr1R5SORdGadVolAP-QibJOAGzrexMedStBFIilwQX5U4WWMd59t5It4jA4MXI-DO9HtEWlMU2j9oRdngCgq3Xk_EmINXDC2hueGmePBIIPNaAxOu5xSa5kWGmQvmv5Ip9pzNAt3sGLaiIDIcOZB4tS3GbAdBokyH_BtakRocmy9AOaliV-RrtHB9NValfGfIgheDRf9tsF1h06ab4WYxdg48ASrQBVguGWju10SrzooE5ogzn1MlX543ZZDY5wrkMdmyR9U1Yt8ysfYfjFZcNlKqxsOg4ScUJvq5mVu-q9U2xic6TzoQVladUubYRg2hbWsY4exNECUeXSYobF6Z4ZY-CtbR435sgLLh4mNkNlHgkajZ1FSzJkui44bMkSWb5O8hGrl9x3Sfnrr_xEkxpodxLrbt8nX9U6MM2hU2KbuHPZtiYW7AYabLdsoRyMTcnBaDkQH3B2ZY9lUscFp-q7aFFE1mQ0gG-Xf7mAohXvAgAhKKgHGY7d1vqYtK1-z_e4M9j_UIFZGK580AOJPeuCg66ASwqYwyU9KCWIJeJU4ioOLgIgcRNi1drB63s5R1dp_vcR86SVfJbcFNcf7HI8kNFboH7ipj01mVER7io96yWRVAoYjhCE0OrXQY2TWKf4c5mxU5V9WjVq8FhhHjDj64vLHxeQaoMn_M86h4c7sLKTzasNgYJc8pUTP-MkTbcw6v-PLI4_b-MEbtR-yWA0isE4a6Kf5YgCbS3NkxoT6ZffGq1XlHpBGy7XohxxWTB8hg4DiEcPE6_c_kniHChAZZ5hiLwUxAks8IvVaargrAP77NgGA9TUCJNZ9eWXmt9UHNaO-KlWH03Ha26w0lDFClRjMEjBHn8B3KHufQmW7uZ_L44O9ix_dkHz7egej9lZlKO5A_GafJJdcQf5QLAj3tsiYXe2T0lUOlxv9nDG-dary-Im_n9m9l5oESKdXLCCv2UrTDepVzNSHju3okBUiKJ6pRyw-JnM67trb1uS7iLMR6uuMGJBbujlGs4L-iwyFFF0R-NDzfqkvmGBymBox8QS0jg9adwqjfHQ2SDjqV3MYbfgmz7iLhgCF4WVxgJk",
+    "authTag": "Pa7057_ZIE4-hU9RDy2inQ"
+  },
+  "envelope": {
+    "protocolVersion": 1,
+    "messageId": "rmsg_739999207b0bdfe31ce1a2f91b6182f0",
+    "accountId": "racc_03e8c52b3e90f762f4f4f0f4a4d30969",
+    "senderDeviceId": "rdev_139aeb4a59dce76564bee16497dbf70e",
+    "recipientDeviceId": "rdev_6be3e7e780c1227e981ce33fd11aac57",
+    "sequence": 1,
+    "sentAt": "2026-07-24T12:30:00.000Z",
+    "contentType": "application/vnd.avityos.remote-control-response+json",
+    "ephemeralPublicKey": "MCowBQYDK2VuAyEAswNtnp1Z_LQw3RyGP-iyvrixRXheihqgVleVBrkU_Qw",
+    "salt": "z4sOLejyW8XyH76D0eZVRq3b8K9bDSL5T9dFk3rzXOM",
+    "nonce": "VgQCQkBmhjt0PkZB",
+    "ciphertext": "37X8K-4LCnBttOm7yG3KmsRRC1H4OccYyyb5KOlHtFyT5xabY6xJYgGedhNjozX_PB3r7v66NFMK26pcRt7pQ6yqOLw8-d-u25BwguIzQ4FW9U1FzhHYxzNKPdvUaVtwZh_xasBwWoRT-ekvQXQUPFcjaSwBPBlJWdZy_aVOIXo",
+    "authTag": "HqhFBUgc6BW1YD01HblhJw",
+    "signature": "2tLoEVfs7uFgmLbBgYXCshIwrnxg0alsi2EUdLGQeJpSyAOnFVI8YOn55VyyGG9DQ2eSfP2pP8cuFlnZ5xM4BA"
+  }
+}

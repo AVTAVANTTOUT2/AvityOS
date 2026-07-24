@@ -13,7 +13,8 @@ let package = Package(
         .testTarget(
             name: "AvityOSTests",
             dependencies: ["AvityOS"],
-            path: "Tests/AvityOSTests"
+            path: "Tests/AvityOSTests",
+            resources: [.process("Fixtures")]
         ),
     ]
 )

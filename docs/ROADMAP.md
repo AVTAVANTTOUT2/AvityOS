@@ -82,9 +82,14 @@ reproductible dans `docs/TRACEABILITY.md`.
    Keychain, état public/rejeu/audit durable, API locale d'administration,
    appairage à usage unique avec bootstrap du token appareil chiffré, révocation
    et connecteur strictement sortant limité aux lectures natives et à la
-   résolution d'approbations, avec écran Réglages associé. Restent notamment :
-   mode appareil distant natif, tests UI, bundle signé, notarisation,
-   installation propre et stratégie de mise à jour.
+   résolution d'approbations, avec écran Réglages associé. Le checkpoint 6.3
+   livre le mode appareil distant natif : CryptoKit interopérable avec le
+   protocole Node, identité/certificats/bearer/curseurs dans Keychain,
+   appairage offre → requête → bootstrap, transport relay publish/poll/ack
+   reprenable après crash et réutilisation des écrans existants en mode
+   chiffré. Restent notamment : tests UI, bundle signé, notarisation,
+   installation propre, renouvellement des certificats et stratégie de mise à
+   jour.
 
 7. **🟡 Fondations présentes, industrialisation manquante — Durcissement de
    distribution.** Déjà présents : CI Linux et macOS, audits, licences,

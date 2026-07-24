@@ -91,13 +91,35 @@ than silently dropping a remote action.
    account/device identity, stores private material in Keychain and enrolls the
    host with its own random device bearer.
 4. Create a one-time offer, transfer it out of band, paste the encrypted
-   request, then transfer the returned encrypted bootstrap. The raw pairing
-   secret is memory-only and expires after five minutes. The native consumer
-   workflow is delivered by checkpoint 6.3; until then the same protocol is
-   available through `@avityos/remote-bridge`.
+   request, then transfer the returned encrypted bootstrap. The raw host
+   pairing secret is memory-only and expires after five minutes.
 5. Revoke a lost device from the same screen. Local processing stops before the
    relay call; retry the operation if the relay was unavailable so both sides
    report `revoked`.
+
+### macOS remote-device mode
+
+1. On the remote Mac, open **Réglages → Cet appareil — mode distant**, paste
+   the complete one-time offer and choose the device name.
+2. Click **Créer la requête chiffrée**, copy the result back to the host, accept
+   it there, then copy the returned bootstrap to the remote Mac.
+3. Click **Ouvrir le bootstrap et terminer**. Only after the signed
+   certificates, session, expiry and encrypted payload validate does the app
+   store its identity and per-device relay bearer in Keychain.
+4. Click **Utiliser le relais chiffré**. The toolbar/menu bar show the active
+   transport and projects, missions, approvals, runs and terminals refresh
+   through the outbound relay. Use **Revenir au control plane local** to switch
+   back without deleting either credential.
+5. Use **Oublier cet appareil** to delete remote identity/configuration and
+   force local mode. Revoking it on the host remains required if the device was
+   lost or compromised.
+
+If a relay call fails after an acknowledgement, leave the configuration in
+place and retry: the pending cursor is Keychain-durable and the app retries the
+same idempotent ack before publishing another request. A certificate-expiry,
+signature, replay, Keychain or HTTPS error is fail-closed and shown in the app;
+do not clear the configuration until the cause and host revocation state have
+been checked.
 
 If the status is `degraded`, inspect the displayed bounded error, verify relay
 HTTPS/certificate reachability and confirm that macOS Keychain is unlocked.
