@@ -29,7 +29,9 @@ human intervention, across many isolated projects in parallel.
   reconnection, projects/missions/runs/terminals, intervention approval,
   deep links, notifications, Dock badge, settings and menu-bar companion.
 - **CLI** — `avity` covers the full loop headlessly with `--json` output
-  for scripting.
+  for scripting, including a Keychain/file-key encrypted credential vault with
+  stdin-only rotation and verified migration from protected plaintext env
+  files.
 
 ## Quality bar
 

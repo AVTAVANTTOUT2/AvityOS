@@ -233,6 +233,9 @@ Implemented and covered by automated tests:
 - macOS and Linux CI with build, tests, type checking, browser tests,
   native XCUITest, universal `.app` packaging, dependency/license checks,
   secret scanning and SBOM generation.
+- an AES-256-GCM operator credential vault with a Keychain/external-file
+  master key, strict per-service scopes, atomic stdin-only rotation and
+  verified migration away from plaintext protected env files.
 
 Known remaining proof or product work:
 
@@ -240,15 +243,17 @@ Known remaining proof or product work:
   fixture provider (labelled `fake_fixture`, never real planning evidence);
   a planning run with a live reasoning provider requires operator-owned API
   credentials and is deliberately part of the E2E live-validation milestone;
-- live-provider E2E scenarios (Codex, Claude Code, Cursor), autonomous push
-  and draft-PR creation still need a dedicated external fixture repository
-  and GitHub credentials for end-to-end proof — this is the next milestone;
+- the external live fixture, Codex/DeepSeek runs, controlled fallback,
+  autonomous push and non-merged draft PRs are proven; Claude Code and Cursor
+  missions still require their missing sandbox-portable operator credentials,
+  and the rejected-work correction scenario still needs final approval;
 - the macOS client now has native UI automation and a verified universal,
-  ad hoc signed installable bundle; public Developer ID signing/notarization
-  still requires operator-owned Apple credentials, and automatic updates
-  remain;
-- remote production exposure still requires operator-managed TLS termination,
-  and a general encrypted cross-platform provider-key vault is not bundled.
+  ad hoc signed installable bundle plus a signed update/rollback workflow;
+  public Developer ID signing/notarization and the first real HTTPS feed still
+  require operator-owned credentials;
+- remote production exposure still requires operator-managed TLS termination;
+  vault master-key recovery/rotation and an external enterprise secret-manager
+  integration remain chantier 7 work.
 
 The exact evidence and limitations are maintained in
 [docs/TRACEABILITY.md](docs/TRACEABILITY.md).
@@ -264,6 +269,7 @@ services/worker        Local/remote execution worker
 packages/contracts     Domain, API and event schemas — source of truth
 packages/orchestration State machines, DAG, scheduler and fallback policy
 packages/providers     AI/CLI provider adapters
+packages/credential-vault Encrypted, scoped operator credential storage
 packages/git           Injection-safe Git and worktree operations
 packages/policy        Permissions, command/path policy and secret redaction
 docs/                  Architecture, security, lifecycle, ADRs and runbooks

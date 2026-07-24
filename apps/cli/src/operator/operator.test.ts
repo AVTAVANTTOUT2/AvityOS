@@ -117,6 +117,7 @@ describe("operator diagnostics", () => {
       "git",
       "gh",
       "sandbox",
+      "vault",
       "providers",
       "services",
       "control_plane",
@@ -319,7 +320,9 @@ describe("operator services", () => {
       prepareLogFileForAppend: () => {},
     });
 
-    await expect(lifecycle.start(["control-plane"])).rejects.toThrow(/overly permissive mode 640/);
+    await expect(lifecycle.start(["control-plane"])).rejects.toThrow(
+      /mode 0600 regular file owned by this user/,
+    );
     expect(spawnDetached).not.toHaveBeenCalled();
   });
 

@@ -13,6 +13,23 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   Browser login exchanges it for an HttpOnly, SameSite=Strict cookie; SSE never
   accepts tokens in URLs. CORS uses an explicit origin allowlist and the server
   binds loopback by default.
+- **Encrypted operator credentials (checkpoint 7.1)** — provider, GitHub,
+  control-plane and worker bearers can live in the strict
+  `@avityos/credential-vault` AES-256-GCM envelope instead of plaintext env
+  files. A fresh nonce and schema/key-bound AAD authenticate every generation.
+  The master key is stdin-only Keychain material on macOS or an explicit
+  owner-only file outside repository and operator state on Linux; it is never
+  stored beside the ciphertext by the supported configuration. Credential
+  names and service scopes are closed, so control-plane secrets cannot reach
+  Web/worker, the external key path is not forwarded, and arbitrary env
+  injection is impossible. The CLI API bearer is also loaded from the vault;
+  an initialized vault disables stale plaintext `cli.json` token fallback.
+  Updates are locked, fsynced and atomically renamed. `migrate` verifies the
+  encrypted values before scrubbing registered names from non-symlink `0600`
+  files. `doctor` uses the same decrypted control-plane view and fails closed
+  on a missing/wrong key.
+  Secret input is non-TTY stdin only and no value appears in list/status output.
+  See ADR-0014.
 - **Remote bridge transport (checkpoints 5.1–5.2)** — account/device
   certificates and application envelopes are signed and end-to-end encrypted;
   the relay accepts only strict ciphertext structures and never imports
@@ -222,9 +239,11 @@ transport.
 
 ## Remaining limitations
 
-- Provider API keys are supplied by the deployment environment; AvityOS does
-  not yet provide a general encrypted cross-platform credential vault. The
-  native user token is protected by Keychain.
+- The encrypted cross-platform operator vault is implemented, but master-key
+  rotation, portable recovery escrow and external enterprise secret-manager
+  integration remain. Decrypted values necessarily exist in the authorized
+  service process memory. Losing the macOS Keychain item or external Linux key
+  file makes the vault unrecoverable by design.
 - HTTPS termination and certificate lifecycle for a remote control plane are a
   deployment responsibility; the worker enforces HTTPS but mTLS is not bundled.
 - Public macOS distribution still depends on an operator-owned Developer ID

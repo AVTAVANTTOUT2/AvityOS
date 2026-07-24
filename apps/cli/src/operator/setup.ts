@@ -1,4 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { collectDoctorReport } from "./diagnostics.js";
 import { readEnvFile, writeEnvFileAtomic } from "./env.js";
 import type { OperatorPaths } from "./paths.js";
@@ -28,6 +36,18 @@ export interface EnsureOperatorSetupOptions {
 
 function ensurePrivateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
+  const stats = lstatSync(path);
+  const expectedUid = process.getuid?.();
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isDirectory() ||
+    (stats.mode & 0o200) === 0 ||
+    (expectedUid !== undefined && stats.uid !== expectedUid)
+  ) {
+    throw new Error(
+      `operator directory ${path} must be writable, non-symlinked and owned by this user`,
+    );
+  }
   chmodSync(path, 0o700);
 }
 
@@ -43,6 +63,21 @@ function runOrFail(result: SetupCommandResult, label: string): void {
   }
 }
 
+function assertOwnerOnlyRegularFile(path: string, label: string): void {
+  const stats = lstatSync(path);
+  const expectedUid = process.getuid?.();
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isFile() ||
+    (stats.mode & 0o777) !== 0o600 ||
+    (expectedUid !== undefined && stats.uid !== expectedUid)
+  ) {
+    throw new Error(
+      `${label} ${path} must be a mode 0600 regular file owned by this user`,
+    );
+  }
+}
+
 /**
  * Prepare secure local operator state. Idempotent by default.
  */
@@ -50,6 +85,7 @@ export async function ensureOperatorSetup(options: EnsureOperatorSetupOptions): 
   const { paths, runner, force, env } = options;
   ensurePrivateDirectory(paths.rootDir);
   ensurePrivateDirectory(paths.configDir);
+  ensurePrivateDirectory(paths.serviceConfigDir);
   ensurePrivateDirectory(paths.runDir);
   ensurePrivateDirectory(paths.logsDir);
   ensurePrivateDirectory(paths.reportsDir);
@@ -57,6 +93,9 @@ export async function ensureOperatorSetup(options: EnsureOperatorSetupOptions): 
   const created: string[] = [];
   const preserved: string[] = [];
   const envExists = existsSync(paths.operatorEnvPath);
+  if (envExists) {
+    assertOwnerOnlyRegularFile(paths.operatorEnvPath, "operator environment");
+  }
   const current = envExists ? readEnvFile(paths.operatorEnvPath) : {};
 
   if (!envExists) created.push(paths.operatorEnvPath);
@@ -67,6 +106,11 @@ export async function ensureOperatorSetup(options: EnsureOperatorSetupOptions): 
     ? current
     : {
       AVITY_CONTROL_PLANE_URL: current.AVITY_CONTROL_PLANE_URL ?? env.AVITY_CONTROL_PLANE_URL ?? "http://127.0.0.1:7717",
+      ...(current.AVITY_VAULT_KEY_FILE
+        ? { AVITY_VAULT_KEY_FILE: current.AVITY_VAULT_KEY_FILE }
+        : env.AVITY_VAULT_KEY_FILE
+          ? { AVITY_VAULT_KEY_FILE: env.AVITY_VAULT_KEY_FILE }
+          : {}),
       ...(current.AVITY_API_TOKEN ? { AVITY_API_TOKEN: current.AVITY_API_TOKEN } : env.AVITY_API_TOKEN ? { AVITY_API_TOKEN: env.AVITY_API_TOKEN } : {}),
       ...(current.AVITY_WORKER_ID ? { AVITY_WORKER_ID: current.AVITY_WORKER_ID } : {}),
       ...(current.AVITY_WORKER_TOKEN ? { AVITY_WORKER_TOKEN: current.AVITY_WORKER_TOKEN } : {}),
@@ -103,6 +147,7 @@ export function loadOperatorEnvironment(paths: OperatorPaths): Record<string, st
   if (!existsSync(paths.operatorEnvPath)) {
     throw new Error(`operator env missing at ${paths.operatorEnvPath}; run "avity setup" first`);
   }
+  assertOwnerOnlyRegularFile(paths.operatorEnvPath, "operator environment");
   return readEnvFile(paths.operatorEnvPath);
 }
 
@@ -123,9 +168,6 @@ export function mergeOperatorEnvironment(
 }
 
 export function readProtectedTokenFromFile(path: string): string {
-  const mode = statSync(path).mode & 0o777;
-  if (mode !== 0o600) {
-    throw new Error(`token file ${path} must have mode 0600`);
-  }
+  assertOwnerOnlyRegularFile(path, "token file");
   return readFileSync(path, "utf8").trim();
 }

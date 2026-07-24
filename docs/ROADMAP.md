@@ -106,11 +106,16 @@ reproductible dans `docs/TRACEABILITY.md`.
 
 7. **🟡 Fondations présentes, industrialisation manquante — Durcissement de
    distribution.** Déjà présents : CI Linux et macOS, audits, licences,
-   Gitleaks, SBOM, templates launchd et systemd.
-   Restent notamment : coffre de secrets, sauvegarde et restauration,
-   TLS/mTLS, rotation des credentials, automatisation des releases versionnées
-   et preuve de signature/notarisation Apple réelle. La politique de mise à
-   jour signée et le rollback macOS sont livrés au checkpoint 6.6.
+   Gitleaks, SBOM, templates launchd et systemd. Le checkpoint 7.1 ajoute le
+   coffre opérateur AES-256-GCM : clé maître Keychain macOS ou fichier externe
+   `0600` sur Linux, registre fermé et scope par service, mutations atomiques,
+   rotation stdin-only, migration vérifiée des anciens `.env` puis suppression
+   du clair, et injection mémoire sans propagation au Web/worker.
+   Restent notamment : rotation/récupération de la clé maître, sauvegarde et
+   restauration certifiantes, TLS/mTLS, rotation des autres credentials,
+   automatisation des releases versionnées et preuve de
+   signature/notarisation Apple réelle. La politique de mise à jour signée et
+   le rollback macOS sont livrés au checkpoint 6.6.
 
 ## Prochain jalon
 

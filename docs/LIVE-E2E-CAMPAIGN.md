@@ -62,18 +62,26 @@ Ne jamais committer de secrets. Stocker les valeurs réelles dans :
 
 | Emplacement | Usage |
 | --- | --- |
-| `~/.avity/operator/config/operator.env` | URL control plane, token API, worker (0600) |
-| `~/.config/avityos/control-plane.env` | Variables et credentials providers du control plane (0600) |
-| `~/.config/avityos/worker.env` | Variables propres au worker (0600) |
-| Variables d’environnement du shell | Clés providers (`CODEX_API_KEY`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CURSOR_API_KEY`, …) |
+| `~/.avity/operator/config/credentials.vault` | Credentials chiffrés et scopés ; jamais la clé maître |
+| Keychain macOS `com.avityos.operator-vault` | Clé maître aléatoire 256 bits |
+| `~/.avity/operator/config/operator.env` | URL et configuration non secrète ; compatibilité avant migration (0600) |
+| `~/.config/avityos/control-plane.env` | Configuration providers non secrète ; compatibilité avant migration (0600) |
+| `~/.config/avityos/worker.env` | Identité/configuration worker non secrète ; compatibilité avant migration (0600) |
 
-`avity start` et `avity restart` chargent automatiquement le fichier protégé
-propre au service lorsqu'il existe. Les credentials renouvelés conservés dans
-`operator.env` (`AVITY_API_TOKEN`, `AVITY_WORKER_ID`,
-`AVITY_WORKER_TOKEN`, URL du control plane) ont priorité sur une ancienne
-valeur du fichier de service. Le Web ne reçoit jamais les variables du control
-plane ou du worker. Un fichier de service lisible par le groupe ou les autres
-utilisateurs bloque le démarrage.
+Initialiser et migrer une fois :
+
+```sh
+avity vault migrate
+avity vault status
+avity vault list
+```
+
+La migration écrit et relit tous les secrets dans le coffre avant de supprimer
+leurs noms des trois anciens fichiers protégés. `operator.env` garde notamment
+URL, worker ID et routage. `avity start`/`restart` déchiffrent seulement le
+scope du service ; le Web ne reçoit aucun credential enregistré et le worker
+ne reçoit que `AVITY_WORKER_TOKEN`. Un fichier permissif/symlink, une mauvaise
+clé ou un coffre altéré bloque le démarrage.
 
 Connexion CLI (refuse `--token` en clair) :
 
@@ -84,8 +92,14 @@ avity login --url http://127.0.0.1:7717 --token-file /chemin/absolu/token
 ```
 
 Pour une souscription Claude sans clé API, générer le jeton d’automatisation
-officiel avec `claude setup-token`, puis le stocker comme
-`CLAUDE_CODE_OAUTH_TOKEN` dans l’environnement protégé du control plane.
+officiel avec `claude setup-token`, puis le stocker dans le coffre :
+
+```sh
+read -r -s AVITY_SECRET
+printf '%s' "$AVITY_SECRET" | avity vault set CLAUDE_CODE_OAUTH_TOKEN --stdin
+unset AVITY_SECRET
+avity restart --service control-plane
+```
 
 Pour une connexion Cursor par navigateur sans clé API, utiliser son store
 portable owner-only, puis vérifier l’état dans le même mode :

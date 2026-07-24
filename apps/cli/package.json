@@ -14,6 +14,7 @@
     "test:operator": "vitest run src/operator/operator.test.ts --no-file-parallelism"
   },
   "dependencies": {
+    "@avityos/credential-vault": "workspace:*",
     "@avityos/contracts": "workspace:*",
     "@avityos/providers": "workspace:*"
   },

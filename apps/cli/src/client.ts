@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -88,6 +96,50 @@ export function saveConfig(config: CliConfig): void {
   writeFileSync(tmpPath, `${JSON.stringify(diskConfig, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmpPath, configPath);
   chmodSync(configPath, 0o600);
+}
+
+function readProtectedDiskConfig(): Record<string, unknown> | null {
+  const configPath = resolveConfigPath();
+  if (!existsSync(configPath)) return null;
+  const stats = lstatSync(configPath);
+  const expectedUid = process.getuid?.();
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isFile() ||
+    (stats.mode & 0o777) !== 0o600 ||
+    (expectedUid !== undefined && stats.uid !== expectedUid)
+  ) {
+    throw new Error(
+      `CLI config ${configPath} must be a mode 0600 regular file owned by this user`,
+    );
+  }
+  const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`CLI config ${configPath} must contain a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+export function readPlaintextApiTokenFromConfig(): string | undefined {
+  const diskConfig = readProtectedDiskConfig();
+  if (!diskConfig || !Object.hasOwn(diskConfig, "apiToken")) return undefined;
+  if (
+    typeof diskConfig.apiToken !== "string" ||
+    !diskConfig.apiToken ||
+    /[\u0000\r\n]/.test(diskConfig.apiToken)
+  ) {
+    throw new Error("CLI config apiToken must be a non-empty single-line string");
+  }
+  return diskConfig.apiToken;
+}
+
+export function scrubPlaintextApiTokenFromConfig(): boolean {
+  const diskConfig = readProtectedDiskConfig();
+  if (!diskConfig) return false;
+  if (!Object.hasOwn(diskConfig, "apiToken")) return false;
+  delete diskConfig.apiToken;
+  saveConfig(diskConfig as unknown as CliConfig);
+  return true;
 }
 
 export class ApiError extends Error {

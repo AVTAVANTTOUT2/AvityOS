@@ -1,28 +1,51 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { E2EPreflightReport } from "@avityos/contracts";
 import {
+  MAX_CREDENTIAL_VALUE_BYTES,
+  isVaultSecretName,
+} from "@avityos/credential-vault";
+import {
   ApiError,
   Client,
   loadConfig,
+  readPlaintextApiTokenFromConfig,
   resolveConfigPath,
   saveConfig,
+  scrubPlaintextApiTokenFromConfig,
 } from "./client.js";
-import { collectDoctorReport } from "./operator/diagnostics.js";
+import {
+  collectDoctorReport,
+  probeProviderReadiness,
+} from "./operator/diagnostics.js";
 import { readEnvFile } from "./operator/env.js";
 import { resolveOperatorPaths, type OperatorServiceName } from "./operator/paths.js";
 import { redactText } from "./operator/redact.js";
-import { ensureOperatorSetup, mergeOperatorEnvironment, readProtectedTokenFromFile, saveOperatorEnvironment } from "./operator/setup.js";
-import { OperatorServiceLifecycle } from "./operator/services.js";
+import {
+  ensureOperatorSetup,
+  loadOperatorEnvironment,
+  mergeOperatorEnvironment,
+  readProtectedTokenFromFile,
+  saveOperatorEnvironment,
+} from "./operator/setup.js";
+import {
+  OperatorServiceLifecycle,
+  loadOperatorServiceEnvironment,
+} from "./operator/services.js";
 import { createExternalLiveFixture } from "./operator/fixture.js";
 import { prepareLiveCampaign, runLiveCampaign } from "./operator/campaign.js";
 import {
   createCampaignReportWriter,
   createCampaignStateStore,
 } from "./operator/campaign-report.js";
+import {
+  migrateProtectedEnvironmentsToVault,
+  openOperatorVault,
+  operatorVaultStatus,
+} from "./operator/vault.js";
 
 interface ProviderStatusReasonView {
   code: string;
@@ -169,6 +192,62 @@ function hasFlag(ctx: Ctx, name: string): boolean {
   return ctx.args.includes(`--${name}`);
 }
 
+function secretFromPipedStdin(ctx: Ctx): string {
+  if (!hasFlag(ctx, "stdin")) {
+    throw new UsageError("credential values are accepted only through --stdin");
+  }
+  if (process.stdin.isTTY) {
+    throw new UsageError(
+      "refusing echoed terminal input; pipe the credential to --stdin",
+    );
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const chunk = Buffer.allocUnsafe(8 * 1024);
+    const count = readSync(0, chunk, 0, chunk.byteLength, null);
+    if (count === 0) break;
+    total += count;
+    if (total > MAX_CREDENTIAL_VALUE_BYTES + 2) {
+      throw new UsageError("stdin credential exceeds 64 KiB");
+    }
+    chunks.push(chunk.subarray(0, count));
+  }
+  let raw: string;
+  try {
+    raw = new TextDecoder("utf-8", { fatal: true }).decode(
+      Buffer.concat(chunks, total),
+    );
+  } catch {
+    throw new UsageError("stdin credential must be valid UTF-8");
+  }
+  const value = raw.endsWith("\r\n")
+    ? raw.slice(0, -2)
+    : raw.endsWith("\n")
+      ? raw.slice(0, -1)
+      : raw;
+  if (!value) throw new UsageError("stdin credential is empty");
+  return value;
+}
+
+function assertVaultSetInvocation(ctx: Ctx): void {
+  for (let index = 2; index < ctx.args.length; index += 1) {
+    const value = ctx.args[index];
+    if (value === "--stdin") continue;
+    if (value === "--key-file") {
+      const keyFile = ctx.args[index + 1];
+      if (!keyFile || keyFile.startsWith("--")) {
+        throw new UsageError("--key-file requires an absolute path");
+      }
+      index += 1;
+      continue;
+    }
+    throw new UsageError(
+      "vault set accepts no credential value in argv; pipe it with --stdin",
+    );
+  }
+}
+
 function numberFlag(ctx: Ctx, name: string): number | undefined {
   const value = flag(ctx, name);
   if (value === undefined) return undefined;
@@ -226,10 +305,84 @@ function selectedServices(ctx: Ctx): OperatorServiceName[] {
   throw new UsageError(`unknown service: ${service} (allowed: control-plane|web|worker|all)`);
 }
 
+function operatorVaultKeyFile(
+  ctx: Ctx,
+  paths: ReturnType<typeof resolveOperatorPaths>,
+): string | undefined {
+  const explicit = flag(ctx, "key-file");
+  if (explicit) return explicit;
+  try {
+    return loadOperatorEnvironment(paths).AVITY_VAULT_KEY_FILE;
+  } catch {
+    return undefined;
+  }
+}
+
+function persistOperatorVaultKeyFile(
+  paths: ReturnType<typeof resolveOperatorPaths>,
+  keyFile: string | undefined,
+): void {
+  if (!keyFile || !existsSync(paths.operatorEnvPath)) return;
+  const current = loadOperatorEnvironment(paths);
+  saveOperatorEnvironment(
+    paths,
+    mergeOperatorEnvironment(current, { AVITY_VAULT_KEY_FILE: keyFile }),
+  );
+}
+
+function loadEffectiveCliConfig() {
+  const config = loadConfig();
+  const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+  if (!existsSync(paths.credentialVaultPath)) return config;
+
+  // Once a vault exists, never let a stale plaintext cli.json token mask a
+  // missing/wrong master key. Repair commands remain usable without a client
+  // token; network commands then fail authentication instead of bypassing the
+  // vault boundary.
+  const withoutPlaintextToken = { ...config, apiToken: undefined };
+  try {
+    const environment = loadOperatorServiceEnvironment(paths, "control-plane");
+    return environment.AVITY_API_TOKEN
+      ? { ...withoutPlaintextToken, apiToken: environment.AVITY_API_TOKEN }
+      : withoutPlaintextToken;
+  } catch {
+    return withoutPlaintextToken;
+  }
+}
+
 async function collectCliDoctorReport(client: Client) {
   const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
   const lifecycle = new OperatorServiceLifecycle(paths);
+  let providerEnvironment: NodeJS.ProcessEnv = process.env;
+  let vaultProbe = {
+    ok: true,
+    detail: existsSync(paths.credentialVaultPath)
+      ? "encrypted credential vault is readable"
+      : "encrypted credential vault is not initialized; protected env compatibility is active",
+  };
+  try {
+    providerEnvironment = {
+      ...process.env,
+      ...loadOperatorServiceEnvironment(paths, "control-plane"),
+    };
+  } catch (error) {
+    if (existsSync(paths.credentialVaultPath)) {
+      vaultProbe = {
+        ok: false,
+        detail: redactText(
+          error instanceof Error
+            ? error.message
+            : "encrypted credential vault is unavailable",
+        ),
+      };
+      providerEnvironment = Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !isVaultSecretName(name)),
+      );
+    }
+  }
   return collectDoctorReport({
+    providerProbe: async () => probeProviderReadiness(providerEnvironment),
+    vaultProbe: async () => vaultProbe,
     serviceProbe: async () => {
       const status = await lifecycle.status();
       return {
@@ -306,6 +459,157 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
     );
   },
 
+  vault: {
+    init: async (ctx) => {
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const { vault, keyStore } = openOperatorVault(paths, {
+        create: true,
+        ...(keyFile ? { keyFile } : {}),
+      });
+      const result = vault.initialize();
+      persistOperatorVaultKeyFile(paths, keyFile);
+      const data = {
+        created: result.created,
+        path: paths.credentialVaultPath,
+        keyStorage: keyStore.description,
+        snapshot: result.snapshot,
+      };
+      out(ctx, data, (payload: typeof data) =>
+        [
+          payload.created ? "credential vault initialized" : "credential vault already initialized",
+          `path: ${payload.path}`,
+          `key storage: ${payload.keyStorage}`,
+          `generation: ${payload.snapshot.generation}`,
+          `entries: ${payload.snapshot.entries.length}`,
+        ].join("\n")
+      );
+    },
+    status: async (ctx) => {
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const result = operatorVaultStatus(paths, {
+        ...(keyFile ? { keyFile } : {}),
+      });
+      out(ctx, result, (payload: typeof result) =>
+        payload.initialized
+          ? [
+            "credential vault: initialized",
+            `path: ${payload.path}`,
+            `key storage: ${payload.keyStorage}`,
+            `generation: ${payload.snapshot?.generation ?? 0}`,
+            `entries: ${payload.snapshot?.entries.length ?? 0}`,
+          ].join("\n")
+          : `credential vault: not initialized\npath: ${payload.path}`
+      );
+    },
+    list: async (ctx) => {
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const result = operatorVaultStatus(paths, {
+        ...(keyFile ? { keyFile } : {}),
+      });
+      if (!result.initialized || !result.snapshot) {
+        throw new Error('credential vault is not initialized; run "avity vault init"');
+      }
+      out(
+        ctx,
+        result.snapshot.entries,
+        (rows: Record<string, unknown>[]) =>
+          table(rows, ["name", "service", "updatedAt"]),
+      );
+    },
+    set: async (ctx) => {
+      const name = requireArg(ctx, 1, "credential-name");
+      if (!isVaultSecretName(name)) {
+        throw new UsageError(`unsupported credential name: ${name}`);
+      }
+      assertVaultSetInvocation(ctx);
+      const value = secretFromPipedStdin(ctx);
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const { vault } = openOperatorVault(paths, {
+        create: false,
+        ...(keyFile ? { keyFile } : {}),
+      });
+      const previous = vault.snapshot();
+      const rotated = previous.entries.some((entry) => entry.name === name);
+      const snapshot = vault.set(name, value);
+      const data = {
+        name,
+        rotated,
+        generation: snapshot.generation,
+      };
+      out(ctx, data, (payload: typeof data) =>
+        `${payload.rotated ? "rotated" : "stored"} ${payload.name}; vault generation ${payload.generation}`
+      );
+    },
+    remove: async (ctx) => {
+      const name = requireArg(ctx, 1, "credential-name");
+      if (!isVaultSecretName(name)) {
+        throw new UsageError(`unsupported credential name: ${name}`);
+      }
+      if (flag(ctx, "confirm") !== name) {
+        throw new UsageError(`removal requires --confirm ${name}`);
+      }
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const { vault } = openOperatorVault(paths, {
+        create: false,
+        ...(keyFile ? { keyFile } : {}),
+      });
+      const before = vault.snapshot();
+      const snapshot = vault.remove(name);
+      const removed = snapshot.generation !== before.generation;
+      const data = { name, removed, generation: snapshot.generation };
+      out(ctx, data, (payload: typeof data) =>
+        `${payload.removed ? "removed" : "absent"} ${payload.name}; vault generation ${payload.generation}`
+      );
+    },
+    migrate: async (ctx) => {
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const cliApiToken = readPlaintextApiTokenFromConfig();
+      const { vault, keyStore } = openOperatorVault(paths, {
+        create: true,
+        ...(keyFile ? { keyFile } : {}),
+      });
+      const result = migrateProtectedEnvironmentsToVault(paths, vault, {
+        ...(cliApiToken ? { cliApiToken } : {}),
+      });
+      const scrubbedCliConfig = scrubPlaintextApiTokenFromConfig();
+      persistOperatorVaultKeyFile(paths, keyFile);
+      const data = {
+        ...result,
+        scrubbedCliConfig,
+        keyStorage: keyStore.description,
+        path: paths.credentialVaultPath,
+      };
+      out(ctx, data, (payload: typeof data) =>
+        [
+          `migrated credentials: ${payload.migrated.length}`,
+          `rewritten protected files: ${payload.rewrittenFiles.length}`,
+          `scrubbed CLI config: ${payload.scrubbedCliConfig}`,
+          `precedence conflicts preserved: ${payload.conflictsResolvedByExistingPrecedence.length}`,
+          `vault generation: ${payload.snapshot.generation}`,
+          `key storage: ${payload.keyStorage}`,
+        ].join("\n")
+      );
+    },
+  },
+
   start: async (ctx) => {
     const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
     const lifecycle = new OperatorServiceLifecycle(paths);
@@ -373,18 +677,41 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       token = readProtectedTokenFromFile(tokenFile);
     }
     if (url) config.controlPlaneUrl = url;
-    if (token) config.apiToken = token;
-    saveConfig(config);
+    const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+    const vaultInitialized = existsSync(paths.credentialVaultPath);
     if (token) {
-      const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
-      try {
-        const parsed = readEnvFile(paths.operatorEnvPath);
-        saveOperatorEnvironment(paths, mergeOperatorEnvironment(parsed, { AVITY_API_TOKEN: token }));
-      } catch (error) {
-        const reason = redactText(error instanceof Error ? error.message : "unknown error");
-        console.warn(`warning: operator env sync skipped (${reason})`);
+      if (vaultInitialized) {
+        try {
+          const keyFile = operatorVaultKeyFile(ctx, paths);
+          const { vault } = openOperatorVault(paths, {
+            create: false,
+            ...(keyFile ? { keyFile } : {}),
+          });
+          vault.set("AVITY_API_TOKEN", token);
+        } catch (error) {
+          throw new Error(
+            `credential vault rotation failed: ${
+              redactText(error instanceof Error ? error.message : "unknown error")
+            }`,
+          );
+        }
+        config.apiToken = undefined;
+      } else {
+        config.apiToken = token;
+        try {
+          const parsed = readEnvFile(paths.operatorEnvPath);
+          saveOperatorEnvironment(paths, mergeOperatorEnvironment(parsed, { AVITY_API_TOKEN: token }));
+        } catch (error) {
+          const reason = redactText(
+            error instanceof Error ? error.message : "unknown error",
+          );
+          console.warn(
+            `warning: operator env sync skipped (protected env: ${reason})`,
+          );
+        }
       }
     }
+    saveConfig(config);
     console.log(`saved credentials to ${resolveConfigPath()}`);
   },
 
@@ -1037,6 +1364,11 @@ commands:
   login --url <url> [--token-stdin|--token-file <path>]
                                         configure control plane access
   setup [--force]                       secure local operator bootstrap
+  vault init|status|list [--key-file <0600-path>]
+  vault set <credential-name> --stdin [--key-file <0600-path>]
+  vault remove <credential-name> --confirm <credential-name>
+  vault migrate [--key-file <0600-path>]
+                                        encrypted operator credential lifecycle
   start|stop|restart [--service <name>] manage detached services
   status                                local service + control plane summary
   logs [--service <name>] [--max-bytes <n>]
@@ -1089,7 +1421,7 @@ export async function main(argv: string[]): Promise<number> {
     return 2;
   }
   const ctx: Ctx = {
-    client: new Client(loadConfig()),
+    client: new Client(loadEffectiveCliConfig()),
     json,
     args: typeof entry === "function" ? args.slice(1) : args.slice(1),
   };
