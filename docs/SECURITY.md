@@ -43,7 +43,15 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   runtime et signature contrôlée. La CI ne possède aucun secret Apple et
   produit explicitement une signature ad hoc ; le chemin public refuse
   l'absence de Team ID ou de profil notarytool, puis exige soumission, staple
-  et évaluation Gatekeeper. Voir ADR-0006 à ADR-0011.
+  et évaluation Gatekeeper. Le checkpoint 6.5 renouvelle à J-30 les
+  certificats du pont dans le canal E2E existant. Le relais met uniquement à
+  jour le certificat public : le hash du bearer et la révocation sont
+  conservés, une identité/clé différente ou une validité non prolongée est
+  refusée, et un appareil révoqué ne peut jamais être réactivé par cette voie.
+  Swift vérifie les deux signatures, les identités inchangées et les
+  intervalles non régressifs avant le remplacement Keychain. Une expiration
+  déjà atteinte reste fail-closed et impose un nouvel appairage. Voir ADR-0006
+  à ADR-0012.
 - **Validation** — shared zod schemas validate bodies/enums. Project onboarding
   resolves repository paths with `realpath`, requires a readable/writable Git
   working tree, verifies the local default branch and matches GitHub identity

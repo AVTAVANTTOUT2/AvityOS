@@ -275,6 +275,61 @@ describe("ciphertext-only relay and outbound connector", () => {
     })).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({ status: 401 });
   });
 
+  it("renews certificates without rotating bearers or reactivating revocations", async () => {
+    const { baseUrl } = await startRelay();
+    const setup = setupDevices();
+    await registerDevice(baseUrl, setup.remoteCertificate, REMOTE_TOKEN);
+    const admin = new RemoteRelayAdminHttpClient({
+      baseUrl,
+      accessToken: ACCESS_TOKEN,
+    });
+    const renewed = issueRemoteDeviceCertificate({
+      account: setup.account,
+      device: setup.remote,
+      name: setup.remoteCertificate.name,
+      issuedAt: "2026-08-01T10:00:00.000Z",
+    });
+    const substitutedIdentity = issueRemoteDeviceCertificate({
+      account: setup.account,
+      device: {
+        ...setup.other,
+        deviceId: setup.remote.deviceId,
+      },
+      name: setup.remoteCertificate.name,
+      issuedAt: "2026-08-01T10:00:00.000Z",
+    });
+
+    await expect(
+      admin.updateDeviceCertificate(substitutedIdentity),
+    ).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({ status: 409 });
+    expect(await admin.updateDeviceCertificate(renewed)).toMatchObject({
+      accountId: setup.account.accountId,
+      deviceId: setup.remote.deviceId,
+      status: "active",
+    });
+    const existingBearer = new RemoteRelayHttpClient({
+      baseUrl,
+      accessToken: REMOTE_TOKEN,
+    });
+    await expect(existingBearer.poll({
+      accountId: setup.account.accountId,
+      deviceId: setup.remote.deviceId,
+      afterCursor: 0,
+      waitMs: 0,
+    })).resolves.toMatchObject({ items: [] });
+
+    await admin.revokeDevice(setup.account.accountId, setup.remote.deviceId);
+    await expect(
+      admin.updateDeviceCertificate(renewed),
+    ).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({ status: 409 });
+    await expect(existingBearer.poll({
+      accountId: setup.account.accountId,
+      deviceId: setup.remote.deviceId,
+      afterCursor: 0,
+      waitMs: 0,
+    })).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({ status: 401 });
+  });
+
   it("wakes long polls and enforces queue capacity and expiry", async () => {
     let now = new Date(NOW).getTime();
     const store = new InMemoryRelayStore({

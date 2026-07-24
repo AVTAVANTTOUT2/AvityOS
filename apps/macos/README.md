@@ -14,6 +14,9 @@ As a paired remote device it implements the same protocol with CryptoKit,
 stores its identity/bearer/replay state in Keychain and routes the existing
 native screens through the ciphertext relay. Local and remote credentials stay
 independent and the active transport is explicit in the toolbar and menu bar.
+The host and remote device renew their account-signed certificates
+automatically with 30 days remaining, without rotating device keys or the relay
+bearer; Settings displays both expiries and exposes the same check manually.
 
 ## Development and UI tests
 
@@ -99,6 +102,9 @@ never required for development or pull-request CI.
   the outbound sequence before publish and the inbound sequence before ack, so
   a crash creates at most a gap and never nonce/sequence reuse or an
   unauthenticated replay. The committed Node vector certifies CryptoKit wire
-  interoperability.
+  interoperability. Renewal responses replace Keychain certificates only
+  after both account signatures, unchanged identities/keys and extended
+  validity intervals pass validation; an expired certificate requires a fresh
+  pairing.
 - The wire models in `ApiClient.swift` mirror `packages/contracts`; update
   them together.

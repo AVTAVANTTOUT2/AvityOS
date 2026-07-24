@@ -7,6 +7,7 @@ import {
   RemoteEncryptedEnvelope,
   RemoteRelayAckRequest,
   RemoteRelayRegisterDeviceRequest,
+  RemoteRelayUpdateDeviceCertificateRequest,
 } from "@avityos/contracts";
 import {
   InMemoryRelayStore,
@@ -198,6 +199,30 @@ export async function buildRemoteRelayServer(
     }
     return reply.status(200).send(store.registerDevice(body));
   });
+
+  app.put(
+    "/v1/admin/accounts/:accountId/devices/:deviceId/certificate",
+    async (request, reply) => {
+      const params = InboxParams.parse(request.params);
+      const body = RemoteRelayUpdateDeviceCertificateRequest.parse(request.body);
+      if (
+        body.certificate.accountId !== params.accountId ||
+        body.certificate.deviceId !== params.deviceId
+      ) {
+        return apiError(
+          reply,
+          400,
+          "validation_failed",
+          "certificate identity does not match the relay device path",
+        );
+      }
+      const record = store.updateDeviceCertificate(body);
+      if (!record) {
+        return apiError(reply, 404, "not_found", "relay device is not registered");
+      }
+      return record;
+    },
+  );
 
   app.post("/v1/admin/accounts/:accountId/devices/:deviceId/revoke", async (request, reply) => {
     const params = InboxParams.parse(request.params);

@@ -7,6 +7,7 @@ import {
   RemoteRelayInbox,
   RemoteRelayPublishResult,
   RemoteRelayDeviceRecord,
+  RemoteRelayUpdateDeviceCertificateRequest,
   type RemoteEncryptedEnvelope as RemoteEncryptedEnvelopeType,
   type RemoteDeviceCertificate as RemoteDeviceCertificateType,
   type RemoteRelayAckResult as RemoteRelayAckResultType,
@@ -260,6 +261,22 @@ export class RemoteRelayAdminHttpClient {
       body: JSON.stringify({ certificate, accessToken: deviceAccessToken }),
       signal,
     }));
+  }
+
+  async updateDeviceCertificate(
+    certificateInput: RemoteDeviceCertificateType,
+    signal?: AbortSignal,
+  ): Promise<RemoteRelayDeviceRecordType> {
+    const certificate = RemoteDeviceCertificate.parse(certificateInput);
+    const body = RemoteRelayUpdateDeviceCertificateRequest.parse({ certificate });
+    return RemoteRelayDeviceRecord.parse(await this.request(
+      `/v1/admin/accounts/${certificate.accountId}/devices/${certificate.deviceId}/certificate`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+        signal,
+      },
+    ));
   }
 
   async revokeDevice(

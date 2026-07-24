@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  RemoteCertificateRenewalRequest,
+  RemoteCertificateRenewalResponse,
   RemoteControlRequest,
   RemoteDeviceCertificate,
   RemoteEncryptedEnvelope,
@@ -8,6 +10,7 @@ import {
   RemotePairingRequest,
   RemoteRelayAckRequest,
   RemoteRelayInbox,
+  RemoteRelayUpdateDeviceCertificateRequest,
 } from "./remote-bridge.js";
 
 describe("remote bridge contracts", () => {
@@ -76,6 +79,25 @@ describe("remote bridge contracts", () => {
       protocolVersion: 1,
       sessionId: `rpair_${"b".repeat(32)}`,
       relayAccessToken: "must-never-be-plaintext",
+    }).success).toBe(false);
+  });
+
+  it("keeps certificate renewal payloads minimal and strict", () => {
+    expect(RemoteCertificateRenewalRequest.parse({
+      protocolVersion: 1,
+    })).toEqual({ protocolVersion: 1 });
+    expect(RemoteCertificateRenewalRequest.safeParse({
+      protocolVersion: 1,
+      rotateAccessToken: true,
+    }).success).toBe(false);
+    expect(RemoteCertificateRenewalResponse.safeParse({
+      protocolVersion: 1,
+      deviceCertificate: {},
+      hostCertificate: {},
+    }).success).toBe(false);
+    expect(RemoteRelayUpdateDeviceCertificateRequest.safeParse({
+      certificate: {},
+      accessToken: "renewal-must-not-rotate-the-bearer",
     }).success).toBe(false);
   });
 });

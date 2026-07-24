@@ -359,6 +359,215 @@ private final class EncryptedRelayHarness: @unchecked Sendable {
     }
 }
 
+private final class CertificateRenewalRelayHarness: @unchecked Sendable {
+    private let lock = NSLock()
+    private let vector: RemoteCertificateRenewalTestVector
+    private let now: Date
+    private let relayToken: String
+    private let invalidRenewalIdentity: Bool
+    private var remoteSequence = 0
+    private var hostSequence = 0
+    private var cursor = 0
+    private var relayCursor = 0
+    private var queuedEnvelope: RemoteEncryptedEnvelopeWire?
+    private var paths: [String] = []
+
+    init(
+        vector: RemoteCertificateRenewalTestVector,
+        invalidRenewalIdentity: Bool = false
+    ) throws {
+        self.vector = vector
+        now = try vector.date
+        relayToken = vector.configuration().relayAccessToken
+        self.invalidRenewalIdentity = invalidRenewalIdentity
+    }
+
+    func recordedPaths() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return paths
+    }
+
+    func handle(_ request: URLRequest) throws -> RemoteRelayURLProtocol.Stub {
+        lock.lock()
+        defer { lock.unlock() }
+        guard
+            request.value(forHTTPHeaderField: "authorization") ==
+                "Bearer \(relayToken)",
+            let url = request.url
+        else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        switch (request.httpMethod, url.path) {
+        case ("POST", "/bridge/v1/relay/envelopes"):
+            return try publish(request)
+        case (
+            "GET",
+            "/bridge/v1/relay/accounts/\(vector.remoteCertificate.accountId)" +
+                "/devices/\(vector.remoteCertificate.deviceId)/inbox"
+        ):
+            return try poll(request)
+        case (
+            "POST",
+            "/bridge/v1/relay/accounts/\(vector.remoteCertificate.accountId)" +
+                "/devices/\(vector.remoteCertificate.deviceId)/ack"
+        ):
+            return try acknowledge(request)
+        default:
+            throw URLError(.unsupportedURL)
+        }
+    }
+
+    private func publish(
+        _ request: URLRequest
+    ) throws -> RemoteRelayURLProtocol.Stub {
+        let envelope = try RemoteBridgeCrypto.decodeEnvelope(
+            try remoteRequestBody(request)
+        )
+        let renewing = remoteSequence == 0
+        let opened = try RemoteBridgeCrypto.openEnvelope(
+            envelope,
+            recipientIdentity: vector.hostIdentity,
+            recipientCertificate:
+                renewing
+                    ? vector.hostCertificate
+                    : vector.renewedHostCertificate,
+            senderCertificate:
+                renewing
+                    ? vector.remoteCertificate
+                    : vector.renewedRemoteCertificate,
+            accountSigningPublicKey: vector.accountSigningPublicKey,
+            lastAcceptedSequence: remoteSequence,
+            now: now
+        )
+        remoteSequence = opened.sequence
+        let control = try JSONDecoder().decode(
+            RemoteControlRequestWire.self,
+            from: opened.plaintext
+        )
+        paths.append(control.path)
+        let responseBody: JSONValue
+        if control.path == remoteCertificateRenewalPath {
+            responseBody = try JSONValue(
+                data: JSONEncoder().encode(
+                    RemoteCertificateRenewalResponseWire(
+                        protocolVersion: remoteBridgeProtocolVersion,
+                        deviceCertificate:
+                            vector.renewedRemoteCertificate,
+                        hostCertificate:
+                            invalidRenewalIdentity
+                                ? vector.renewedRemoteCertificate
+                                : vector.renewedHostCertificate
+                    )
+                )
+            )
+        } else if control.path == "/v1/health" {
+            responseBody = .object([
+                "status": .string("ok"),
+                "version": .string("renewed"),
+            ])
+        } else {
+            throw URLError(.unsupportedURL)
+        }
+        hostSequence += 1
+        cursor += 1
+        let response = RemoteControlResponseWire(
+            protocolVersion: remoteBridgeProtocolVersion,
+            requestId: control.requestId,
+            status: 200,
+            body: responseBody
+        )
+        queuedEnvelope = try RemoteBridgeCrypto.sealEnvelope(
+            plaintext: JSONEncoder().encode(response),
+            contentType: remoteControlResponseContentType,
+            sequence: hostSequence,
+            senderIdentity: vector.hostIdentity,
+            senderCertificate:
+                renewing
+                    ? vector.hostCertificate
+                    : vector.renewedHostCertificate,
+            recipientCertificate:
+                renewing
+                    ? vector.remoteCertificate
+                    : vector.renewedRemoteCertificate,
+            accountSigningPublicKey: vector.accountSigningPublicKey,
+            now: now
+        )
+        return .init(
+            body: try JSONEncoder().encode(
+                RemoteRelayPublishResultWire(
+                    messageId: envelope.messageId,
+                    acceptedAt: vector.renewalNow,
+                    duplicate: false
+                )
+            )
+        )
+    }
+
+    private func poll(
+        _ request: URLRequest
+    ) throws -> RemoteRelayURLProtocol.Stub {
+        guard
+            let url = request.url,
+            let components = URLComponents(
+                url: url,
+                resolvingAgainstBaseURL: false
+            ),
+            let afterValue = components.queryItems?.first(
+                where: { $0.name == "after" }
+            )?.value,
+            let after = Int(afterValue)
+        else {
+            throw URLError(.badURL)
+        }
+        let items: [RemoteRelayItemWire]
+        if let queuedEnvelope, cursor > after {
+            items = [
+                RemoteRelayItemWire(
+                    cursor: cursor,
+                    receivedAt: vector.renewalNow,
+                    envelope: queuedEnvelope
+                ),
+            ]
+        } else {
+            items = []
+        }
+        return .init(
+            body: try JSONEncoder().encode(
+                RemoteRelayInboxWire(
+                    items: items,
+                    nextCursor: items.isEmpty ? after : cursor
+                )
+            )
+        )
+    }
+
+    private func acknowledge(
+        _ request: URLRequest
+    ) throws -> RemoteRelayURLProtocol.Stub {
+        struct Ack: Decodable {
+            let throughCursor: Int
+        }
+        let ack = try JSONDecoder().decode(
+            Ack.self,
+            from: try remoteRequestBody(request)
+        )
+        guard ack.throughCursor == cursor else {
+            throw URLError(.cannotParseResponse)
+        }
+        relayCursor = ack.throughCursor
+        queuedEnvelope = nil
+        return .init(
+            body: try JSONEncoder().encode(
+                RemoteRelayAckResultWire(
+                    throughCursor: relayCursor,
+                    deleted: 1
+                )
+            )
+        )
+    }
+}
+
 private final class EmptyCredentialStore: CredentialStore {
     func loadToken() throws -> String? { nil }
     func saveToken(_ token: String) throws {}
@@ -528,6 +737,90 @@ final class RemoteDeviceClientTests: XCTestCase {
         XCTAssertEqual(persisted.inboundSequence, 2)
         XCTAssertEqual(persisted.relayCursor, 2)
         XCTAssertNil(persisted.pendingAckCursor)
+    }
+
+    func testNearExpiryCertificatesRenewBeforeNormalRequest() async throws {
+        let vector = try RemoteCertificateRenewalTestVector.load()
+        let store = MemoryRemoteDeviceStore(
+            configuration: vector.configuration()
+        )
+        let relay = try CertificateRenewalRelayHarness(vector: vector)
+        let context = RemoteRelayTestContext()
+        defer { context.cleanUp() }
+        context.install(relay.handle)
+        let transport = RemoteDeviceTransport(
+            store: store,
+            session: context.session,
+            now: { try! vector.date }
+        )
+
+        let response = try await transport.send(
+            path: "/v1/health",
+            method: "GET",
+            body: nil
+        )
+
+        XCTAssertEqual(
+            try JSONValue(data: response),
+            .object([
+                "status": .string("ok"),
+                "version": .string("renewed"),
+            ])
+        )
+        XCTAssertEqual(
+            relay.recordedPaths(),
+            [remoteCertificateRenewalPath, "/v1/health"]
+        )
+        let persisted = try XCTUnwrap(store.loadConfiguration())
+        XCTAssertEqual(
+            persisted.certificate,
+            vector.renewedRemoteCertificate
+        )
+        XCTAssertEqual(
+            persisted.hostCertificate,
+            vector.renewedHostCertificate
+        )
+        XCTAssertEqual(persisted.relayAccessToken, "renewal-device-token-xxxxxxxxxxx")
+        XCTAssertEqual(persisted.outboundSequence, 2)
+        XCTAssertEqual(persisted.inboundSequence, 2)
+        XCTAssertEqual(persisted.relayCursor, 2)
+    }
+
+    func testRenewalRejectsAValidCertificateForAnotherIdentity() async throws {
+        let vector = try RemoteCertificateRenewalTestVector.load()
+        let original = vector.configuration()
+        let store = MemoryRemoteDeviceStore(configuration: original)
+        let relay = try CertificateRenewalRelayHarness(
+            vector: vector,
+            invalidRenewalIdentity: true
+        )
+        let context = RemoteRelayTestContext()
+        defer { context.cleanUp() }
+        context.install(relay.handle)
+        let transport = RemoteDeviceTransport(
+            store: store,
+            session: context.session,
+            now: { try! vector.date }
+        )
+
+        do {
+            try await transport.renewCertificates()
+            XCTFail("Expected the identity substitution to fail closed")
+        } catch {
+            XCTAssertEqual(
+                error as? RemoteDeviceClientError,
+                .invalidResponse
+            )
+        }
+        let persisted = try XCTUnwrap(store.loadConfiguration())
+        XCTAssertEqual(persisted.certificate, original.certificate)
+        XCTAssertEqual(
+            persisted.hostCertificate,
+            original.hostCertificate
+        )
+        XCTAssertEqual(persisted.outboundSequence, 1)
+        XCTAssertEqual(persisted.inboundSequence, 1)
+        XCTAssertEqual(persisted.relayCursor, 1)
     }
 
     @MainActor

@@ -2,8 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
   REMOTE_BRIDGE_PROTOCOL_VERSION,
+  REMOTE_CERTIFICATE_RENEWAL_PATH,
   REMOTE_CONTROL_REQUEST_CONTENT_TYPE,
   REMOTE_CONTROL_RESPONSE_CONTENT_TYPE,
+  RemoteCertificateRenewalRequest,
+  RemoteCertificateRenewalResponse,
   RemoteControlRequest,
   RemoteControlResponse,
   RemoteAccountId,
@@ -39,6 +42,9 @@ const MAX_REMOTE_REQUEST_BYTES = 1024 * 1024;
 const MAX_PAIRING_REQUEST_BYTES = 128 * 1024;
 const MAX_ACTIVE_PAIRINGS = 8;
 const DEFAULT_POLL_WAIT_MS = 25_000;
+const CERTIFICATE_TTL_MS = 365 * 24 * 60 * 60_000;
+const CERTIFICATE_CLOCK_SKEW_MS = 5 * 60_000;
+export const REMOTE_CERTIFICATE_RENEWAL_WINDOW_MS = 30 * 24 * 60 * 60_000;
 const KeyMaterial = z.string().min(40).max(2_048).regex(/^[A-Za-z0-9_-]+$/);
 
 const RemoteHostSecretConfigurationSchema = z.object({
@@ -78,6 +84,10 @@ export interface RemoteHostRelayAdmin {
   registerDevice(
     certificate: RemoteDeviceCertificate,
     accessToken: string,
+    signal?: AbortSignal,
+  ): Promise<unknown>;
+  updateDeviceCertificate(
+    certificate: RemoteDeviceCertificate,
     signal?: AbortSignal,
   ): Promise<unknown>;
   revokeDevice(
@@ -160,6 +170,13 @@ function actionForRequest(request: RemoteControlRequestType): string {
     ResolveApprovalRequest.parse(request.body);
     return "approval.resolve";
   }
+  if (
+    request.method === "POST" &&
+    request.path === REMOTE_CERTIFICATE_RENEWAL_PATH
+  ) {
+    RemoteCertificateRenewalRequest.parse(request.body);
+    return "certificate.renew";
+  }
   throw new RemoteControlPolicyError(
     `remote control action is not allowed: ${request.method} ${request.path}`,
   );
@@ -197,6 +214,14 @@ function fingerprint(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function certificateNeedsRenewal(
+  certificate: RemoteDeviceCertificate,
+  now: Date,
+): boolean {
+  return new Date(certificate.validUntil).getTime() - now.getTime() <=
+    REMOTE_CERTIFICATE_RENEWAL_WINDOW_MS;
+}
+
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) {
@@ -225,6 +250,7 @@ export class RemoteHostManager {
   private connectorLoop: Promise<void> | null = null;
   private connectorState: RemoteHostStatusType["connectorState"] = "unconfigured";
   private lastError: string | null = null;
+  private connectorRefreshRequested = false;
 
   constructor(private readonly options: RemoteHostManagerOptions) {
     this.relayFactory = options.relayFactory ?? DEFAULT_REMOTE_HOST_RELAY_FACTORY;
@@ -243,7 +269,9 @@ export class RemoteHostManager {
         this.connectorState = "unconfigured";
         return;
       }
+      await this.ensureHostCertificateFresh();
       this.buildConnector();
+      this.connectorRefreshRequested = false;
       this.lastError = null;
       if (this.autoStartConnector) this.startConnectorLoop();
     } catch (error) {
@@ -458,10 +486,13 @@ export class RemoteHostManager {
   }
 
   async processOnce(): Promise<number> {
-    if (!this.connector) this.buildConnector();
     this.connectorState = "connecting";
     try {
+      await this.ensureHostCertificateFresh();
+      this.refreshConnectorIfRequested();
+      if (!this.connector) this.buildConnector();
       const processed = await this.connector!.processOnce({ waitMs: 0 });
+      this.refreshConnectorIfRequested();
       this.connectorState = "online";
       this.lastError = null;
       return processed;
@@ -491,6 +522,81 @@ export class RemoteHostManager {
         this.pendingPairings.delete(sessionId);
       }
     }
+  }
+
+  private async ensureHostCertificateFresh(now = this.now()): Promise<boolean> {
+    const configuration = this.requireConfiguration();
+    if (!certificateNeedsRenewal(configuration.hostCertificate, now)) {
+      return false;
+    }
+    if (!this.options.stateStore.isDeviceActive(
+      configuration.hostIdentity.deviceId,
+    )) {
+      throw new RemoteControlPolicyError(
+        "the local host certificate cannot be renewed for an inactive device",
+      );
+    }
+    const renewed = issueRemoteDeviceCertificate({
+      account: configuration.account,
+      device: configuration.hostIdentity,
+      name: configuration.hostCertificate.name,
+      issuedAt: now.getTime() - CERTIFICATE_CLOCK_SKEW_MS,
+      validUntil: now.getTime() + CERTIFICATE_TTL_MS,
+    });
+    const admin = this.relayFactory.admin(
+      configuration.relayUrl,
+      configuration.relayAdminToken,
+    );
+    await admin.updateDeviceCertificate(renewed);
+    this.options.stateStore.registerDevice(renewed, now.getTime());
+    const updated = { ...configuration, hostCertificate: renewed };
+    this.options.secretStore.save(updated);
+    this.configuration = updated;
+    this.connectorRefreshRequested = true;
+    return true;
+  }
+
+  private async renewRemoteCertificates(
+    senderDeviceId: string,
+  ): Promise<RemoteControlDispatchResult> {
+    const now = this.now();
+    await this.ensureHostCertificateFresh(now);
+    const configuration = this.requireConfiguration();
+    const current = this.options.stateStore.getDeviceCertificate(senderDeviceId);
+    if (
+      !current ||
+      current.accountId !== configuration.account.accountId ||
+      !this.options.stateStore.isDeviceActive(senderDeviceId)
+    ) {
+      throw new RemoteControlPolicyError(
+        "the remote device certificate cannot be renewed",
+      );
+    }
+    let deviceCertificate = current;
+    if (certificateNeedsRenewal(current, now)) {
+      const renewed = issueRemoteDeviceCertificate({
+        account: configuration.account,
+        device: current,
+        name: current.name,
+        issuedAt: now.getTime() - CERTIFICATE_CLOCK_SKEW_MS,
+        validUntil: now.getTime() + CERTIFICATE_TTL_MS,
+      });
+      const admin = this.relayFactory.admin(
+        configuration.relayUrl,
+        configuration.relayAdminToken,
+      );
+      await admin.updateDeviceCertificate(renewed);
+      this.options.stateStore.registerDevice(renewed, now.getTime());
+      deviceCertificate = renewed;
+    }
+    return {
+      status: 200,
+      body: RemoteCertificateRenewalResponse.parse({
+        protocolVersion: REMOTE_BRIDGE_PROTOCOL_VERSION,
+        deviceCertificate,
+        hostCertificate: this.requireConfiguration().hostCertificate,
+      }),
+    };
   }
 
   private buildConnector(): void {
@@ -525,8 +631,10 @@ export class RemoteHostManager {
           request.plaintext,
           request.contentType,
         );
-        actionForRequest(controlRequest);
-        const result = await this.options.dispatch(controlRequest);
+        const action = actionForRequest(controlRequest);
+        const result = action === "certificate.renew"
+          ? await this.renewRemoteCertificates(request.senderDeviceId)
+          : await this.options.dispatch(controlRequest);
         const response = RemoteControlResponse.parse({
           protocolVersion: REMOTE_BRIDGE_PROTOCOL_VERSION,
           requestId: controlRequest.requestId,
@@ -550,6 +658,7 @@ export class RemoteHostManager {
     this.connectorAbort = null;
     this.connectorLoop = null;
     this.buildConnector();
+    this.connectorRefreshRequested = false;
     if (this.autoStartConnector) this.startConnectorLoop();
   }
 
@@ -566,11 +675,20 @@ export class RemoteHostManager {
     });
   }
 
+  private refreshConnectorIfRequested(): void {
+    if (!this.connectorRefreshRequested) return;
+    this.buildConnector();
+    this.connectorRefreshRequested = false;
+  }
+
   private async runConnectorLoop(signal: AbortSignal): Promise<void> {
     let backoffMs = 1_000;
     while (!signal.aborted) {
       try {
+        await this.ensureHostCertificateFresh();
+        this.refreshConnectorIfRequested();
         await this.connector!.processOnce({ signal });
+        this.refreshConnectorIfRequested();
         this.connectorState = "online";
         this.lastError = null;
         backoffMs = 1_000;

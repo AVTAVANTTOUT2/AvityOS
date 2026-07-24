@@ -69,6 +69,12 @@ unknown or revoked recipient. Calling `revokeDevice(accountId, deviceId)`
 invalidates it immediately. Re-registering rotates the token and clears
 revocation.
 
+Certificate renewal is deliberately separate from registration. The host uses
+the administrator-only certificate update to preserve the existing device
+token hash and revocation state. A revoked device receives `409 conflict` and
+cannot be reactivated by presenting a later certificate. Use registration only
+for an explicit bearer rotation or re-enrollment.
+
 The relay database defaults to `~/.avity/relay.sqlite` (`0600`). Back it up
 together with the local bridge-state database while the services are stopped.
 SQLite preserves ciphertext queues, deduplication, authorization and cursors
@@ -113,6 +119,11 @@ than silently dropping a remote action.
 5. Use **Oublier cet appareil** to delete remote identity/configuration and
    force local mode. Revoking it on the host remains required if the device was
    lost or compromised.
+6. The app automatically renews both signed certificates when either has at
+   most 30 days remaining, before publishing the requested action. Their exact
+   expiries are visible in Settings; **Vérifier / renouveler** performs
+   the same authenticated operation immediately without changing keys,
+   sequences, cursors or the relay bearer.
 
 If a relay call fails after an acknowledgement, leave the configuration in
 place and retry: the pending cursor is Keychain-durable and the app retries the
@@ -120,6 +131,12 @@ same idempotent ack before publishing another request. A certificate-expiry,
 signature, replay, Keychain or HTTPS error is fail-closed and shown in the app;
 do not clear the configuration until the cause and host revocation state have
 been checked.
+
+If a remote certificate has already expired, its renewal envelope cannot be
+authenticated. Revoke the old device on the host and perform a fresh
+out-of-band pairing; do not re-register it merely to bypass expiry. Host
+certificates are checked at control-plane startup and every connector loop, so
+a long-running host renews before entering the same condition.
 
 If the status is `degraded`, inspect the displayed bounded error, verify relay
 HTTPS/certificate reachability and confirm that macOS Keychain is unlocked.

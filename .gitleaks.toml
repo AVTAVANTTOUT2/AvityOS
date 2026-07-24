@@ -26,4 +26,7 @@ paths = [
   # Public, generated interoperability vector. Its keypairs and pairing
   # material are synthetic, test-only and tied only to relay.example data.
   '''apps/macos/Tests/AvityOSTests/Fixtures/remote-bridge-vector\.json''',
+  # Public renewal vector generated from an isolated synthetic account. These
+  # keys have never authenticated anything outside the in-process test relay.
+  '''apps/macos/Tests/AvityOSTests/Fixtures/remote-certificate-renewal\.json''',
 ]

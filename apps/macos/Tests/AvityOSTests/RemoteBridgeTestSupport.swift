@@ -66,6 +66,62 @@ struct RemoteBridgeTestVector: Decodable {
     }
 }
 
+struct RemoteCertificateRenewalTestVector: Decodable {
+    let renewalNow: String
+    let accountSigningPublicKey: String
+    let hostIdentity: RemoteDeviceIdentity
+    let remoteIdentity: RemoteDeviceIdentity
+    let hostCertificate: RemoteDeviceCertificateWire
+    let remoteCertificate: RemoteDeviceCertificateWire
+    let renewedHostCertificate: RemoteDeviceCertificateWire
+    let renewedRemoteCertificate: RemoteDeviceCertificateWire
+
+    static func load() throws -> RemoteCertificateRenewalTestVector {
+        guard
+            let url = Bundle.module.url(
+                forResource: "remote-certificate-renewal",
+                withExtension: "json"
+            )
+        else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return try JSONDecoder().decode(
+            RemoteCertificateRenewalTestVector.self,
+            from: Data(contentsOf: url)
+        )
+    }
+
+    var date: Date {
+        get throws {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [
+                .withInternetDateTime,
+                .withFractionalSeconds,
+            ]
+            guard let value = formatter.date(from: renewalNow) else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            return value
+        }
+    }
+
+    func configuration() -> RemoteDeviceConfiguration {
+        RemoteDeviceConfiguration(
+            storageVersion: 1,
+            accountSigningPublicKey: accountSigningPublicKey,
+            identity: remoteIdentity,
+            certificate: remoteCertificate,
+            hostCertificate: hostCertificate,
+            relayURL: "https://relay.example/bridge",
+            relayAccessToken: "renewal-device-token-xxxxxxxxxxx",
+            relayCursor: 0,
+            outboundSequence: 0,
+            inboundSequence: 0,
+            pendingAckCursor: nil
+        )
+    }
+}
+
 func jsonString(_ value: some Encodable) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

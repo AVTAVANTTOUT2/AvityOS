@@ -498,6 +498,18 @@ struct SettingsView: View {
                         "Relais",
                         value: client.remoteDeviceStatus.relayURL ?? "—"
                     )
+                    LabeledContent(
+                        "Certificat appareil",
+                        value:
+                            client.remoteDeviceStatus
+                                .deviceCertificateValidUntil ?? "—"
+                    )
+                    LabeledContent(
+                        "Certificat hôte",
+                        value:
+                            client.remoteDeviceStatus
+                                .hostCertificateValidUntil ?? "—"
+                    )
                     HStack {
                         if client.connectionMode == .local {
                             Button("Utiliser le relais chiffré") {
@@ -514,6 +526,11 @@ struct SettingsView: View {
                             client.clearRemoteDevice()
                             remoteDevicePairingRequest = ""
                             remoteDeviceBootstrap = ""
+                        }
+                        Button("Vérifier / renouveler") {
+                            Task {
+                                await client.renewRemoteDeviceCertificates()
+                            }
                         }
                     }
                 } else {
