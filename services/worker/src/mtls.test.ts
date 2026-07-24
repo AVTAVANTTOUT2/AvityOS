@@ -6,6 +6,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect as connectTls } from "node:tls";
 import {
   buildServer,
   DEFAULT_ENGINE_CONFIG,
@@ -176,6 +177,29 @@ function clientTransport(
   return createSecureFetchTransport(configuration);
 }
 
+async function probeRawTls(port: number, caPath: string): Promise<void> {
+  const configuration = loadClientTlsConfiguration({
+    AVITY_TLS_CA_PATH: caPath,
+  });
+  if (!configuration) throw new Error("test TLS configuration is missing");
+  await new Promise<void>((resolve, reject) => {
+    const socket = connectTls(
+      {
+        host: "127.0.0.1",
+        port,
+        ca: configuration.ca,
+        minVersion: "TLSv1.3",
+        rejectUnauthorized: true,
+      },
+      () => {
+        socket.end();
+        resolve();
+      },
+    );
+    socket.once("error", reject);
+  });
+}
+
 async function waitFor(
   condition: () => boolean,
   timeoutMs = 8_000,
@@ -230,10 +254,19 @@ describe("worker mutual TLS transport", () => {
       });
       await app.listen({ port: 0, host: "127.0.0.1" });
       const address = app.server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
       const baseUrl =
-        `https://127.0.0.1:${
-          typeof address === "object" && address ? address.port : 0
-        }`;
+        `https://127.0.0.1:${port}`;
+
+      try {
+        await probeRawTls(port, pki.caCert);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `raw TLS trust probe failed on ${process.version}: ${detail}`,
+          { cause: error },
+        );
+      }
 
       let withoutCertificate: Response;
       try {
