@@ -8,7 +8,8 @@ import {
 } from "@avityos/providers";
 
 const execFileAsync = promisify(execFile);
-const PROBE_TIMEOUT_MS = 2_000;
+const TOOL_PROBE_TIMEOUT_MS = 5_000;
+const PROVIDER_PROBE_TIMEOUT_MS = 2_000;
 
 export type ReadinessState =
   | "ready"
@@ -84,7 +85,7 @@ async function defaultCommandProbe(tool: "node" | "pnpm" | "git" | "gh"): Promis
   try {
     const { stdout } = await execFileAsync(tool, ["--version"], {
       encoding: "utf8",
-      timeout: PROBE_TIMEOUT_MS,
+      timeout: TOOL_PROBE_TIMEOUT_MS,
     });
     return { ok: true, detail: stdout.trim() };
   } catch {
@@ -103,7 +104,7 @@ export async function probeProviderReadiness(
     try {
       await execFileAsync(binary, ["--version"], {
         encoding: "utf8",
-        timeout: PROBE_TIMEOUT_MS,
+        timeout: PROVIDER_PROBE_TIMEOUT_MS,
       });
       return true;
     } catch {
@@ -148,7 +149,7 @@ async function defaultSandboxBinaryProbe(binary: SandboxBinary): Promise<ToolPro
   try {
     await execFileAsync(binary, ["--help"], {
       encoding: "utf8",
-      timeout: PROBE_TIMEOUT_MS,
+      timeout: TOOL_PROBE_TIMEOUT_MS,
     });
     return { ok: true, detail: `${binary} available` };
   } catch (error) {

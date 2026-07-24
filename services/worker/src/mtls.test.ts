@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdtempSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -91,6 +92,7 @@ function createSignedClientCertificate(
   const key = join(root, `${name}.key`);
   const request = join(root, `${name}.csr`);
   const cert = join(root, `${name}.crt`);
+  const chain = join(root, `${name}-chain.crt`);
   const extensions = join(root, `${name}.ext`);
   writeFileSync(
     extensions,
@@ -138,7 +140,16 @@ function createSignedClientCertificate(
   ]);
   chmodSync(key, 0o600);
   chmodSync(cert, 0o644);
-  return { cert, key };
+  writeFileSync(
+    chain,
+    Buffer.concat([
+      readFileSync(cert),
+      Buffer.from("\n"),
+      readFileSync(ca.cert),
+    ]),
+    { mode: 0o644 },
+  );
+  return { cert: chain, key };
 }
 
 function createTestPki(): TestPki {

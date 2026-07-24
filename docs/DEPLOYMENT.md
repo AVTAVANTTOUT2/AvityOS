@@ -42,7 +42,8 @@ Set `AVITY_TLS_CLIENT_CA_PATH` on the control plane to enable worker mTLS.
 Each enrollment is then bound to the client certificate fingerprint in
 addition to its one-time bearer. Existing workers must be revoked and
 re-enrolled when mTLS is enabled. Private keys must be `0600` inside an
-owner-only directory; follow the
+owner-only directory. Certificate files must contain the complete PEM chain
+in leaf-first order; follow the
 [TLS/mTLS runbook](./RUNBOOKS.md#native-control-plane-tls-and-worker-mtls).
 
 Revoke lost hosts immediately: `avity worker revoke <id>` — revoked tokens

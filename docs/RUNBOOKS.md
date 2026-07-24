@@ -124,7 +124,8 @@ Use an operator-managed server certificate and a separate worker client CA.
 Keep every private key outside the repository and normal operator backup:
 its directory must be owned by the service account with mode `0700`, and the
 key itself must be a regular mode `0600` file. Certificate and CA files must
-be owner-readable and not writable by group or others.
+be owner-readable and not writable by group or others. Server and worker
+certificate files must contain their complete PEM chain in leaf-first order.
 
 Configure the control plane:
 
