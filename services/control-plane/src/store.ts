@@ -43,6 +43,8 @@ import {
 } from "./clarification-policy.js";
 import type { DB } from "./db.js";
 
+export const WORKER_HEARTBEAT_WINDOW_MS = 15_000;
+
 export class StoreConflictError extends Error {
   constructor(
     readonly code:
@@ -2191,7 +2193,7 @@ export class Store {
   }
 
   /** Whether a live worker has both free capacity and every capability required by this command. */
-  hasAvailableWorker(command: readonly string[], heartbeatWindowMs = 15_000): boolean {
+  hasAvailableWorker(command: readonly string[], heartbeatWindowMs = WORKER_HEARTBEAT_WINDOW_MS): boolean {
     const required = commandCapabilities(command);
     const cutoff = new Date(Date.now() - heartbeatWindowMs).toISOString();
     const workers = this.db

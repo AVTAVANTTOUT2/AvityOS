@@ -12,7 +12,7 @@ import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
 import { clearGitHubReadinessCache, getCachedGitHubReadiness } from "./github-readiness.js";
 import { buildProviderStatus } from "./provider-status.js";
 import { buildServer } from "./server.js";
-import { Store } from "./store.js";
+import { Store, WORKER_HEARTBEAT_WINDOW_MS } from "./store.js";
 
 const TOKEN = "test-secret-token";
 
@@ -107,6 +107,43 @@ describe("API authentication", () => {
     expect(ok.status).toBe(200);
     const body = await ok.json() as { note: string };
     expect(body.note).toMatch(/never runs provider health checks/i);
+  });
+});
+
+describe("worker liveness reporting", () => {
+  it("shows stale or never-connected workers offline without overwriting durable status", async () => {
+    const observedAt = Date.now();
+    const freshHeartbeat = new Date(observedAt).toISOString();
+    const staleHeartbeat = new Date(observedAt - WORKER_HEARTBEAT_WINDOW_MS - 1).toISOString();
+    const insertWorker = store.db.prepare(
+      `INSERT INTO workers (
+         id, name, status, capabilities, last_heartbeat_at,
+         max_concurrent_runs, token_hash, created_at, updated_at
+       ) VALUES (?, ?, ?, '["shell"]', ?, 4, 'hash', ?, ?)`,
+    );
+    insertWorker.run("wrk_fresh", "fresh", "online", freshHeartbeat, freshHeartbeat, freshHeartbeat);
+    insertWorker.run("wrk_stale", "stale", "online", staleHeartbeat, staleHeartbeat, staleHeartbeat);
+    insertWorker.run("wrk_never", "never", "online", null, freshHeartbeat, freshHeartbeat);
+    insertWorker.run("wrk_revoked", "revoked", "revoked", freshHeartbeat, freshHeartbeat, freshHeartbeat);
+
+    const response = await fetch(`${baseUrl}/v1/workers`, { headers: auth });
+    expect(response.status).toBe(200);
+    const { items } = (await response.json()) as { items: { id: string; status: string }[] };
+    const statuses = Object.fromEntries(items.map((worker) => [worker.id, worker.status]));
+    expect(statuses).toMatchObject({
+      wrk_fresh: "online",
+      wrk_stale: "offline",
+      wrk_never: "offline",
+      wrk_revoked: "revoked",
+    });
+
+    const durable = store.db
+      .prepare("SELECT id, status FROM workers WHERE id IN ('wrk_stale', 'wrk_never') ORDER BY id")
+      .all() as { id: string; status: string }[];
+    expect(durable).toEqual([
+      { id: "wrk_never", status: "online" },
+      { id: "wrk_stale", status: "online" },
+    ]);
   });
 });
 
