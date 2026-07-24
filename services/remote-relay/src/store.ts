@@ -1,17 +1,21 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
+  RemoteDeviceCertificate,
   RemoteEncryptedEnvelope,
   RemoteRelayAckResult,
   RemoteRelayDeviceRecord,
   RemoteRelayInbox,
   RemoteRelayPublishResult,
   RemoteRelayRegisterDeviceRequest,
+  RemoteRelayUpdateDeviceCertificateRequest,
+  type RemoteDeviceCertificate as RemoteDeviceCertificateType,
   type RemoteEncryptedEnvelope as RemoteEncryptedEnvelopeType,
   type RemoteRelayAckResult as RemoteRelayAckResultType,
   type RemoteRelayDeviceRecord as RemoteRelayDeviceRecordType,
   type RemoteRelayInbox as RemoteRelayInboxType,
   type RemoteRelayPublishResult as RemoteRelayPublishResultType,
   type RemoteRelayRegisterDeviceRequest as RemoteRelayRegisterDeviceRequestType,
+  type RemoteRelayUpdateDeviceCertificateRequest as RemoteRelayUpdateDeviceCertificateRequestType,
 } from "@avityos/contracts";
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60_000;
@@ -50,6 +54,9 @@ interface AuthorizedDevice {
 
 export interface RemoteRelayStore {
   registerDevice(input: RemoteRelayRegisterDeviceRequestType): RemoteRelayDeviceRecordType;
+  updateDeviceCertificate(
+    input: RemoteRelayUpdateDeviceCertificateRequestType,
+  ): RemoteRelayDeviceRecordType | null;
   revokeDevice(accountId: string, deviceId: string): RemoteRelayDeviceRecordType | null;
   authorizeDevice(accountId: string, deviceId: string, accessToken: string): boolean;
   isDeviceActive(accountId: string, deviceId: string): boolean;
@@ -90,6 +97,40 @@ export class RemoteRelayCapacityError extends Error {
     super(message);
     this.name = "RemoteRelayCapacityError";
   }
+}
+
+export function assertCertificateRenewal(
+  previousValue: unknown,
+  nextValue: unknown,
+): {
+  readonly previous: RemoteDeviceCertificateType;
+  readonly next: RemoteDeviceCertificateType;
+  readonly unchanged: boolean;
+} {
+  const previous = RemoteDeviceCertificate.parse(previousValue);
+  const next = RemoteDeviceCertificate.parse(nextValue);
+  const unchanged = JSON.stringify(previous) === JSON.stringify(next);
+  if (unchanged) return { previous, next, unchanged };
+  if (
+    previous.accountId !== next.accountId ||
+    previous.deviceId !== next.deviceId ||
+    previous.name !== next.name ||
+    previous.signingPublicKey !== next.signingPublicKey ||
+    previous.agreementPublicKey !== next.agreementPublicKey
+  ) {
+    throw new RemoteRelayConflictError(
+      "certificate renewal cannot change the device identity",
+    );
+  }
+  if (
+    new Date(next.issuedAt).getTime() <= new Date(previous.issuedAt).getTime() ||
+    new Date(next.validUntil).getTime() <= new Date(previous.validUntil).getTime()
+  ) {
+    throw new RemoteRelayConflictError(
+      "certificate renewal must extend the existing validity period",
+    );
+  }
+  return { previous, next, unchanged };
 }
 
 function inboxKey(accountId: string, deviceId: string): string {
@@ -200,6 +241,44 @@ export class InMemoryRelayStore implements RemoteRelayStore {
     return RemoteRelayDeviceRecord.parse({
       accountId: input.certificate.accountId,
       deviceId: input.certificate.deviceId,
+      status: "active",
+      updatedAt,
+    });
+  }
+
+  updateDeviceCertificate(
+    inputValue: RemoteRelayUpdateDeviceCertificateRequestType,
+  ): RemoteRelayDeviceRecordType | null {
+    const input = RemoteRelayUpdateDeviceCertificateRequest.parse(inputValue);
+    const key = inboxKey(input.certificate.accountId, input.certificate.deviceId);
+    const existing = this.devices.get(key);
+    if (!existing) return null;
+    if (existing.revokedAt) {
+      throw new RemoteRelayConflictError(
+        "revoked relay device certificates cannot be renewed",
+      );
+    }
+    const renewal = assertCertificateRenewal(
+      JSON.parse(existing.certificate),
+      input.certificate,
+    );
+    if (renewal.unchanged) {
+      return RemoteRelayDeviceRecord.parse({
+        accountId: renewal.next.accountId,
+        deviceId: renewal.next.deviceId,
+        status: "active",
+        updatedAt: existing.updatedAt,
+      });
+    }
+    const updatedAt = new Date(this.now()).toISOString();
+    this.devices.set(key, {
+      ...existing,
+      certificate: JSON.stringify(renewal.next),
+      updatedAt,
+    });
+    return RemoteRelayDeviceRecord.parse({
+      accountId: renewal.next.accountId,
+      deviceId: renewal.next.deviceId,
       status: "active",
       updatedAt,
     });

@@ -1,0 +1,62 @@
+{
+  "renewalNow": "2027-07-01T12:30:00.000Z",
+  "accountSigningPublicKey": "MCowBQYDK2VwAyEAfCw5AhzYeRQ_ViYPRYKBZnN9J-5LMVzDeQuRgikV4ag",
+  "hostIdentity": {
+    "deviceId": "rdev_d8ba322c8f28711e0a71cd72360c88b0",
+    "signingPublicKey": "MCowBQYDK2VwAyEA1YNx9pKtztb_j3tfIee0GDMVJ-iYQD4OIAMx0u08kiI",
+    "signingPrivateKey": "MC4CAQAwBQYDK2VwBCIEIHQhRo5rnZhiKkHbmNRzdc25vRK3H1lmfL6U3Ef2vZG7",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAFIsZ4vOnz2FxmnzMiQeaZYleES_R0oCIT8BCmD_p0C4",
+    "agreementPrivateKey": "MC4CAQAwBQYDK2VuBCIEILBb8U4GsUBYtWFt0QC8S0r78huEaouKXv_DOOzvpf5l"
+  },
+  "remoteIdentity": {
+    "deviceId": "rdev_ea200fbdfcc8f525752869e84b84896a",
+    "signingPublicKey": "MCowBQYDK2VwAyEA61e94Sc4qdzS_hg7wAolBcPEGrqXBkus8I8K6jj9PAw",
+    "signingPrivateKey": "MC4CAQAwBQYDK2VwBCIEIMw8OXKGoDonTCHhyvaW09NfIVSiZEPjYsfu3pPV9HDM",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAHb-63_XuDjcPSjLbvbfk5qs_MKE-whfluBi4kvf99FU",
+    "agreementPrivateKey": "MC4CAQAwBQYDK2VuBCIEIBBQkx1DqRjaAb-GEzRXwAp_DbOPQhswlCAjhySpKoR_"
+  },
+  "hostCertificate": {
+    "protocolVersion": 1,
+    "accountId": "racc_1b470d00f7db68139e1db9fa81551013",
+    "deviceId": "rdev_d8ba322c8f28711e0a71cd72360c88b0",
+    "name": "Renewal Host",
+    "signingPublicKey": "MCowBQYDK2VwAyEA1YNx9pKtztb_j3tfIee0GDMVJ-iYQD4OIAMx0u08kiI",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAFIsZ4vOnz2FxmnzMiQeaZYleES_R0oCIT8BCmD_p0C4",
+    "issuedAt": "2026-07-24T12:30:00.000Z",
+    "validUntil": "2027-07-24T12:30:00.000Z",
+    "signature": "FwZcSq2d99r6Ivc3sbqvj67MRtO5Zo6GZh2lSZGSbCEIXcfVrdOiR9LMqFdcYfXvvlTqXBnYMt343pZwxgvyBg"
+  },
+  "remoteCertificate": {
+    "protocolVersion": 1,
+    "accountId": "racc_1b470d00f7db68139e1db9fa81551013",
+    "deviceId": "rdev_ea200fbdfcc8f525752869e84b84896a",
+    "name": "Renewal Remote",
+    "signingPublicKey": "MCowBQYDK2VwAyEA61e94Sc4qdzS_hg7wAolBcPEGrqXBkus8I8K6jj9PAw",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAHb-63_XuDjcPSjLbvbfk5qs_MKE-whfluBi4kvf99FU",
+    "issuedAt": "2026-07-24T12:30:00.000Z",
+    "validUntil": "2027-07-24T12:30:00.000Z",
+    "signature": "snQ5ZvHdFibWXhalhQJnuRMMcsnDU3rh5hs2WPaltE-wW_oRGs1wX9TI7ncLeiTXHerN_rEF4RbhslT5mPK4Aw"
+  },
+  "renewedHostCertificate": {
+    "protocolVersion": 1,
+    "accountId": "racc_1b470d00f7db68139e1db9fa81551013",
+    "deviceId": "rdev_d8ba322c8f28711e0a71cd72360c88b0",
+    "name": "Renewal Host",
+    "signingPublicKey": "MCowBQYDK2VwAyEA1YNx9pKtztb_j3tfIee0GDMVJ-iYQD4OIAMx0u08kiI",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAFIsZ4vOnz2FxmnzMiQeaZYleES_R0oCIT8BCmD_p0C4",
+    "issuedAt": "2027-07-01T12:30:00.000Z",
+    "validUntil": "2028-06-30T12:30:00.000Z",
+    "signature": "ROIxbUiPohlwiDctHjr685FuAm-QprSRri0Ih0sbXsyZIzB_L7lHYrewE8qVDhdx-sAnP9RKExYbiGDTqOI8DQ"
+  },
+  "renewedRemoteCertificate": {
+    "protocolVersion": 1,
+    "accountId": "racc_1b470d00f7db68139e1db9fa81551013",
+    "deviceId": "rdev_ea200fbdfcc8f525752869e84b84896a",
+    "name": "Renewal Remote",
+    "signingPublicKey": "MCowBQYDK2VwAyEA61e94Sc4qdzS_hg7wAolBcPEGrqXBkus8I8K6jj9PAw",
+    "agreementPublicKey": "MCowBQYDK2VuAyEAHb-63_XuDjcPSjLbvbfk5qs_MKE-whfluBi4kvf99FU",
+    "issuedAt": "2027-07-01T12:30:00.000Z",
+    "validUntil": "2028-06-30T12:30:00.000Z",
+    "signature": "t5GvogFITEF7cyKMlgX67p3l1abu7toyZIBG4IimbGSa3xGSLIfnjpFDEjaYxr-LRZRzUAteNtWnWhMM06fKDg"
+  }
+}

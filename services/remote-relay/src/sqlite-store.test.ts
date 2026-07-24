@@ -9,6 +9,7 @@ import {
   sealRemoteEnvelope,
 } from "@avityos/remote-bridge";
 import { SqliteRelayStore } from "./sqlite-store.js";
+import { RemoteRelayConflictError } from "./store.js";
 
 const NOW = "2026-07-24T10:00:00.000Z";
 const DEVICE_TOKEN = "durable-device-token-".padEnd(32, "x");
@@ -141,5 +142,45 @@ describe("durable relay SQLite store", () => {
       DEVICE_TOKEN,
     )).toBe(false);
     third.close();
+  });
+
+  it("persists certificate renewal while preserving bearer and revocation state", () => {
+    const directory = mkdtempSync(join(tmpdir(), "avity-relay-renewal-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "relay.sqlite");
+    const setup = fixture();
+    const renewed = issueRemoteDeviceCertificate({
+      account: setup.account,
+      device: setup.sender,
+      name: setup.senderCertificate.name,
+      issuedAt: "2026-08-01T10:00:00.000Z",
+    });
+    const first = new SqliteRelayStore(databasePath, {
+      now: () => new Date("2026-08-01T10:00:00.000Z").getTime(),
+    });
+    first.registerDevice({
+      certificate: setup.senderCertificate,
+      accessToken: DEVICE_TOKEN,
+    });
+    first.updateDeviceCertificate({ certificate: renewed });
+    first.close();
+
+    const second = new SqliteRelayStore(databasePath);
+    expect(second.authorizeDevice(
+      setup.account.accountId,
+      setup.sender.deviceId,
+      DEVICE_TOKEN,
+    )).toBe(true);
+    expect(second.updateDeviceCertificate({ certificate: renewed })?.status)
+      .toBe("active");
+    second.revokeDevice(setup.account.accountId, setup.sender.deviceId);
+    expect(() => second.updateDeviceCertificate({ certificate: renewed }))
+      .toThrow(RemoteRelayConflictError);
+    expect(second.authorizeDevice(
+      setup.account.accountId,
+      setup.sender.deviceId,
+      DEVICE_TOKEN,
+    )).toBe(false);
+    second.close();
   });
 });

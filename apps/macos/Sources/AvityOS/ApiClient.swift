@@ -326,6 +326,10 @@ final class ApiClient: ObservableObject {
                 remoteHostStatus = loadedRemoteHostStatus
                 remoteHostError = loadedRemoteHostStatus.lastError
             }
+            if connectionMode == .remote {
+                remoteDeviceStatus = try remoteDeviceController.status()
+                remoteDeviceError = nil
+            }
             connected = health.status == "ok"
             lastError = nil
         } catch {
@@ -432,6 +436,16 @@ final class ApiClient: ObservableObject {
             remoteHostError = remoteHostStatus.lastError
         } catch {
             remoteHostError = error.localizedDescription
+        }
+    }
+
+    func renewRemoteDeviceCertificates() async {
+        do {
+            try await remoteDeviceTransport.renewCertificates()
+            remoteDeviceStatus = try remoteDeviceController.status()
+            remoteDeviceError = nil
+        } catch {
+            remoteDeviceError = error.localizedDescription
         }
     }
 

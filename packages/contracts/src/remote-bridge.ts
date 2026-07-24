@@ -111,6 +111,8 @@ export const REMOTE_CONTROL_REQUEST_CONTENT_TYPE =
   "application/vnd.avityos.remote-control-request+json" as const;
 export const REMOTE_CONTROL_RESPONSE_CONTENT_TYPE =
   "application/vnd.avityos.remote-control-response+json" as const;
+export const REMOTE_CERTIFICATE_RENEWAL_PATH =
+  "/v1/remote/certificates/renew" as const;
 
 export const RemoteControlRequest = z.object({
   protocolVersion: z.literal(REMOTE_BRIDGE_PROTOCOL_VERSION),
@@ -128,6 +130,22 @@ export const RemoteControlResponse = z.object({
   body: z.unknown(),
 }).strict();
 export type RemoteControlResponse = z.infer<typeof RemoteControlResponse>;
+
+export const RemoteCertificateRenewalRequest = z.object({
+  protocolVersion: z.literal(REMOTE_BRIDGE_PROTOCOL_VERSION),
+}).strict();
+export type RemoteCertificateRenewalRequest = z.infer<
+  typeof RemoteCertificateRenewalRequest
+>;
+
+export const RemoteCertificateRenewalResponse = z.object({
+  protocolVersion: z.literal(REMOTE_BRIDGE_PROTOCOL_VERSION),
+  deviceCertificate: RemoteDeviceCertificate,
+  hostCertificate: RemoteDeviceCertificate,
+}).strict();
+export type RemoteCertificateRenewalResponse = z.infer<
+  typeof RemoteCertificateRenewalResponse
+>;
 
 export const RemoteEncryptedEnvelope = z.object({
   protocolVersion: z.literal(REMOTE_BRIDGE_PROTOCOL_VERSION),
@@ -192,6 +210,13 @@ export const RemoteRelayRegisterDeviceRequest = z.object({
   accessToken: RemoteRelayDeviceAccessToken,
 }).strict();
 export type RemoteRelayRegisterDeviceRequest = z.infer<typeof RemoteRelayRegisterDeviceRequest>;
+
+export const RemoteRelayUpdateDeviceCertificateRequest = z.object({
+  certificate: RemoteDeviceCertificate,
+}).strict();
+export type RemoteRelayUpdateDeviceCertificateRequest = z.infer<
+  typeof RemoteRelayUpdateDeviceCertificateRequest
+>;
 
 export const RemoteRelayDeviceRecord = z.object({
   accountId: RemoteAccountId,

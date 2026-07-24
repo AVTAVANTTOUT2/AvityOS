@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   REMOTE_BRIDGE_PROTOCOL_VERSION,
+  REMOTE_CERTIFICATE_RENEWAL_PATH,
   REMOTE_CONTROL_REQUEST_CONTENT_TYPE,
   REMOTE_CONTROL_RESPONSE_CONTENT_TYPE,
+  RemoteCertificateRenewalResponse,
   RemoteControlResponse,
   type RemoteDeviceCertificate,
   type RemoteEncryptedEnvelope,
@@ -64,6 +66,20 @@ class AuthenticatedMemoryRelay {
           token: accessToken,
           status: "active",
         });
+        return { status: "active" };
+      },
+      updateDeviceCertificate: async (certificate) => {
+        const device = this.devices.get(certificate.deviceId);
+        if (
+          !device ||
+          device.status !== "active" ||
+          device.certificate.accountId !== certificate.accountId ||
+          device.certificate.signingPublicKey !== certificate.signingPublicKey ||
+          device.certificate.agreementPublicKey !== certificate.agreementPublicKey
+        ) {
+          throw new Error("relay certificate renewal denied");
+        }
+        device.certificate = certificate;
         return { status: "active" };
       },
       revokeDevice: async (accountId, deviceId) => {
@@ -165,6 +181,7 @@ function createHarness(
     status: 200,
     body: { items: [] },
   }),
+  now: () => Date = () => new Date(NOW),
 ) {
   const stateStore = new RemoteBridgeStateStore(":memory:");
   const secretStore = new MemorySecretStore();
@@ -174,7 +191,7 @@ function createHarness(
     secretStore,
     relayFactory: relay.factory,
     dispatch,
-    now: () => new Date(NOW),
+    now,
     pollWaitMs: 0,
     autoStartConnector: false,
   });
@@ -363,5 +380,84 @@ describe("native remote host lifecycle", () => {
     await expect(manager.processOnce()).rejects.toThrow(/not allowed/i);
     expect(dispatched).toHaveLength(1);
     expect(stateStore.verifyAuditChain()).toBe(true);
+  });
+
+  it("renews host and remote certificates without changing keys or relay bearers", async () => {
+    let current = new Date(NOW);
+    const { manager, relay, secretStore } = createHarness(
+      undefined,
+      () => current,
+    );
+    const paired = await configureAndPair(manager);
+    const originalHost = paired.hostCertificate;
+    const originalRemoteToken = relay.devices.get(
+      paired.certificate.deviceId,
+    )!.token;
+    current = new Date(
+      new Date(originalHost.validUntil).getTime() - 29 * 24 * 60 * 60_000,
+    );
+
+    await manager.stop();
+    await manager.start();
+    const renewedHost = secretStore.value!.hostCertificate;
+    expect(renewedHost.deviceId).toBe(originalHost.deviceId);
+    expect(renewedHost.signingPublicKey).toBe(originalHost.signingPublicKey);
+    expect(renewedHost.agreementPublicKey).toBe(
+      originalHost.agreementPublicKey,
+    );
+    expect(new Date(renewedHost.validUntil).getTime()).toBeGreaterThan(
+      new Date(originalHost.validUntil).getTime(),
+    );
+
+    const remoteRelay = relay.client(originalRemoteToken);
+    const requestEnvelope = sealRemoteEnvelope({
+      plaintext: JSON.stringify({
+        protocolVersion: REMOTE_BRIDGE_PROTOCOL_VERSION,
+        requestId: `rreq_${"c".repeat(32)}`,
+        method: "POST",
+        path: REMOTE_CERTIFICATE_RENEWAL_PATH,
+        body: { protocolVersion: REMOTE_BRIDGE_PROTOCOL_VERSION },
+      }),
+      contentType: REMOTE_CONTROL_REQUEST_CONTENT_TYPE,
+      sequence: 1,
+      senderIdentity: paired.identity,
+      senderCertificate: paired.certificate,
+      recipientCertificate: originalHost,
+      accountSigningPublicKey: paired.accountSigningPublicKey,
+      sentAt: current,
+    });
+    await remoteRelay.publish(requestEnvelope);
+    expect(await manager.processOnce()).toBe(1);
+
+    const inbox = await remoteRelay.poll({
+      accountId: paired.certificate.accountId,
+      deviceId: paired.certificate.deviceId,
+      afterCursor: 0,
+      waitMs: 0,
+    });
+    const opened = openRemoteEnvelope({
+      envelope: inbox.items[0]!.envelope,
+      recipientIdentity: paired.identity,
+      recipientCertificate: paired.certificate,
+      senderCertificate: originalHost,
+      accountSigningPublicKey: paired.accountSigningPublicKey,
+      lastAcceptedSequence: 0,
+      now: current,
+    });
+    const response = RemoteControlResponse.parse(
+      JSON.parse(opened.plaintext.toString("utf8")),
+    );
+    const renewal = RemoteCertificateRenewalResponse.parse(response.body);
+    expect(renewal.hostCertificate).toEqual(renewedHost);
+    expect(renewal.deviceCertificate.deviceId).toBe(
+      paired.certificate.deviceId,
+    );
+    expect(renewal.deviceCertificate.signingPublicKey).toBe(
+      paired.certificate.signingPublicKey,
+    );
+    expect(new Date(renewal.deviceCertificate.validUntil).getTime())
+      .toBeGreaterThan(new Date(paired.certificate.validUntil).getTime());
+    expect(relay.devices.get(paired.certificate.deviceId)?.token)
+      .toBe(originalRemoteToken);
   });
 });

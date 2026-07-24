@@ -205,6 +205,14 @@ private struct RemoteRelayHTTPClient {
 }
 
 actor RemoteDeviceTransport {
+    private struct RequestResult {
+        let data: Data
+        let configuration: RemoteDeviceConfiguration
+    }
+
+    private static let certificateRenewalWindow: TimeInterval =
+        30 * 24 * 60 * 60
+
     private let store: any RemoteDeviceConfigurationStore
     private let session: URLSession
     private let now: @Sendable () -> Date
@@ -227,7 +235,64 @@ actor RemoteDeviceTransport {
         guard var configuration = try store.loadConfiguration() else {
             throw RemoteDeviceClientError.notConfigured
         }
+        let currentDate = now()
+        try validateConfiguration(configuration, now: currentDate)
+        if
+            path != remoteCertificateRenewalPath,
+            try certificatesNeedRenewal(
+                configuration,
+                now: currentDate
+            )
+        {
+            configuration = try await renewCertificates(
+                configuration
+            )
+        }
+        let result = try await performRequest(
+            path: path,
+            method: method,
+            body: body,
+            configuration: configuration
+        )
+        return result.data
+    }
+
+    func renewCertificates() async throws {
+        guard let configuration = try store.loadConfiguration() else {
+            throw RemoteDeviceClientError.notConfigured
+        }
         try validateConfiguration(configuration, now: now())
+        _ = try await renewCertificates(configuration)
+    }
+
+    private func renewCertificates(
+        _ configuration: RemoteDeviceConfiguration
+    ) async throws -> RemoteDeviceConfiguration {
+        let request = RemoteCertificateRenewalRequestWire(
+            protocolVersion: remoteBridgeProtocolVersion
+        )
+        let result = try await performRequest(
+            path: remoteCertificateRenewalPath,
+            method: "POST",
+            body: try JSONEncoder().encode(request),
+            configuration: configuration
+        )
+        let updated = try applyCertificateRenewal(
+            result.data,
+            to: result.configuration,
+            now: now()
+        )
+        try store.saveConfiguration(updated)
+        return updated
+    }
+
+    private func performRequest(
+        path: String,
+        method: String,
+        body: Data?,
+        configuration initialConfiguration: RemoteDeviceConfiguration
+    ) async throws -> RequestResult {
+        var configuration = initialConfiguration
         let relay = try RemoteRelayHTTPClient(
             configuration: configuration,
             session: session
@@ -340,10 +405,167 @@ actor RemoteDeviceTransport {
                 guard (200..<300).contains(response.status) else {
                     throw apiError(status: response.status, body: response.body)
                 }
-                return responseData
+                return RequestResult(
+                    data: responseData,
+                    configuration: configuration
+                )
             }
         }
         throw RemoteDeviceClientError.timeout
+    }
+
+    private func certificatesNeedRenewal(
+        _ configuration: RemoteDeviceConfiguration,
+        now: Date
+    ) throws -> Bool {
+        try certificateNeedsRenewal(
+            configuration.certificate,
+            now: now
+        ) || certificateNeedsRenewal(
+            configuration.hostCertificate,
+            now: now
+        )
+    }
+
+    private func certificateNeedsRenewal(
+        _ certificate: RemoteDeviceCertificateWire,
+        now: Date
+    ) throws -> Bool {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [
+            .withInternetDateTime,
+            .withFractionalSeconds,
+        ]
+        guard let expiration = formatter.date(from: certificate.validUntil) else {
+            throw RemoteDeviceClientError.invalidResponse
+        }
+        let renewalDeadline = now.addingTimeInterval(
+            Self.certificateRenewalWindow
+        )
+        return expiration <= renewalDeadline
+    }
+
+    private func applyCertificateRenewal(
+        _ data: Data,
+        to configuration: RemoteDeviceConfiguration,
+        now: Date
+    ) throws -> RemoteDeviceConfiguration {
+        guard
+            let value = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+            Set(value.keys) == [
+                "protocolVersion",
+                "deviceCertificate",
+                "hostCertificate",
+            ]
+        else {
+            throw RemoteDeviceClientError.invalidResponse
+        }
+        let response = try JSONDecoder().decode(
+            RemoteCertificateRenewalResponseWire.self,
+            from: data
+        )
+        guard
+            response.protocolVersion == remoteBridgeProtocolVersion,
+            sameCertificateIdentity(
+                response.deviceCertificate,
+                configuration.certificate
+            ),
+            sameCertificateIdentity(
+                response.hostCertificate,
+                configuration.hostCertificate
+            ),
+            try certificateDoesNotRegress(
+                response.deviceCertificate,
+                configuration.certificate
+            ),
+            try certificateDoesNotRegress(
+                response.hostCertificate,
+                configuration.hostCertificate
+            ),
+            try renewalWasSatisfied(
+                response.deviceCertificate,
+                previous: configuration.certificate,
+                now: now
+            ),
+            try renewalWasSatisfied(
+                response.hostCertificate,
+                previous: configuration.hostCertificate,
+                now: now
+            )
+        else {
+            throw RemoteDeviceClientError.invalidResponse
+        }
+        let updated = RemoteDeviceConfiguration(
+            storageVersion: configuration.storageVersion,
+            accountSigningPublicKey:
+                configuration.accountSigningPublicKey,
+            identity: configuration.identity,
+            certificate: response.deviceCertificate,
+            hostCertificate: response.hostCertificate,
+            relayURL: configuration.relayURL,
+            relayAccessToken: configuration.relayAccessToken,
+            relayCursor: configuration.relayCursor,
+            outboundSequence: configuration.outboundSequence,
+            inboundSequence: configuration.inboundSequence,
+            pendingAckCursor: configuration.pendingAckCursor
+        )
+        try validateConfiguration(updated, now: now)
+        return updated
+    }
+
+    private func sameCertificateIdentity(
+        _ lhs: RemoteDeviceCertificateWire,
+        _ rhs: RemoteDeviceCertificateWire
+    ) -> Bool {
+        lhs.accountId == rhs.accountId &&
+            lhs.deviceId == rhs.deviceId &&
+            lhs.name == rhs.name &&
+            lhs.signingPublicKey == rhs.signingPublicKey &&
+            lhs.agreementPublicKey == rhs.agreementPublicKey
+    }
+
+    private func certificateDoesNotRegress(
+        _ renewed: RemoteDeviceCertificateWire,
+        _ previous: RemoteDeviceCertificateWire
+    ) throws -> Bool {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [
+            .withInternetDateTime,
+            .withFractionalSeconds,
+        ]
+        guard
+            let renewedIssuedAt = formatter.date(from: renewed.issuedAt),
+            let previousIssuedAt = formatter.date(from: previous.issuedAt),
+            let renewedValidUntil = formatter.date(from: renewed.validUntil),
+            let previousValidUntil = formatter.date(from: previous.validUntil)
+        else {
+            throw RemoteDeviceClientError.invalidResponse
+        }
+        return renewedIssuedAt >= previousIssuedAt &&
+            renewedValidUntil >= previousValidUntil
+    }
+
+    private func renewalWasSatisfied(
+        _ renewed: RemoteDeviceCertificateWire,
+        previous: RemoteDeviceCertificateWire,
+        now: Date
+    ) throws -> Bool {
+        guard try certificateNeedsRenewal(previous, now: now) else {
+            return true
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [
+            .withInternetDateTime,
+            .withFractionalSeconds,
+        ]
+        guard
+            let renewedExpiration = formatter.date(from: renewed.validUntil),
+            let previousExpiration = formatter.date(from: previous.validUntil)
+        else {
+            throw RemoteDeviceClientError.invalidResponse
+        }
+        return renewedExpiration > previousExpiration
     }
 
     private func validateConfiguration(
@@ -461,7 +683,10 @@ final class RemoteDeviceController {
                 relayURL: nil,
                 deviceId: pending?.identity.deviceId,
                 deviceName: nil,
-                hostName: pending?.offer.hostCertificate.name
+                hostName: pending?.offer.hostCertificate.name,
+                deviceCertificateValidUntil: nil,
+                hostCertificateValidUntil:
+                    pending?.offer.hostCertificate.validUntil
             )
         }
         try RemoteBridgeCrypto.verifyConfiguration(
@@ -474,7 +699,11 @@ final class RemoteDeviceController {
             relayURL: configuration.relayURL,
             deviceId: configuration.identity.deviceId,
             deviceName: configuration.certificate.name,
-            hostName: configuration.hostCertificate.name
+            hostName: configuration.hostCertificate.name,
+            deviceCertificateValidUntil:
+                configuration.certificate.validUntil,
+            hostCertificateValidUntil:
+                configuration.hostCertificate.validUntil
         )
     }
 

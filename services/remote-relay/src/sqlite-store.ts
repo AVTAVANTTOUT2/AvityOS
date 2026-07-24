@@ -9,16 +9,19 @@ import {
   RemoteRelayInbox,
   RemoteRelayPublishResult,
   RemoteRelayRegisterDeviceRequest,
+  RemoteRelayUpdateDeviceCertificateRequest,
   type RemoteRelayAckResult as RemoteRelayAckResultType,
   type RemoteRelayDeviceRecord as RemoteRelayDeviceRecordType,
   type RemoteRelayInbox as RemoteRelayInboxType,
   type RemoteRelayPublishResult as RemoteRelayPublishResultType,
   type RemoteRelayRegisterDeviceRequest as RemoteRelayRegisterDeviceRequestType,
+  type RemoteRelayUpdateDeviceCertificateRequest as RemoteRelayUpdateDeviceCertificateRequestType,
 } from "@avityos/contracts";
 import {
   InMemoryRelayStore,
   RemoteRelayCapacityError,
   RemoteRelayConflictError,
+  assertCertificateRenewal,
   type InMemoryRelayStoreOptions,
   type RemoteRelayStore,
 } from "./store.js";
@@ -163,6 +166,55 @@ export class SqliteRelayStore implements RemoteRelayStore {
     return RemoteRelayDeviceRecord.parse({
       accountId: input.certificate.accountId,
       deviceId: input.certificate.deviceId,
+      status: "active",
+      updatedAt,
+    });
+  }
+
+  updateDeviceCertificate(
+    inputValue: RemoteRelayUpdateDeviceCertificateRequestType,
+  ): RemoteRelayDeviceRecordType | null {
+    const input = RemoteRelayUpdateDeviceCertificateRequest.parse(inputValue);
+    const existing = this.db.prepare(`
+      SELECT certificate, revoked_at, updated_at
+      FROM relay_devices
+      WHERE account_id = ? AND device_id = ?
+    `).get(
+      input.certificate.accountId,
+      input.certificate.deviceId,
+    ) as Record<string, unknown> | undefined;
+    if (!existing) return null;
+    if (existing.revoked_at !== null) {
+      throw new RemoteRelayConflictError(
+        "revoked relay device certificates cannot be renewed",
+      );
+    }
+    const renewal = assertCertificateRenewal(
+      JSON.parse(rowString(existing.certificate)),
+      input.certificate,
+    );
+    if (renewal.unchanged) {
+      return RemoteRelayDeviceRecord.parse({
+        accountId: renewal.next.accountId,
+        deviceId: renewal.next.deviceId,
+        status: "active",
+        updatedAt: rowString(existing.updated_at),
+      });
+    }
+    const updatedAt = new Date(this.now()).toISOString();
+    this.db.prepare(`
+      UPDATE relay_devices
+      SET certificate = ?, updated_at = ?
+      WHERE account_id = ? AND device_id = ? AND revoked_at IS NULL
+    `).run(
+      JSON.stringify(renewal.next),
+      updatedAt,
+      renewal.next.accountId,
+      renewal.next.deviceId,
+    );
+    return RemoteRelayDeviceRecord.parse({
+      accountId: renewal.next.accountId,
+      deviceId: renewal.next.deviceId,
       status: "active",
       updatedAt,
     });

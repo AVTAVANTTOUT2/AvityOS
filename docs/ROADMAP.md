@@ -91,9 +91,12 @@ reproductible dans `docs/TRACEABILITY.md`.
    XCUITests couvrant navigation et deep link, une icône native, un bundle
    Release universel `arm64`/`x86_64`, signature ad hoc vérifiée, ZIP/checksum,
    installation atomique avec sauvegarde et chemins Developer ID/notarisation
-   fail-closed. Restent : exécuter la signature/notarisation avec un certificat
-   Apple réel, renouveler les certificats du pont et définir/tester la mise à
-   jour applicative.
+   fail-closed. Le checkpoint 6.5 ajoute le renouvellement automatique à J-30
+   des certificats hôte/appareil via le pont E2E, sans rotation des clés ni du
+   bearer relais, avec persistance SQLite, refus des appareils révoqués,
+   validation CryptoKit avant remplacement Keychain et action manuelle dans
+   Réglages. Restent : exécuter la signature/notarisation avec un certificat
+   Apple réel et définir/tester la mise à jour applicative avec rollback.
 
 7. **🟡 Fondations présentes, industrialisation manquante — Durcissement de
    distribution.** Déjà présents : CI Linux et macOS, audits, licences,

@@ -5,6 +5,7 @@ let remoteControlRequestContentType =
     "application/vnd.avityos.remote-control-request+json"
 let remoteControlResponseContentType =
     "application/vnd.avityos.remote-control-response+json"
+let remoteCertificateRenewalPath = "/v1/remote/certificates/renew"
 
 enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue])
@@ -204,6 +205,16 @@ struct RemoteControlResponseWire: Codable, Equatable, Sendable {
     let body: JSONValue
 }
 
+struct RemoteCertificateRenewalRequestWire: Codable, Equatable, Sendable {
+    let protocolVersion: Int
+}
+
+struct RemoteCertificateRenewalResponseWire: Codable, Equatable, Sendable {
+    let protocolVersion: Int
+    let deviceCertificate: RemoteDeviceCertificateWire
+    let hostCertificate: RemoteDeviceCertificateWire
+}
+
 struct RemoteDeviceStatus: Equatable, Sendable {
     let configured: Bool
     let pendingPairing: Bool
@@ -211,6 +222,8 @@ struct RemoteDeviceStatus: Equatable, Sendable {
     let deviceId: String?
     let deviceName: String?
     let hostName: String?
+    let deviceCertificateValidUntil: String?
+    let hostCertificateValidUntil: String?
 
     static let unconfigured = RemoteDeviceStatus(
         configured: false,
@@ -218,6 +231,8 @@ struct RemoteDeviceStatus: Equatable, Sendable {
         relayURL: nil,
         deviceId: nil,
         deviceName: nil,
-        hostName: nil
+        hostName: nil,
+        deviceCertificateValidUntil: nil,
+        hostCertificateValidUntil: nil
     )
 }
