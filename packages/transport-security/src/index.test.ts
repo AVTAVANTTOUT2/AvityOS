@@ -231,6 +231,28 @@ describe("transport TLS configuration", () => {
   it("accepts only a current client-auth leaf signed by a configured CA", () => {
     const { ca, client, server } = signedCertificateFixture();
     const { ca: unrelatedCa } = signedCertificateFixture();
+    const now = Date.now();
+    expect({
+      caIsAuthority: ca.ca,
+      caValidNow:
+        Date.parse(ca.validFrom) <= now && now <= Date.parse(ca.validTo),
+      clientIsAuthority: client.ca,
+      clientUsage: client.keyUsage,
+      clientHasClientAuth:
+        client.keyUsage?.includes("1.3.6.1.5.5.7.3.2") ?? true,
+      clientValidNow:
+        Date.parse(client.validFrom) <= now &&
+        now <= Date.parse(client.validTo),
+      signatureVerified: client.verify(ca.publicKey),
+    }).toEqual({
+      caIsAuthority: true,
+      caValidNow: true,
+      clientIsAuthority: false,
+      clientUsage: expect.any(Array),
+      clientHasClientAuth: true,
+      clientValidNow: true,
+      signatureVerified: true,
+    });
     expect(clientCertificateIsAuthorizedBy(client, [ca])).toBe(true);
     expect(clientCertificateIsAuthorizedBy(server, [ca])).toBe(false);
     expect(clientCertificateIsAuthorizedBy(client, [client])).toBe(false);
