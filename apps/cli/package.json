@@ -19,9 +19,9 @@
   },
   "devDependencies": {
     "@avityos/control-plane": "workspace:*",
-    "@types/node": "22.13.1",
-    "fastify": "5.8.5",
-    "typescript": "5.7.3",
-    "vitest": "3.2.6"
+    "@types/node": "22.20.1",
+    "fastify": "5.10.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
   }
 }
