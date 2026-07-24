@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdtempSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +25,6 @@ import { WorkerAgent } from "./agent.js";
 
 interface TestPki {
   readonly root: string;
-  readonly caCert: string;
   readonly serverCert: string;
   readonly serverKey: string;
   readonly workerCert: string;
@@ -39,59 +37,33 @@ function openssl(args: readonly string[]): void {
   execFileSync("openssl", [...args], { stdio: "ignore" });
 }
 
-function createSignedCertificate(
+function createSelfSignedCertificate(
   root: string,
-  caCert: string,
-  caKey: string,
   name: string,
   usage: "serverAuth" | "clientAuth",
 ): { readonly cert: string; readonly key: string } {
   const key = join(root, `${name}.key`);
-  const request = join(root, `${name}.csr`);
   const cert = join(root, `${name}.crt`);
-  const extensions = join(root, `${name}.ext`);
-  writeFileSync(
-    extensions,
-    [
-      "basicConstraints=critical,CA:FALSE",
-      "subjectKeyIdentifier=hash",
-      "authorityKeyIdentifier=keyid,issuer",
-      `extendedKeyUsage=critical,${usage}`,
-      "keyUsage=critical,digitalSignature,keyEncipherment",
-      ...(usage === "serverAuth" ? ["subjectAltName=IP:127.0.0.1"] : []),
-      "",
-    ].join("\n"),
-    { mode: 0o600 },
-  );
+  const extensions = [
+    "basicConstraints=critical,CA:FALSE",
+    `extendedKeyUsage=critical,${usage}`,
+    "keyUsage=critical,digitalSignature,keyEncipherment",
+    ...(usage === "serverAuth" ? ["subjectAltName=IP:127.0.0.1"] : []),
+  ];
   openssl([
     "req",
-    "-new",
+    "-x509",
     "-newkey",
     "rsa:2048",
     "-nodes",
     "-sha256",
-    "-subj",
-    `/CN=${name}`,
-    "-keyout",
-    key,
-    "-out",
-    request,
-  ]);
-  openssl([
-    "x509",
-    "-req",
-    "-sha256",
     "-days",
     "1",
-    "-in",
-    request,
-    "-CA",
-    caCert,
-    "-CAkey",
-    caKey,
-    "-CAcreateserial",
-    "-extfile",
-    extensions,
+    "-subj",
+    `/CN=${name}`,
+    ...extensions.flatMap((extension) => ["-addext", extension]),
+    "-keyout",
+    key,
     "-out",
     cert,
   ]);
@@ -103,56 +75,23 @@ function createSignedCertificate(
 function createTestPki(): TestPki {
   const root = mkdtempSync(join(tmpdir(), "avity-worker-mtls-"));
   chmodSync(root, 0o700);
-  const caKey = join(root, "ca.key");
-  const caCert = join(root, "ca.crt");
-  openssl([
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-sha256",
-    "-days",
-    "1",
-    "-subj",
-    "/CN=AvityOS test CA",
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign,cRLSign",
-    "-addext",
-    "subjectKeyIdentifier=hash",
-    "-keyout",
-    caKey,
-    "-out",
-    caCert,
-  ]);
-  chmodSync(caKey, 0o600);
-  chmodSync(caCert, 0o644);
-  const server = createSignedCertificate(
+  const server = createSelfSignedCertificate(
     root,
-    caCert,
-    caKey,
     "server",
     "serverAuth",
   );
-  const worker = createSignedCertificate(
+  const worker = createSelfSignedCertificate(
     root,
-    caCert,
-    caKey,
     "worker",
     "clientAuth",
   );
-  const rogue = createSignedCertificate(
+  const rogue = createSelfSignedCertificate(
     root,
-    caCert,
-    caKey,
     "rogue",
     "clientAuth",
   );
   return {
     root,
-    caCert,
     serverCert: server.cert,
     serverKey: server.key,
     workerCert: worker.cert,
@@ -195,18 +134,18 @@ describe("worker mutual TLS transport", () => {
       {
         AVITY_TLS_CERT_PATH: pki.serverCert,
         AVITY_TLS_KEY_PATH: pki.serverKey,
-        AVITY_TLS_CLIENT_CA_PATH: pki.caCert,
+        AVITY_TLS_CLIENT_CA_PATH: pki.workerCert,
       },
       "127.0.0.1",
     );
-    const caOnly = clientTransport(pki.caCert);
+    const caOnly = clientTransport(pki.serverCert);
     const trusted = clientTransport(
-      pki.caCert,
+      pki.serverCert,
       pki.workerCert,
       pki.workerKey,
     );
     const rogue = clientTransport(
-      pki.caCert,
+      pki.serverCert,
       pki.rogueCert,
       pki.rogueKey,
     );
