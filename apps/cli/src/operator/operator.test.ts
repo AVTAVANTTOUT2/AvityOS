@@ -20,6 +20,23 @@ import { resolveOperatorPaths } from "./paths.js";
 import { redactValue } from "./redact.js";
 import { OperatorServiceLifecycle, boundLogFileForAppend } from "./services.js";
 import { collectDoctorReport, probeProviderReadiness } from "./diagnostics.js";
+import type { DoctorDependencies } from "./diagnostics.js";
+
+const readyDoctorDependencies: DoctorDependencies = {
+  commandProbe: async () => ({ ok: true, detail: "available" }),
+  providerProbe: async () => ({
+    codex: { binary: true, auth: true },
+    claudeCode: { binary: true, auth: true },
+    cursorAgent: { binary: true, auth: true },
+  }),
+  serviceProbe: async () => ({
+    controlPlane: "running",
+    web: "running",
+    worker: "running",
+  }),
+  apiProbe: async () => ({ health: true, providersStatus: true }),
+  sandboxProbe: async () => ({ ok: true, detail: "available" }),
+};
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -40,14 +57,42 @@ describe("operator setup", () => {
         return { exitCode: 0, stdout: "", stderr: "" };
       },
     };
-    await ensureOperatorSetup({ paths, runner, force: false, env: { ...process.env, AVITY_API_TOKEN: "keep-me" } });
+    await ensureOperatorSetup({
+      paths,
+      runner,
+      force: false,
+      doctorDependencies: readyDoctorDependencies,
+      env: {
+        ...process.env,
+        AVITY_API_TOKEN: "keep-me",
+        AVITY_TLS_CA_PATH: "/private/control-plane-ca.crt",
+        AVITY_CODEX_BIN: process.execPath,
+        AVITY_CLAUDE_CODE_BIN: process.execPath,
+        AVITY_CURSOR_BIN: process.execPath,
+      },
+    });
     const first = readFileSync(paths.operatorEnvPath, "utf8");
-    await ensureOperatorSetup({ paths, runner, force: false, env: { ...process.env, AVITY_API_TOKEN: "new-token" } });
+    await ensureOperatorSetup({
+      paths,
+      runner,
+      force: false,
+      doctorDependencies: readyDoctorDependencies,
+      env: {
+        ...process.env,
+        AVITY_API_TOKEN: "new-token",
+        AVITY_CODEX_BIN: process.execPath,
+        AVITY_CLAUDE_CODE_BIN: process.execPath,
+        AVITY_CURSOR_BIN: process.execPath,
+      },
+    });
     const second = readFileSync(paths.operatorEnvPath, "utf8");
 
     expect(first).toEqual(second);
     expect(statSync(paths.rootDir).mode & 0o777).toBe(0o700);
     expect(statSync(paths.operatorEnvPath).mode & 0o777).toBe(0o600);
+    expect(first).toContain(
+      "AVITY_TLS_CA_PATH=/private/control-plane-ca.crt",
+    );
     expect(runs.some((line) => line.includes("pnpm") && line.includes("build"))).toBe(true);
   });
 
@@ -60,7 +105,19 @@ describe("operator setup", () => {
       run: () => ({ exitCode: 0, stdout: "", stderr: "" }),
     };
 
-    await ensureOperatorSetup({ paths, runner, force: false, env: { ...process.env, AVITY_API_TOKEN: "replace-token" } });
+    await ensureOperatorSetup({
+      paths,
+      runner,
+      force: false,
+      doctorDependencies: readyDoctorDependencies,
+      env: {
+        ...process.env,
+        AVITY_API_TOKEN: "replace-token",
+        AVITY_CODEX_BIN: process.execPath,
+        AVITY_CLAUDE_CODE_BIN: process.execPath,
+        AVITY_CURSOR_BIN: process.execPath,
+      },
+    });
     expect(readFileSync(paths.operatorEnvPath, "utf8")).toContain("keep-token");
   });
 });

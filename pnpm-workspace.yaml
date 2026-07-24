@@ -16,3 +16,6 @@ overrides:
   # or crossing a major boundary that would break the consumers' APIs.
   fast-uri@3: 3.1.4
   fast-uri@4: 4.1.1
+  # GHSA-r292-9mhp-454m: crafted long paths can exhaust the stack in tar
+  # member-selection flows. Tailwind's build tooling accepts this patch.
+  tar@7: 7.5.21

@@ -118,6 +118,58 @@ and escalates an approval otherwise. To change behavior, adjust engine config
 - Compromised: `avity worker revoke <id>` immediately invalidates its
   token (hash comparison fails on next call). Re-enroll a clean host.
 
+## Native control-plane TLS and worker mTLS
+
+Use an operator-managed server certificate and a separate worker client CA.
+Keep every private key outside the repository and normal operator backup:
+its directory must be owned by the service account with mode `0700`, and the
+key itself must be a regular mode `0600` file. Certificate and CA files must
+be owner-readable and not writable by group or others. Server and worker
+certificate files must contain their complete PEM chain in leaf-first order.
+
+Configure the control plane:
+
+```sh
+AVITY_HOST=0.0.0.0 \
+AVITY_TLS_CERT_PATH=/private/tls/control-plane.crt \
+AVITY_TLS_KEY_PATH=/private/tls/control-plane.key \
+AVITY_TLS_CLIENT_CA_PATH=/private/tls/worker-ca.crt \
+node services/control-plane/dist/main.js
+```
+
+Configure every worker with its own client identity:
+
+```sh
+AVITY_CONTROL_PLANE_URL=https://plane.example \
+AVITY_TLS_CA_PATH=/private/tls/control-plane-ca.crt \
+AVITY_TLS_CLIENT_CERT_PATH=/private/tls/worker-1.crt \
+AVITY_TLS_CLIENT_KEY_PATH=/private/tls/worker-1.key \
+node services/worker/dist/main.js
+```
+
+`AVITY_TLS_SERVER_NAME=plane.example` is an optional DNS-name override for a
+URL whose host differs from the certificate identity; it does not disable
+hostname verification. The CLI uses the same `AVITY_TLS_CA_PATH` and optional
+client identity, loaded from the shell or protected operator environment.
+Browsers must trust the server CA through the operating system; they do not
+need a worker certificate.
+
+Enabling `AVITY_TLS_CLIENT_CA_PATH` makes all worker data-plane calls require
+both the worker bearer and the certificate used during enrollment. Existing
+pre-mTLS rows intentionally remain unbound: revoke and re-enroll them under
+their assigned certificates. A compromised or replaced certificate likewise
+requires immediate worker revocation and re-enrollment. Certificate issuance,
+expiry monitoring and CA custody remain external operator duties until the
+dedicated rotation protocol is delivered. Never use
+`NODE_TLS_REJECT_UNAUTHORIZED=0`.
+
+Verify with a CA-aware client:
+
+```sh
+curl --fail --cacert /private/tls/control-plane-ca.crt \
+  https://plane.example/v1/health
+```
+
 ## Durable remote relay
 
 Build and start the durable ciphertext relay on loopback:

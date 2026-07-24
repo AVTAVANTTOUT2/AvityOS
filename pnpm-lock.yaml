@@ -9,6 +9,7 @@ overrides:
   find-my-way: 9.7.0
   fast-uri@3: 3.1.4
   fast-uri@4: 4.1.1
+  tar@7: 7.5.21
 
 importers:
 
@@ -32,6 +33,9 @@ importers:
       '@avityos/providers':
         specifier: workspace:*
         version: link:../../packages/providers
+      '@avityos/transport-security':
+        specifier: workspace:*
+        version: link:../../packages/transport-security
     devDependencies:
       '@avityos/control-plane':
         specifier: workspace:*
@@ -201,9 +205,6 @@ importers:
       react-responsive-masonry:
         specifier: 2.7.1
         version: 2.7.1
-      react-router:
-        specifier: 7.18.1
-        version: 7.18.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       react-slick:
         specifier: 0.31.0
         version: 0.31.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -385,6 +386,18 @@ importers:
         specifier: 3.2.6
         version: 3.2.6(@types/node@22.13.1)(jiti@2.7.0)(jsdom@29.1.1)(lightningcss@1.30.1)
 
+  packages/transport-security:
+    devDependencies:
+      '@types/node':
+        specifier: 22.13.1
+        version: 22.13.1
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: 3.2.6
+        version: 3.2.6(@types/node@22.13.1)(jiti@2.7.0)(jsdom@29.1.1)(lightningcss@1.30.1)
+
   services/control-plane:
     dependencies:
       '@avityos/contracts':
@@ -405,6 +418,9 @@ importers:
       '@avityos/remote-bridge':
         specifier: workspace:*
         version: link:../../packages/remote-bridge
+      '@avityos/transport-security':
+        specifier: workspace:*
+        version: link:../../packages/transport-security
       '@fastify/cors':
         specifier: 10.0.2
         version: 10.0.2
@@ -455,6 +471,9 @@ importers:
       '@avityos/policy':
         specifier: workspace:*
         version: link:../../packages/policy
+      '@avityos/transport-security':
+        specifier: workspace:*
+        version: link:../../packages/transport-security
     devDependencies:
       '@avityos/control-plane':
         specifier: workspace:*
@@ -2842,16 +2861,6 @@ packages:
   react-responsive-masonry@2.7.1:
     resolution: {integrity: sha512-Q+u+nOH87PzjqGFd2PgTcmLpHPZnCmUPREHYoNBc8dwJv6fi51p9U6hqwG8g/T8MN86HrFjrU+uQU6yvETU7cA==}
 
-  react-router@7.18.1:
-    resolution: {integrity: sha512-GDLgg3i3uM0aeJO3Fm+TCS+sDQ7gu12T6x0qdTEzcwqEfleci7JwugVNIF3U//0FWKnJT7ptG+20B2jfDqnZAg==}
-    engines: {node: '>=20.0.0'}
-    peerDependencies:
-      react: '>=18'
-      react-dom: '>=18'
-    peerDependenciesMeta:
-      react-dom:
-        optional: true
-
   react-slick@0.31.0:
     resolution: {integrity: sha512-zo6VLT8wuSBJffg/TFPbzrw2dEnfZ/cUKmYsKByh3AgatRv29m2LoFbq5vRMa3R3A4wp4d8gwbJKO2fWZFaI3g==}
     peerDependencies:
@@ -3033,8 +3042,8 @@ packages:
     resolution: {integrity: sha512-uxc/zpqFg6x7C8vOE7lh6Lbda8eEL9zmVm/PLeTPBRhh1xCgdWaQ+J1CUieGpIfm2HdtsUpRv+HshiasBMcc6A==}
     engines: {node: '>=6'}
 
-  tar@7.5.20:
-    resolution: {integrity: sha512-9FcyK4PA6+WbzlTM9WhQm6vB5W7cP7dUiPsv1g7YDwEQnQ1CGpK3MGlKk/ITVWMk05kHZuBhmVhiv8LZoy/PFQ==}
+  tar@7.5.21:
+    resolution: {integrity: sha512-XdhtCvlMywwxpCW8YEq3lOXBJpUPTR2OHHcwLPO3HwsJqOHa2Ok/oJ7ruGzp+JrKoRPVCzJwAdEjqLW/vNRPHA==}
     engines: {node: '>=18'}
 
   thread-stream@4.2.0:
@@ -4573,7 +4582,7 @@ snapshots:
   '@tailwindcss/oxide@4.1.12':
     dependencies:
       detect-libc: 2.1.2
-      tar: 7.5.20
+      tar: 7.5.21
     optionalDependencies:
       '@tailwindcss/oxide-android-arm64': 4.1.12
       '@tailwindcss/oxide-darwin-arm64': 4.1.12
@@ -5501,14 +5510,6 @@ snapshots:
 
   react-responsive-masonry@2.7.1: {}
 
-  react-router@7.18.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
-    dependencies:
-      cookie: 1.1.1
-      react: 18.3.1
-      set-cookie-parser: 2.7.2
-    optionalDependencies:
-      react-dom: 18.3.1(react@18.3.1)
-
   react-slick@0.31.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
     dependencies:
       classnames: 2.5.1
@@ -5695,7 +5696,7 @@ snapshots:
 
   tapable@2.3.3: {}
 
-  tar@7.5.20:
+  tar@7.5.21:
     dependencies:
       '@isaacs/fs-minipass': 4.0.1
       chownr: 3.0.0

@@ -7,7 +7,11 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { collectDoctorReport } from "./diagnostics.js";
+import {
+  collectDoctorReport,
+  probeProviderReadiness,
+  type DoctorDependencies,
+} from "./diagnostics.js";
 import { readEnvFile, writeEnvFileAtomic } from "./env.js";
 import type { OperatorPaths } from "./paths.js";
 
@@ -32,6 +36,7 @@ export interface EnsureOperatorSetupOptions {
   readonly runner: SetupCommandRunner;
   readonly force: boolean;
   readonly env: NodeJS.ProcessEnv;
+  readonly doctorDependencies?: DoctorDependencies;
 }
 
 function ensurePrivateDirectory(path: string): void {
@@ -114,6 +119,29 @@ export async function ensureOperatorSetup(options: EnsureOperatorSetupOptions): 
       ...(current.AVITY_API_TOKEN ? { AVITY_API_TOKEN: current.AVITY_API_TOKEN } : env.AVITY_API_TOKEN ? { AVITY_API_TOKEN: env.AVITY_API_TOKEN } : {}),
       ...(current.AVITY_WORKER_ID ? { AVITY_WORKER_ID: current.AVITY_WORKER_ID } : {}),
       ...(current.AVITY_WORKER_TOKEN ? { AVITY_WORKER_TOKEN: current.AVITY_WORKER_TOKEN } : {}),
+      ...((current.AVITY_TLS_CA_PATH ?? env.AVITY_TLS_CA_PATH)
+        ? { AVITY_TLS_CA_PATH: current.AVITY_TLS_CA_PATH ?? env.AVITY_TLS_CA_PATH! }
+        : {}),
+      ...((current.AVITY_TLS_CLIENT_CERT_PATH ?? env.AVITY_TLS_CLIENT_CERT_PATH)
+        ? {
+            AVITY_TLS_CLIENT_CERT_PATH:
+              current.AVITY_TLS_CLIENT_CERT_PATH ??
+              env.AVITY_TLS_CLIENT_CERT_PATH!,
+          }
+        : {}),
+      ...((current.AVITY_TLS_CLIENT_KEY_PATH ?? env.AVITY_TLS_CLIENT_KEY_PATH)
+        ? {
+            AVITY_TLS_CLIENT_KEY_PATH:
+              current.AVITY_TLS_CLIENT_KEY_PATH ??
+              env.AVITY_TLS_CLIENT_KEY_PATH!,
+          }
+        : {}),
+      ...((current.AVITY_TLS_SERVER_NAME ?? env.AVITY_TLS_SERVER_NAME)
+        ? {
+            AVITY_TLS_SERVER_NAME:
+              current.AVITY_TLS_SERVER_NAME ?? env.AVITY_TLS_SERVER_NAME!,
+          }
+        : {}),
     };
   if (!envExists || force) {
     writeEnvFileAtomic(paths.operatorEnvPath, nextEnv);
@@ -123,7 +151,17 @@ export async function ensureOperatorSetup(options: EnsureOperatorSetupOptions): 
   }
 
   writeSetupState(paths);
-  const report = await collectDoctorReport({ nodeVersion: env.AVITY_NODE_VERSION_OVERRIDE ?? process.versions.node });
+  const doctorDependencies = options.doctorDependencies ?? {};
+  const report = await collectDoctorReport({
+    ...doctorDependencies,
+    nodeVersion:
+      doctorDependencies.nodeVersion ??
+      env.AVITY_NODE_VERSION_OVERRIDE ??
+      process.versions.node,
+    providerProbe:
+      doctorDependencies.providerProbe ??
+      (() => probeProviderReadiness(env)),
+  });
   if (report.readiness === "blocked_missing_tool") {
     const missing = report.checks.filter((check) => !check.ok).map((check) => check.id).join(", ");
     throw new Error(`setup blocked: missing required tools (${missing})`);

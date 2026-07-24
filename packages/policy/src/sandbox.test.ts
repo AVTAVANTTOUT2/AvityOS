@@ -493,7 +493,11 @@ describe.skipIf(!SANDBOX_AVAILABLE || process.platform !== "darwin")("macOS Home
       });
       expect(out).toMatch(/^v\d+\./);
 
-      const nodePackage = roots.find((r) => /\/Cellar\/node\/[^/]+$/.test(r) || /\/opt\/node$/.test(r));
+      const nodePackage = roots.find(
+        (r) =>
+          /\/Cellar\/node(?:@\d+)?\/[^/]+$/.test(r) ||
+          /\/opt\/node(?:@\d+)?$/.test(r),
+      );
       expect(nodePackage, `expected a node package root in ${roots.join(",")}`).toBeTruthy();
 
       const gitCellar = join(cellar, "git");

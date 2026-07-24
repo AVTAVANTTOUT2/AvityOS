@@ -16,7 +16,8 @@
   "dependencies": {
     "@avityos/credential-vault": "workspace:*",
     "@avityos/contracts": "workspace:*",
-    "@avityos/providers": "workspace:*"
+    "@avityos/providers": "workspace:*",
+    "@avityos/transport-security": "workspace:*"
   },
   "devDependencies": {
     "@avityos/control-plane": "workspace:*",

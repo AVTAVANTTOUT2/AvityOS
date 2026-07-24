@@ -371,6 +371,21 @@ function loadEffectiveCliConfig() {
   }
 }
 
+function loadEffectiveCliTlsEnvironment(): NodeJS.ProcessEnv {
+  const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
+  try {
+    // The protected operator environment may carry only TLS file paths, never
+    // PEM material. Explicit process values retain precedence for one-off
+    // administrative commands.
+    return {
+      ...loadOperatorEnvironment(paths),
+      ...process.env,
+    };
+  } catch {
+    return process.env;
+  }
+}
+
 async function collectCliDoctorReport(client: Client) {
   const paths = resolveOperatorPaths({ repositoryRoot: resolveRepositoryRoot() });
   const lifecycle = new OperatorServiceLifecycle(paths);
@@ -1675,12 +1690,17 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`unknown subcommand: ${command} ${sub ?? ""}\n\n${USAGE}`);
     return 2;
   }
-  const ctx: Ctx = {
-    client: new Client(loadEffectiveCliConfig()),
-    json,
-    args: typeof entry === "function" ? args.slice(1) : args.slice(1),
-  };
+  let client: Client | null = null;
   try {
+    client = new Client(
+      loadEffectiveCliConfig(),
+      loadEffectiveCliTlsEnvironment(),
+    );
+    const ctx: Ctx = {
+      client,
+      json,
+      args: args.slice(1),
+    };
     await handler(ctx);
     return 0;
   } catch (err) {
@@ -1694,6 +1714,8 @@ export async function main(argv: string[]): Promise<number> {
       console.error(`error: ${redactText((err as Error).message)}`);
     }
     return 1;
+  } finally {
+    client?.close();
   }
 }
 

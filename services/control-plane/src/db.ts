@@ -440,6 +440,15 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       ALTER TABLE missions ADD COLUMN baseline_commit TEXT;
     `,
   },
+  {
+    // A worker enrolled over mTLS is permanently bound to the SHA-256
+    // fingerprint of that client certificate. The bearer remains a separate
+    // factor and legacy rows stay NULL until explicit re-enrollment.
+    version: 9,
+    sql: `
+      ALTER TABLE workers ADD COLUMN mtls_fingerprint TEXT;
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {

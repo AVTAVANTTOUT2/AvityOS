@@ -24,6 +24,8 @@ import { IllegalTransitionError } from "@avityos/orchestration";
 import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
 import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
+import type { ServerOptions as HttpsServerOptions } from "node:https";
+import { authorizedPeerCertificateFingerprint } from "@avityos/transport-security";
 import { buildE2EPreflight } from "./e2e-preflight.js";
 import type { Engine } from "./engine.js";
 import { getCachedGitHubReadiness } from "./github-readiness.js";
@@ -56,6 +58,10 @@ export interface ServerOptions {
   providerStatus?: ProviderStatusReport;
   /** macOS-only local remote bridge host runtime. */
   remoteHost?: RemoteHostManager;
+  /** Native TLS listener options loaded from strict owner-controlled files. */
+  https?: HttpsServerOptions;
+  /** Require and bind an authorized client certificate on worker routes. */
+  workerMtlsRequired?: boolean;
 }
 
 /**
@@ -90,21 +96,41 @@ function apiError(reply: FastifyReply, status: number, code: ApiErrorCode, messa
  */
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
   const { store, engine } = opts;
-  const app = Fastify({ logger: false, forceCloseConnections: true });
+  const app = Fastify({
+    logger: false,
+    forceCloseConnections: true,
+    ...(opts.https ? { https: opts.https } : {}),
+  }) as FastifyInstance;
   await app.register(cors, { origin: [...(opts.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS)], credentials: true });
   const startedAt = Date.now();
 
   app.addHook("onRequest", async (req, reply) => {
+    const path = req.url.split("?")[0] ?? req.url;
+    const workerDataRoute =
+      req.method === "POST" &&
+      (path === "/v1/workers/enroll" ||
+        path === "/v1/workers/lease" ||
+        /^\/v1\/workers\/[^/]+\/heartbeat$/.test(path) ||
+        /^\/v1\/terminals\/[^/]+\/(output|exit)$/.test(path));
+    if (
+      opts.workerMtlsRequired &&
+      workerDataRoute &&
+      !authorizedPeerCertificateFingerprint(req.raw.socket)
+    ) {
+      await reply.status(401).send({
+        error: {
+          code: "policy_denied",
+          message: "an authorized worker mTLS certificate is required",
+        },
+      });
+      return;
+    }
     if (!opts.apiToken) return;
     if (req.url.startsWith("/v1/health")) return;
     // These routes authenticate with short-lived worker credentials and
     // terminal lease tokens instead of the user/admin bearer token.
-    const path = req.url.split("?")[0] ?? req.url;
     const workerAuthenticatedRoute =
-      req.method === "POST" &&
-      (path === "/v1/workers/lease" ||
-        /^\/v1\/workers\/[^/]+\/heartbeat$/.test(path) ||
-        /^\/v1\/terminals\/[^/]+\/(output|exit)$/.test(path));
+      workerDataRoute && path !== "/v1/workers/enroll";
     if (workerAuthenticatedRoute) return;
     const header = req.headers.authorization;
     const cookieToken = parseCookie(req.headers.cookie ?? "", "avity_session");
@@ -153,12 +179,14 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   // Exchange the user/admin bearer for an HttpOnly browser session. This
   // keeps the long-lived token out of localStorage and SSE query strings.
   app.post("/v1/session", async (_req, reply) => {
-    reply.header("set-cookie", "avity_session=" + encodeURIComponent(opts.apiToken ?? "") + "; HttpOnly; SameSite=Strict; Path=/");
+    const secure = opts.https ? "; Secure" : "";
+    reply.header("set-cookie", "avity_session=" + encodeURIComponent(opts.apiToken ?? "") + "; HttpOnly; SameSite=Strict; Path=/" + secure);
     return { ok: true };
   });
 
   app.delete("/v1/session", async (_req, reply) => {
-    reply.header("set-cookie", "avity_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+    const secure = opts.https ? "; Secure" : "";
+    reply.header("set-cookie", "avity_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" + secure);
     return { ok: true };
   });
 
@@ -729,10 +757,25 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   function requireWorker(req: FastifyRequest, reply: FastifyReply): string | null {
     const workerId = (req.headers["x-worker-id"] as string) ?? "";
     const token = (req.headers["x-worker-token"] as string) ?? "";
-    const row = store.db.prepare("SELECT token_hash, status FROM workers WHERE id = ?").get(workerId) as
-      | { token_hash: string; status: string }
+    const row = store.db.prepare(
+      "SELECT token_hash, status, mtls_fingerprint FROM workers WHERE id = ?",
+    ).get(workerId) as
+      | {
+          token_hash: string;
+          status: string;
+          mtls_fingerprint: string | null;
+        }
       | undefined;
-    if (!row || row.token_hash !== sha256(token) || row.status === "revoked") {
+    const peerFingerprint = opts.workerMtlsRequired
+      ? authorizedPeerCertificateFingerprint(req.raw.socket)
+      : null;
+    if (
+      !row ||
+      row.token_hash !== sha256(token) ||
+      row.status === "revoked" ||
+      (opts.workerMtlsRequired &&
+        (!peerFingerprint || row.mtls_fingerprint !== peerFingerprint))
+    ) {
       void apiError(reply, 401, "policy_denied", "invalid worker credentials");
       return null;
     }
@@ -817,12 +860,25 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const id = newId("wrk");
     const token = randomBytes(24).toString("hex");
     const ts = now();
+    const mtlsFingerprint = opts.workerMtlsRequired
+      ? authorizedPeerCertificateFingerprint(req.raw.socket)
+      : null;
     store.db
       .prepare(
-        `INSERT INTO workers (id, name, status, capabilities, max_concurrent_runs, token_hash, created_at, updated_at)
-         VALUES (?, ?, 'online', ?, ?, ?, ?, ?)`,
+        `INSERT INTO workers
+           (id, name, status, capabilities, max_concurrent_runs, token_hash, mtls_fingerprint, created_at, updated_at)
+         VALUES (?, ?, 'online', ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, body.name, JSON.stringify(body.capabilities), body.maxConcurrentRuns, sha256(token), ts, ts);
+      .run(
+        id,
+        body.name,
+        JSON.stringify(body.capabilities),
+        body.maxConcurrentRuns,
+        sha256(token),
+        mtlsFingerprint,
+        ts,
+        ts,
+      );
     store.appendEvent("worker.status_changed", {}, { workerId: id, status: "online" });
     store.appendAudit(null, "user", "worker.enroll", `${body.name} (${id})`);
     // The token is returned exactly once and stored only as a hash.
@@ -830,7 +886,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   });
 
   app.get("/v1/workers", async () => {
-    const rows = store.db.prepare("SELECT id, name, status, capabilities, last_heartbeat_at, max_concurrent_runs, created_at, updated_at FROM workers").all() as Record<string, unknown>[];
+    const rows = store.db.prepare(
+      "SELECT id, name, status, capabilities, last_heartbeat_at, max_concurrent_runs, mtls_fingerprint, created_at, updated_at FROM workers",
+    ).all() as Record<string, unknown>[];
     const heartbeatCutoff = new Date(Date.now() - WORKER_HEARTBEAT_WINDOW_MS).toISOString();
     return {
       items: rows.map((r) => ({
@@ -844,6 +902,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
         capabilities: JSON.parse(r.capabilities as string),
         lastHeartbeatAt: r.last_heartbeat_at ?? null,
         maxConcurrentRuns: r.max_concurrent_runs,
+        mutualTls: typeof r.mtls_fingerprint === "string",
         createdAt: r.created_at,
         updatedAt: r.updated_at,
       })),
@@ -853,12 +912,30 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.post("/v1/workers/:id/heartbeat", async (req, reply) => {
     const { id } = req.params as { id: string };
     const auth = (req.headers["x-worker-token"] as string) ?? "";
-    const row = store.db.prepare("SELECT token_hash, status FROM workers WHERE id = ?").get(id) as
-      | { token_hash: string; status: string }
+    const row = store.db.prepare(
+      "SELECT token_hash, status, mtls_fingerprint FROM workers WHERE id = ?",
+    ).get(id) as
+      | {
+          token_hash: string;
+          status: string;
+          mtls_fingerprint: string | null;
+        }
       | undefined;
     if (!row) return apiError(reply, 404, "not_found", `worker ${id} not found`);
     if (row.token_hash !== sha256(auth)) return apiError(reply, 401, "policy_denied", "invalid worker token");
     if (row.status === "revoked") return apiError(reply, 403, "policy_denied", "worker is revoked");
+    if (
+      opts.workerMtlsRequired &&
+      row.mtls_fingerprint !==
+        authorizedPeerCertificateFingerprint(req.raw.socket)
+    ) {
+      return apiError(
+        reply,
+        401,
+        "policy_denied",
+        "worker certificate does not match enrollment",
+      );
+    }
     store.db.prepare("UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), id);
     return { ok: true };
   });

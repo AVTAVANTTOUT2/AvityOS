@@ -43,6 +43,18 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   manifest. Restore requires the exact bundle ID, targets only a new external
   root and re-certifies before publication. Persistent control-plane SQLite
   state is owner-only and symlink-refusing. See ADR-0015.
+- **Native TLS and certificate-bound workers (checkpoint 7.3)** — the control
+  plane serves TLS 1.3 from strict owner-controlled PEM paths and refuses a
+  plaintext non-loopback bind. An optional worker CA makes enrollment, lease,
+  heartbeat and terminal result routes require an authorized client
+  certificate. Enrollment persists only its SHA-256 fingerprint; every later
+  call requires both the separately hashed bearer and that exact certificate,
+  so another certificate signed by the same CA cannot reuse a stolen bearer.
+  Legacy rows remain unbound and must be explicitly re-enrolled. Admin/browser
+  routes remain bearer/session authenticated over TLS without a client
+  certificate; HTTPS sessions are `Secure`. CLI and worker private-CA trust is
+  per-client, TLS-1.3-only and response-bounded, never a process-global
+  verification bypass. See ADR-0016.
 - **Remote bridge transport (checkpoints 5.1–5.2)** — account/device
   certificates and application envelopes are signed and end-to-end encrypted;
   the relay accepts only strict ciphertext structures and never imports
@@ -223,8 +235,9 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
 - **Workers** — enrollment requires the admin bearer when auth is enabled.
   Worker tokens are shown once and hashed at rest. Capability/capacity matching,
   short leases, per-lease opaque tokens, expiry, heartbeat and revocation fence
-  stale results. Non-loopback worker transport requires HTTPS unless an explicit
-  development escape hatch is set.
+  stale results. Native mTLS can additionally bind the bearer to one authorized
+  client certificate. Non-loopback worker transport requires HTTPS unless an
+  explicit development escape hatch is set.
 - **Secrets/audit** — persisted logs/events/audit details are redacted. Audit
   entries form a verifiable SHA-256 chain. Provider/CLI environments are scoped;
   the macOS app and macOS CLI store their API token in Keychain. Non-macOS CLI
@@ -258,8 +271,10 @@ transport.
   Decrypted values necessarily exist in the authorized service process memory;
   loss of both the key store and separately held recovery escrow remains
   unrecoverable by design.
-- HTTPS termination and certificate lifecycle for a remote control plane are a
-  deployment responsibility; the worker enforces HTTPS but mTLS is not bundled.
+- Native TLS 1.3 and certificate-bound worker mTLS are bundled, but certificate
+  issuance, private-CA custody, expiry monitoring and automated rotation remain
+  deployment responsibilities. A bound certificate change currently requires
+  worker revocation and re-enrollment.
 - Public macOS distribution still depends on an operator-owned Developer ID
   certificate and Apple notarization service. The repository implements and
   verifies the fail-closed signing/notary path, but CI deliberately cannot
@@ -297,6 +312,6 @@ transport.
   unimplemented. A stronger container/VM boundary is recommended for hostile
   repositories. The `core.hooksPath=/dev/null` neutralisation targets the POSIX
   platforms AvityOS officially supports (macOS, Linux).
-- The local HttpOnly session cookie is not marked `Secure` over loopback HTTP;
-  remote browser deployments must terminate HTTPS and should set/forward a
-  secure-cookie deployment policy.
+- The local HttpOnly session cookie is intentionally not marked `Secure` over
+  loopback HTTP; native HTTPS adds `Secure`. A reverse proxy deployment must
+  preserve an HTTPS-aware secure-cookie policy.
