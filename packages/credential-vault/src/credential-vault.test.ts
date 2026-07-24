@@ -67,9 +67,11 @@ describe("credential vault cryptography", () => {
     expect(() => openCredentialVault(envelope, randomBytes(32))).toThrow(
       /master key does not match/i,
     );
+    const tamperedCiphertext = Buffer.from(envelope.ciphertext, "base64url");
+    tamperedCiphertext[0] = (tamperedCiphertext[0] ?? 0) ^ 0x01;
     expect(() => openCredentialVault({
       ...envelope,
-      ciphertext: `${envelope.ciphertext.slice(0, -1)}A`,
+      ciphertext: tamperedCiphertext.toString("base64url"),
     }, key)).toThrow(/authentication/i);
     expect(() => decodeCredentialVaultKey("short")).toThrow(/32-byte/i);
     expect(decodeCredentialVaultKey(encodeCredentialVaultKey(key))).toEqual(key);
