@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("authenticates then displays canonical live state", async ({ page }) => {
   let authenticated = false;
-  await page.route("http://127.0.0.1:7717/**", async (route) => {
+  await page.route("**/v1/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/v1/health") {
       return route.fulfill({ json: { status: "ok", version: "test" } });
@@ -30,7 +30,7 @@ test("authenticates then displays canonical live state", async ({ page }) => {
 
 test("transmits the complete repository onboarding payload", async ({ page }) => {
   let submitted: Record<string, unknown> | null = null;
-  await page.route("http://127.0.0.1:7717/**", async (route) => {
+  await page.route("**/v1/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/v1/projects" && route.request().method() === "POST") {
       submitted = route.request().postDataJSON() as Record<string, unknown>;

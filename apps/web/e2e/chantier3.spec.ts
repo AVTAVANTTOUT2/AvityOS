@@ -75,7 +75,7 @@ test("answers a grouped clarification then pauses and resumes atomically", async
   let projectStatus = "clarifying";
   let pauseState = { ...pauseActive };
 
-  await page.route("http://127.0.0.1:7717/**", async (route) => {
+  await page.route("**/v1/**", async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
 
