@@ -113,6 +113,37 @@ export interface OperatorApiTokenRotationResult {
   readonly resumed: boolean;
 }
 
+export interface WorkerTokenRotationStatus {
+  readonly state: "stable" | "prepared";
+  readonly rotationId: string | null;
+  readonly pendingSeen: boolean;
+}
+
+export interface OperatorWorkerTokenRotationDependencies {
+  readonly status: () => Promise<WorkerTokenRotationStatus>;
+  readonly role: (token: string) => Promise<"current" | "pending">;
+  readonly prepare: () => Promise<{
+    readonly rotationId: string;
+    readonly token: string;
+  }>;
+  readonly activate: (
+    token: string,
+    role: "current" | "pending",
+  ) => Promise<void>;
+  readonly commit: (rotationId: string) => Promise<void>;
+  readonly abort: (rotationId: string) => Promise<void>;
+}
+
+export interface OperatorWorkerTokenRotationResult {
+  readonly name: "AVITY_WORKER_TOKEN";
+  readonly service: "worker";
+  readonly workerId: string;
+  readonly rotationId: string;
+  readonly previousGeneration: number;
+  readonly generation: number;
+  readonly resumed: boolean;
+}
+
 const VAULT_CONTROL_ENVIRONMENT = new Set([
   "AVITY_DISABLE_KEYCHAIN",
   "AVITY_VAULT_KEY_FILE",
@@ -461,6 +492,152 @@ export async function rotateOperatorApiToken(
   return {
     name: "AVITY_API_TOKEN",
     service: "control-plane",
+    rotationId: prepared.rotationId,
+    previousGeneration: staged.generation - 1,
+    generation: staged.generation,
+    resumed: false,
+  };
+}
+
+export async function rotateOperatorWorkerToken(
+  paths: OperatorPaths,
+  workerId: string,
+  dependencies: OperatorWorkerTokenRotationDependencies,
+  options: OperatorVaultOptions = {},
+): Promise<OperatorWorkerTokenRotationResult> {
+  if (!workerId) throw new Error("worker id is required for token rotation");
+  const { vault } = openOperatorVault(paths, {
+    ...options,
+    create: false,
+  });
+  const previousValue = vault.environmentFor("worker").AVITY_WORKER_TOKEN;
+  if (!previousValue) {
+    throw new Error(
+      "credential AVITY_WORKER_TOKEN is not initialized; enroll and store it before rotating",
+    );
+  }
+  const before = vault.snapshot();
+  const existing = await dependencies.status();
+  if (existing.state === "prepared" && existing.rotationId) {
+    const role = await dependencies.role(previousValue);
+    if (role === "pending") {
+      await dependencies.activate(previousValue, "pending");
+      const proven = await dependencies.status();
+      if (
+        proven.rotationId !== existing.rotationId ||
+        !proven.pendingSeen
+      ) {
+        throw new Error(
+          "pending worker token did not prove the enrolled worker identity",
+        );
+      }
+      try {
+        await dependencies.commit(existing.rotationId);
+      } catch (commitError) {
+        throw new Error(
+          "pending worker token is active and stored, but commit finalization remains ambiguous; rerun worker-token-rotate",
+          { cause: commitError },
+        );
+      }
+      return {
+        name: "AVITY_WORKER_TOKEN",
+        service: "worker",
+        workerId,
+        rotationId: existing.rotationId,
+        previousGeneration: before.generation,
+        generation: before.generation,
+        resumed: true,
+      };
+    }
+    await dependencies.abort(existing.rotationId);
+  }
+
+  const prepared = await dependencies.prepare();
+  let staged: CredentialVaultSnapshot;
+  try {
+    staged = vault.compareAndSwap(
+      "AVITY_WORKER_TOKEN",
+      previousValue,
+      prepared.token,
+    );
+  } catch (stagingError) {
+    try {
+      await dependencies.abort(prepared.rotationId);
+    } catch (abortError) {
+      throw new Error(
+        `worker token vault staging failed and prepared rotation could not be aborted: ${
+          abortError instanceof Error ? abortError.message : String(abortError)
+        }`,
+        { cause: stagingError },
+      );
+    }
+    throw stagingError;
+  }
+
+  try {
+    await dependencies.activate(prepared.token, "pending");
+    const status = await dependencies.status();
+    if (
+      status.rotationId !== prepared.rotationId ||
+      !status.pendingSeen
+    ) {
+      throw new Error(
+        "pending worker token did not authenticate after worker restart",
+      );
+    }
+    if (
+      vault.environmentFor("worker").AVITY_WORKER_TOKEN !== prepared.token
+    ) {
+      await dependencies.abort(prepared.rotationId);
+      throw new Error(
+        "worker token changed concurrently after verification; pending rotation aborted",
+      );
+    }
+  } catch (verificationError) {
+    try {
+      if (
+        vault.environmentFor("worker").AVITY_WORKER_TOKEN === prepared.token
+      ) {
+        vault.compareAndSwap(
+          "AVITY_WORKER_TOKEN",
+          prepared.token,
+          previousValue,
+        );
+      }
+      await dependencies.abort(prepared.rotationId);
+      await dependencies.activate(previousValue, "current");
+      if (await dependencies.role(previousValue) !== "current") {
+        throw new Error("previous worker token rollback was not accepted");
+      }
+    } catch (rollbackError) {
+      throw new Error(
+        `worker token verification failed and rollback could not be certified: ${
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError)
+        }`,
+        { cause: verificationError },
+      );
+    }
+    throw new Error(
+      "worker token verification failed; previous credential restored",
+      { cause: verificationError },
+    );
+  }
+
+  try {
+    await dependencies.commit(prepared.rotationId);
+  } catch (commitError) {
+    throw new Error(
+      "new worker token is active and stored, but commit finalization is ambiguous; rerun worker-token-rotate to recover safely",
+      { cause: commitError },
+    );
+  }
+
+  return {
+    name: "AVITY_WORKER_TOKEN",
+    service: "worker",
+    workerId,
     rotationId: prepared.rotationId,
     previousGeneration: staged.generation - 1,
     generation: staged.generation,

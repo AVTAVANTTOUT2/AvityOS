@@ -281,6 +281,117 @@ describe("worker <-> control plane integration", () => {
     expect(res.status).toBe(401);
   });
 
+  it("rotates a worker bearer only after the pending token proves itself", async () => {
+    const enrollingAgent = new WorkerAgent({
+      controlPlaneUrl: baseUrl,
+      name: "rotating-worker",
+      pollMs: 10_000,
+      capabilities: ["shell"],
+    });
+    const current = await enrollingAgent.enroll();
+    const projectId = makeProject();
+    const activeTerminal = store.createTerminal(
+      projectId,
+      ["echo", "active"],
+      process.cwd(),
+    );
+    const activeLease = await fetch(`${baseUrl}/v1/workers/lease`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-worker-id": current.id,
+        "x-worker-token": current.token,
+      },
+      body: "{}",
+    });
+    expect((await activeLease.json() as { lease: { id: string } }).lease.id).toBe(
+      activeTerminal.id,
+    );
+    const blockedByWork = await fetch(
+      `${baseUrl}/v1/workers/${current.id}/token-rotations`,
+      { method: "POST" },
+    );
+    expect(blockedByWork.status).toBe(409);
+    store.setTerminalState(activeTerminal.id, "succeeded", 0);
+
+    const preparedResponse = await fetch(
+      `${baseUrl}/v1/workers/${current.id}/token-rotations`,
+      { method: "POST" },
+    );
+    expect(preparedResponse.status).toBe(201);
+    const prepared = await preparedResponse.json() as {
+      rotationId: string;
+      token: string;
+    };
+    expect(prepared.rotationId).toMatch(/^wtr_[a-f0-9]{32}$/);
+    expect(prepared.token).toMatch(/^[a-f0-9]{48}$/);
+    expect(JSON.stringify(
+      store.db.prepare("SELECT * FROM workers WHERE id = ?").get(current.id),
+    )).not.toContain(prepared.token);
+
+    const prematureCommit = await fetch(
+      `${baseUrl}/v1/workers/${current.id}/token-rotations/${prepared.rotationId}/commit`,
+      { method: "POST" },
+    );
+    expect(prematureCommit.status).toBe(409);
+
+    expect((await fetch(`${baseUrl}/v1/workers/lease`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-worker-id": current.id,
+        "x-worker-token": current.token,
+      },
+      body: "{}",
+    })).status).toBe(200);
+
+    const pendingAgent = new WorkerAgent({
+      controlPlaneUrl: baseUrl,
+      name: "rotating-worker",
+      workerId: current.id,
+      workerToken: prepared.token,
+      pollMs: 10_000,
+      capabilities: ["shell"],
+    });
+    await pendingAgent.poll();
+    const status = await fetch(
+      `${baseUrl}/v1/workers/${current.id}/token-rotation`,
+    );
+    expect(await status.json()).toMatchObject({
+      state: "prepared",
+      rotationId: prepared.rotationId,
+      pendingSeen: true,
+    });
+
+    const committed = await fetch(
+      `${baseUrl}/v1/workers/${current.id}/token-rotations/${prepared.rotationId}/commit`,
+      { method: "POST" },
+    );
+    expect(committed.status).toBe(200);
+    expect(await committed.json()).toMatchObject({
+      state: "committed",
+      idempotent: false,
+    });
+    expect((await fetch(`${baseUrl}/v1/workers/lease`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-worker-id": current.id,
+        "x-worker-token": current.token,
+      },
+      body: "{}",
+    })).status).toBe(401);
+    expect((await fetch(`${baseUrl}/v1/workers/lease`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-worker-id": current.id,
+        "x-worker-token": prepared.token,
+      },
+      body: "{}",
+    })).status).toBe(200);
+  });
+
   it("leases the durable project repository as a trusted read-only sandbox root", async () => {
     const project = store.createProject({
       name: "linked-worktree-check",

@@ -35,6 +35,7 @@ import {
   restoreOperatorVaultKeyFromRecovery,
   rotateOperatorApiToken,
   rotateOperatorServiceCredential,
+  rotateOperatorWorkerToken,
   rotateOperatorVaultKey,
   resolveOperatorVaultKeyStore,
   verifyOperatorVaultRecovery,
@@ -423,6 +424,130 @@ describe("operator credential vault", () => {
     );
   });
 
+  it("rotates a server-generated worker token with restart proof and safe resume", async () => {
+    const paths = fixturePaths();
+    const keyPath = join(paths.rootDir, "..", "worker-rotation-master.key");
+    const key = new FileCredentialVaultKeyStore(keyPath).create();
+    const vault = new EncryptedCredentialVault(paths.credentialVaultPath, key);
+    vault.initialize();
+    vault.set("AVITY_WORKER_TOKEN", "current-worker-token");
+
+    let statusCalls = 0;
+    const rotated = await rotateOperatorWorkerToken(
+      paths,
+      "wrk_rotation",
+      {
+        status: async () => {
+          statusCalls += 1;
+          return statusCalls === 1
+            ? { state: "stable", rotationId: null, pendingSeen: false }
+            : {
+                state: "prepared",
+                rotationId: "wtr_success",
+                pendingSeen: true,
+              };
+        },
+        role: async () => "pending",
+        prepare: async () => ({
+          rotationId: "wtr_success",
+          token: "next-worker-token",
+        }),
+        activate: async (token, role) => {
+          expect(token).toBe("next-worker-token");
+          expect(role).toBe("pending");
+          expect(vault.environmentFor("worker").AVITY_WORKER_TOKEN).toBe(
+            token,
+          );
+        },
+        commit: async (rotationId) => {
+          expect(rotationId).toBe("wtr_success");
+        },
+        abort: async () => {
+          throw new Error("abort must not run");
+        },
+      },
+      { keyFile: keyPath },
+    );
+    expect(rotated).toMatchObject({
+      workerId: "wrk_rotation",
+      rotationId: "wtr_success",
+      previousGeneration: 1,
+      generation: 2,
+      resumed: false,
+    });
+    expect(JSON.stringify(rotated)).not.toMatch(/current-worker|next-worker/);
+
+    let ambiguousStatusCalls = 0;
+    await expect(rotateOperatorWorkerToken(
+      paths,
+      "wrk_rotation",
+      {
+        status: async () => {
+          ambiguousStatusCalls += 1;
+          return ambiguousStatusCalls === 1
+            ? { state: "stable", rotationId: null, pendingSeen: false }
+            : {
+                state: "prepared",
+                rotationId: "wtr_ambiguous",
+                pendingSeen: true,
+              };
+        },
+        role: async () => "pending",
+        prepare: async () => ({
+          rotationId: "wtr_ambiguous",
+          token: "ambiguous-worker-token",
+        }),
+        activate: async () => undefined,
+        commit: async () => {
+          throw new Error("response lost");
+        },
+        abort: async () => {
+          throw new Error("ambiguous commit must not abort");
+        },
+      },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/finalization is ambiguous/i);
+    expect(vault.environmentFor("worker").AVITY_WORKER_TOKEN).toBe(
+      "ambiguous-worker-token",
+    );
+
+    const resumed = await rotateOperatorWorkerToken(
+      paths,
+      "wrk_rotation",
+      {
+        status: async () => ({
+          state: "prepared",
+          rotationId: "wtr_ambiguous",
+          pendingSeen: true,
+        }),
+        role: async (token) => {
+          expect(token).toBe("ambiguous-worker-token");
+          return "pending";
+        },
+        prepare: async () => {
+          throw new Error("prepare must not repeat");
+        },
+        activate: async (token, role) => {
+          expect(token).toBe("ambiguous-worker-token");
+          expect(role).toBe("pending");
+        },
+        commit: async (rotationId) => {
+          expect(rotationId).toBe("wtr_ambiguous");
+        },
+        abort: async () => {
+          throw new Error("abort must not run");
+        },
+      },
+      { keyFile: keyPath },
+    );
+    expect(resumed).toMatchObject({
+      rotationId: "wtr_ambiguous",
+      previousGeneration: 3,
+      generation: 3,
+      resumed: true,
+    });
+  });
+
   it("injects decrypted values in memory and overrides legacy credentials", async () => {
     const paths = fixturePaths();
     mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
@@ -541,6 +666,9 @@ describe("operator credential vault", () => {
     expect(output.mock.calls.flat().join("\n")).toContain(
       "vault credential-rotate <credential-name> --stdin",
     );
+    expect(output.mock.calls.flat().join("\n")).toContain(
+      "vault worker-token-rotate",
+    );
     expect(await main([
       "vault",
       "set",
@@ -560,6 +688,14 @@ describe("operator credential vault", () => {
     ])).toBe(2);
     expect(error.mock.calls.flat().join("\n")).toContain(
       "vault credential-rotate accepts no credential value in argv",
+    );
+    expect(await main([
+      "vault",
+      "worker-token-rotate",
+      "argv-secret",
+    ])).toBe(2);
+    expect(error.mock.calls.flat().join("\n")).toContain(
+      "server generates the credential",
     );
   });
 

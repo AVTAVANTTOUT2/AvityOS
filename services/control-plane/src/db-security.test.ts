@@ -58,9 +58,17 @@ describe("persistent database file security", () => {
       const authColumns = db.prepare(
         "PRAGMA table_info(api_auth_tokens)",
       ).all() as { name: string }[];
-      expect(versions.at(-1)?.version).toBe(10);
+      expect(versions.at(-1)?.version).toBe(11);
       expect(workerColumns.map((column) => column.name)).toContain(
         "mtls_fingerprint",
+      );
+      expect(workerColumns.map((column) => column.name)).toEqual(
+        expect.arrayContaining([
+          "pending_token_hash",
+          "token_rotation_id",
+          "pending_token_seen_at",
+          "last_committed_token_rotation_id",
+        ]),
       );
       expect(authColumns.map((column) => column.name)).toEqual(
         expect.arrayContaining([

@@ -56,6 +56,7 @@ import {
   restoreOperatorVaultKeyFromRecovery,
   rotateOperatorApiToken,
   rotateOperatorServiceCredential,
+  rotateOperatorWorkerToken,
   rotateOperatorVaultKey,
   verifyOperatorVaultRecovery,
 } from "./operator/vault.js";
@@ -272,6 +273,23 @@ function assertVaultSecretInvocation(
     }
     throw new UsageError(
       `vault ${subcommand} accepts no credential value in argv; pipe it with --stdin`,
+    );
+  }
+}
+
+function assertWorkerTokenRotationInvocation(ctx: Ctx): void {
+  for (let index = 1; index < ctx.args.length; index += 1) {
+    if (ctx.args[index] === "--key-file") {
+      if (!ctx.args[index + 1] || ctx.args[index + 1]?.startsWith("--")) {
+        throw new UsageError(
+          "vault worker-token-rotate requires a value after --key-file",
+        );
+      }
+      index += 1;
+      continue;
+    }
+    throw new UsageError(
+      "vault worker-token-rotate accepts no token or positional argument; the server generates the credential",
     );
   }
 }
@@ -577,6 +595,104 @@ async function commitApiTokenRotation(
   throw lastError;
 }
 
+async function activateWorkerToken(
+  paths: ReturnType<typeof resolveOperatorPaths>,
+  client: Client,
+  workerId: string,
+  token: string,
+  expectedRole: "current" | "pending",
+): Promise<void> {
+  const workerEnvironment = loadOperatorServiceEnvironment(paths, "worker");
+  if (workerEnvironment.AVITY_WORKER_TOKEN !== token) {
+    throw new Error(
+      "encrypted worker token changed before service activation",
+    );
+  }
+  const before = await client.get<{
+    items: Array<{
+      id: string;
+      lastHeartbeatAt: string | null;
+    }>;
+  }>("/v1/workers");
+  const previousHeartbeat = before.items.find(
+    (entry) => entry.id === workerId,
+  )?.lastHeartbeatAt ?? null;
+  const previousHeartbeatMs = previousHeartbeat
+    ? Date.parse(previousHeartbeat)
+    : Number.NEGATIVE_INFINITY;
+  const startedAt = Date.now();
+  const lifecycle = new OperatorServiceLifecycle(paths);
+  await lifecycle.restart(["worker"]);
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
+    try {
+      const role = await client.post<{ role: "current" | "pending" }>(
+        `/v1/workers/${workerId}/token-rotation/role`,
+        { token },
+      );
+      const status = await client.get<{
+        state: "stable" | "prepared";
+        rotationId: string | null;
+        pendingSeen: boolean;
+      }>(`/v1/workers/${workerId}/token-rotation`);
+      const workers = await client.get<{
+        items: Array<{
+          id: string;
+          status: string;
+          lastHeartbeatAt: string | null;
+        }>;
+      }>("/v1/workers");
+      const worker = workers.items.find((entry) => entry.id === workerId);
+      const freshHeartbeat =
+        worker?.lastHeartbeatAt !== null &&
+        worker?.lastHeartbeatAt !== undefined &&
+        Date.parse(worker.lastHeartbeatAt) >= startedAt &&
+        Date.parse(worker.lastHeartbeatAt) > previousHeartbeatMs;
+      const pendingProven =
+        expectedRole === "current" || status.pendingSeen;
+      const expectedWorkerStatus =
+        expectedRole === "pending" ? "draining" : "online";
+      if (
+        role.role === expectedRole &&
+        worker?.status === expectedWorkerStatus &&
+        freshHeartbeat &&
+        pendingProven
+      ) {
+        return;
+      }
+    } catch {
+      // The restarted worker may not have completed its first lease poll yet.
+    }
+    if (attempt < 20) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new Error(
+    `worker ${workerId} did not authenticate with its ${expectedRole} token within 20 bounded probes`,
+  );
+}
+
+async function commitWorkerTokenRotation(
+  client: Client,
+  workerId: string,
+  rotationId: string,
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await client.post(
+        `/v1/workers/${workerId}/token-rotations/${rotationId}/commit`,
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
+  throw lastError;
+}
+
 function campaignRetentionCount(): number {
   const raw = process.env.AVITY_E2E_REPORT_RETENTION ?? "20";
   if (!/^\d+$/.test(raw)) {
@@ -807,6 +923,75 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
         [
           `${payload.resumed ? "resumed" : "rotated and activated"} ${payload.name}`,
           `service: ${payload.service}`,
+          `vault generation: ${payload.previousGeneration} -> ${payload.generation}`,
+        ].join("\n")
+      );
+    },
+    "worker-token-rotate": async (ctx) => {
+      assertWorkerTokenRotationInvocation(ctx);
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const lifecycle = new OperatorServiceLifecycle(paths);
+      const serviceStatus = await lifecycle.status();
+      if (
+        serviceStatus.controlPlane.state !== "running" ||
+        serviceStatus.worker.state !== "running"
+      ) {
+        throw new Error(
+          "worker token rotation requires running control-plane and worker services",
+        );
+      }
+      const workerEnvironment = loadOperatorServiceEnvironment(paths, "worker");
+      const workerId = workerEnvironment.AVITY_WORKER_ID;
+      if (!workerId) {
+        throw new Error("worker token rotation requires AVITY_WORKER_ID");
+      }
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const result = await rotateOperatorWorkerToken(
+        paths,
+        workerId,
+        {
+          status: () =>
+            ctx.client.get(`/v1/workers/${workerId}/token-rotation`),
+          role: async (token) => {
+            const result = await ctx.client.post<{
+              role: "current" | "pending";
+            }>(
+              `/v1/workers/${workerId}/token-rotation/role`,
+              { token },
+            );
+            return result.role;
+          },
+          prepare: () =>
+            ctx.client.post(
+              `/v1/workers/${workerId}/token-rotations`,
+            ),
+          activate: (token, role) =>
+            activateWorkerToken(
+              paths,
+              ctx.client,
+              workerId,
+              token,
+              role,
+            ),
+          commit: (rotationId) =>
+            commitWorkerTokenRotation(
+              ctx.client,
+              workerId,
+              rotationId,
+            ),
+          abort: (rotationId) =>
+            ctx.client.post(
+              `/v1/workers/${workerId}/token-rotations/${rotationId}/abort`,
+            ),
+        },
+        { ...(keyFile ? { keyFile } : {}) },
+      );
+      out(ctx, result, (payload: typeof result) =>
+        [
+          `${payload.resumed ? "resumed" : "rotated and activated"} ${payload.name}`,
+          `worker: ${payload.workerId}`,
           `vault generation: ${payload.previousGeneration} -> ${payload.generation}`,
         ].join("\n")
       );
@@ -1859,6 +2044,7 @@ commands:
   vault init|status|list [--key-file <0600-path>]
   vault set <credential-name> --stdin [--key-file <0600-path>]
   vault credential-rotate <credential-name> --stdin [--key-file <0600-path>]
+  vault worker-token-rotate [--key-file <0600-path>]
   vault remove <credential-name> --confirm <credential-name>
   vault migrate [--key-file <0600-path>]
   vault recovery-export --output <path> --passphrase-stdin [--key-file <path>]

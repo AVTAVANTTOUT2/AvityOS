@@ -31,6 +31,10 @@ import {
   ApiTokenAuthority,
   ApiTokenRotationError,
 } from "./api-token-authority.js";
+import {
+  WorkerTokenAuthority,
+  WorkerTokenRotationError,
+} from "./worker-token-authority.js";
 import type { Engine } from "./engine.js";
 import { getCachedGitHubReadiness } from "./github-readiness.js";
 import type { ProviderStatusReport } from "./provider-status.js";
@@ -108,6 +112,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   const apiTokenAuthority = opts.apiToken
     ? new ApiTokenAuthority(store.db, opts.apiToken)
     : null;
+  const workerTokenAuthority = new WorkerTokenAuthority(store.db);
   const app = Fastify({
     logger: false,
     forceCloseConnections: true,
@@ -872,30 +877,44 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return store.getTerminal(id);
   });
 
-  function requireWorker(req: FastifyRequest, reply: FastifyReply): string | null {
-    const workerId = (req.headers["x-worker-id"] as string) ?? "";
+  function requireWorker(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    expectedWorkerId?: string,
+  ): string | null {
+    const workerId = expectedWorkerId ??
+      ((req.headers["x-worker-id"] as string) ?? "");
     const token = (req.headers["x-worker-token"] as string) ?? "";
     const row = store.db.prepare(
-      "SELECT token_hash, status, mtls_fingerprint FROM workers WHERE id = ?",
+      "SELECT status, mtls_fingerprint FROM workers WHERE id = ?",
     ).get(workerId) as
       | {
-          token_hash: string;
           status: string;
           mtls_fingerprint: string | null;
         }
       | undefined;
+    const authenticated = workerTokenAuthority.authenticate(workerId, token);
     const peerFingerprint = opts.workerMtlsRequired
       ? authorizedPeerCertificateFingerprint(req.raw.socket)
       : null;
     if (
       !row ||
-      row.token_hash !== sha256(token) ||
+      !authenticated ||
       row.status === "revoked" ||
       (opts.workerMtlsRequired &&
         (!peerFingerprint || row.mtls_fingerprint !== peerFingerprint))
     ) {
       void apiError(reply, 401, "policy_denied", "invalid worker credentials");
       return null;
+    }
+    if (
+      authenticated.role === "pending" &&
+      authenticated.rotationId
+    ) {
+      workerTokenAuthority.markPendingSeen(
+        workerId,
+        authenticated.rotationId,
+      );
     }
     return workerId;
   }
@@ -1029,33 +1048,116 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   app.post("/v1/workers/:id/heartbeat", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const auth = (req.headers["x-worker-token"] as string) ?? "";
-    const row = store.db.prepare(
-      "SELECT token_hash, status, mtls_fingerprint FROM workers WHERE id = ?",
-    ).get(id) as
-      | {
-          token_hash: string;
-          status: string;
-          mtls_fingerprint: string | null;
-        }
-      | undefined;
-    if (!row) return apiError(reply, 404, "not_found", `worker ${id} not found`);
-    if (row.token_hash !== sha256(auth)) return apiError(reply, 401, "policy_denied", "invalid worker token");
-    if (row.status === "revoked") return apiError(reply, 403, "policy_denied", "worker is revoked");
-    if (
-      opts.workerMtlsRequired &&
-      row.mtls_fingerprint !==
-        authorizedPeerCertificateFingerprint(req.raw.socket)
-    ) {
-      return apiError(
-        reply,
-        401,
-        "policy_denied",
-        "worker certificate does not match enrollment",
-      );
-    }
+    const workerId = requireWorker(req, reply, id);
+    if (!workerId) return;
     store.db.prepare("UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), id);
     return { ok: true };
+  });
+
+  function workerRotationError(
+    reply: FastifyReply,
+    error: unknown,
+  ) {
+    if (!(error instanceof WorkerTokenRotationError)) throw error;
+    const status =
+      error.code === "not_found" ? 404
+        : error.code === "unauthorized" ? 403
+        : 409;
+    const code: ApiErrorCode =
+      error.code === "not_found" ? "not_found"
+        : error.code === "unauthorized" ? "policy_denied"
+        : "conflict";
+    return apiError(reply, status, code, error.message);
+  }
+
+  app.get("/v1/workers/:id/token-rotation", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    reply.header("cache-control", "no-store");
+    try {
+      return workerTokenAuthority.status(id);
+    } catch (error) {
+      return workerRotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/workers/:id/token-rotation/role", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = parse(
+      z.object({
+        token: z.string().min(1).max(4096).refine(
+          (value) => !/[\u0000\r\n]/.test(value),
+          "token must be a single-line value",
+        ),
+      }).strict(),
+      req.body,
+    );
+    reply.header("cache-control", "no-store");
+    try {
+      return { role: workerTokenAuthority.tokenRole(id, body.token) };
+    } catch (error) {
+      return workerRotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/workers/:id/token-rotations", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    reply.header("cache-control", "no-store");
+    try {
+      const prepared = workerTokenAuthority.prepare(id);
+      store.appendEvent("worker.status_changed", {}, {
+        workerId: id,
+        status: "draining",
+      });
+      store.appendAudit(null, "user", "worker_token.prepare", `${id}:${prepared.rotationId}`);
+      return reply.status(201).send(prepared);
+    } catch (error) {
+      return workerRotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/workers/:id/token-rotations/:rotationId/commit", async (req, reply) => {
+    const { id, rotationId } = req.params as {
+      id: string;
+      rotationId: string;
+    };
+    reply.header("cache-control", "no-store");
+    try {
+      const committed = workerTokenAuthority.commit(id, rotationId);
+      if (!committed.idempotent) {
+        store.appendEvent("worker.status_changed", {}, {
+          workerId: id,
+          status: "online",
+        });
+        store.appendAudit(null, "user", "worker_token.commit", `${id}:${rotationId}`);
+      }
+      return committed;
+    } catch (error) {
+      return workerRotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/workers/:id/token-rotations/:rotationId/abort", async (req, reply) => {
+    const { id, rotationId } = req.params as {
+      id: string;
+      rotationId: string;
+    };
+    reply.header("cache-control", "no-store");
+    try {
+      const aborted = workerTokenAuthority.abort(id, rotationId);
+      if (!aborted.idempotent) {
+        const row = store.db.prepare(
+          "SELECT status FROM workers WHERE id = ?",
+        ).get(id) as { status: string };
+        store.appendEvent("worker.status_changed", {}, {
+          workerId: id,
+          status: row.status,
+        });
+        store.appendAudit(null, "user", "worker_token.abort", `${id}:${rotationId}`);
+      }
+      return aborted;
+    } catch (error) {
+      return workerRotationError(reply, error);
+    }
   });
 
   app.post("/v1/workers/:id/revoke", async (req, reply) => {

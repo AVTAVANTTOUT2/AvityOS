@@ -408,6 +408,98 @@ describe("worker mutual TLS transport", () => {
       );
       expect(stolenBearer.status).toBe(401);
 
+      const rotationResponse = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/token-rotations`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer admin-token" },
+        },
+      );
+      expect(rotationResponse.status).toBe(201);
+      const rotation = await rotationResponse.json() as {
+        rotationId: string;
+        token: string;
+      };
+      expect(JSON.stringify(
+        store.db.prepare("SELECT * FROM workers WHERE id = ?").get(
+          credentials.id,
+        ),
+      )).not.toContain(rotation.token);
+
+      const roguePending = await rogue.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(roguePending.status).toBe(401);
+      const unseen = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/token-rotation`,
+        { headers: { authorization: "Bearer admin-token" } },
+      );
+      expect(await unseen.json()).toMatchObject({ pendingSeen: false });
+
+      await agent.stop();
+      agent = new WorkerAgent({
+        controlPlaneUrl: baseUrl,
+        name: "mtls-worker",
+        workerId: credentials.id,
+        workerToken: rotation.token,
+        pollMs: 25,
+        capabilities: ["shell"],
+        fetchImpl: trusted.fetch,
+      });
+      await agent.poll();
+      const proven = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/token-rotation`,
+        { headers: { authorization: "Bearer admin-token" } },
+      );
+      expect(await proven.json()).toMatchObject({
+        rotationId: rotation.rotationId,
+        pendingSeen: true,
+      });
+      const committed = await caOnly.fetch(
+        `${baseUrl}/v1/workers/${credentials.id}/token-rotations/${rotation.rotationId}/commit`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer admin-token" },
+        },
+      );
+      expect(committed.status).toBe(200);
+
+      const retiredBearer = await trusted.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": credentials.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(retiredBearer.status).toBe(401);
+      const rotatedBearer = await trusted.fetch(
+        `${baseUrl}/v1/workers/lease`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-worker-id": credentials.id,
+            "x-worker-token": rotation.token,
+          },
+          body: "{}",
+        },
+      );
+      expect(rotatedBearer.status).toBe(200);
+
       const listed = await caOnly.fetch(`${baseUrl}/v1/workers`, {
         headers: { authorization: "Bearer admin-token" },
       });

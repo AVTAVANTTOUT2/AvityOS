@@ -470,6 +470,17 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    // Worker bearer rotation keeps a generated pending hash beside the current
+    // hash until that token authenticates through the enrolled worker identity.
+    version: 11,
+    sql: `
+      ALTER TABLE workers ADD COLUMN pending_token_hash TEXT;
+      ALTER TABLE workers ADD COLUMN token_rotation_id TEXT;
+      ALTER TABLE workers ADD COLUMN pending_token_seen_at TEXT;
+      ALTER TABLE workers ADD COLUMN last_committed_token_rotation_id TEXT;
+    `,
+  },
 ];
 
 export function openDatabase(dbPath: string): DB {

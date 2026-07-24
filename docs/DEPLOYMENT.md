@@ -52,6 +52,10 @@ in leaf-first order; follow the
 
 Revoke lost hosts immediately: `avity worker revoke <id>` — revoked tokens
 are rejected on the next call.
+For a local operator-managed worker with an initialized credential vault, use
+`avity vault worker-token-rotate`; it drains the idle worker, restarts only
+that service and requires proof with the same mTLS enrollment certificate
+before revoking the old bearer.
 
 ## Web
 

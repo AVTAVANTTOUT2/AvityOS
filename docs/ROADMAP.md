@@ -127,8 +127,11 @@ reproductible dans `docs/TRACEABILITY.md`.
    serveur en deux phases pour `AVITY_API_TOKEN` : hashes current/pending
    durables, chevauchement d'authentification, preuve avec le nouveau client,
    promotion/annulation idempotente et coordination CAS du coffre sans
-   redémarrage. Restent notamment : rotation du bearer worker et des
-   certificats,
+   redémarrage. Le checkpoint 7.6 applique le même principe au bearer worker :
+   token généré côté serveur, état draining sans nouvelle lease, CAS du coffre,
+   redémarrage du seul worker, preuve par heartbeat pending avec le certificat
+   mTLS enrôlé, puis promotion ou rollback. Restent notamment : rotation des
+   certificats et de la CA,
    automatisation des releases versionnées et preuve de
    signature/notarisation Apple réelle. La politique de mise à jour signée et
    le rollback macOS sont livrés au checkpoint 6.6.
