@@ -154,8 +154,8 @@ private func requestBody(_ request: URLRequest) throws -> Data {
     return body
 }
 
-@MainActor
 final class ApiClientTests: XCTestCase {
+    @MainActor
     func testEndpointPolicyRequiresHTTPSOutsideLoopback() throws {
         XCTAssertThrowsError(
             try ApiClient.validatedEndpoint(URL(string: "http://control.example")!)
@@ -179,6 +179,7 @@ final class ApiClientTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testSSECursorResumesFromLatestEventID() {
         var cursor = SSEEventCursor(lastSequence: 41)
         XCTAssertFalse(cursor.consume(line: "id: 42"))
@@ -190,6 +191,7 @@ final class ApiClientTests: XCTestCase {
         XCTAssertEqual(cursor.lastSequence, 42)
     }
 
+    @MainActor
     func testRefreshDecodesCanonicalTerminalAndSendsBearer() async {
         let context = URLProtocolTestContext()
         defer { context.cleanUp() }
@@ -239,6 +241,7 @@ final class ApiClientTests: XCTestCase {
         XCTAssertNil(client.lastError)
     }
 
+    @MainActor
     func testStructuredServerErrorIsNotMisreportedAsAuthentication() async {
         let context = URLProtocolTestContext()
         defer { context.cleanUp() }
@@ -267,6 +270,7 @@ final class ApiClientTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testApprovalResolutionUsesCanonicalBodyAndRefreshes() async throws {
         let context = URLProtocolTestContext()
         defer { context.cleanUp() }
@@ -311,6 +315,7 @@ final class ApiClientTests: XCTestCase {
         XCTAssertNil(client.lastError)
     }
 
+    @MainActor
     func testConfigureRejectsInsecureRemoteURLBeforeSavingToken() {
         let context = URLProtocolTestContext()
         defer { context.cleanUp() }
