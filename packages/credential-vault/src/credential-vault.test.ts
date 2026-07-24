@@ -20,7 +20,12 @@ import {
   decodeCredentialVaultKey,
   encodeCredentialVaultKey,
   openCredentialVault,
+  openCredentialRecovery,
+  credentialVaultKeyId,
+  sealCredentialRecovery,
   sealCredentialVault,
+  readCredentialRecoveryFile,
+  writeCredentialRecoveryFileAtomic,
 } from "./index.js";
 
 const NOW = new Date("2026-07-24T15:30:00.000Z");
@@ -68,6 +73,38 @@ describe("credential vault cryptography", () => {
     }, key)).toThrow(/authentication/i);
     expect(() => decodeCredentialVaultKey("short")).toThrow(/32-byte/i);
     expect(decodeCredentialVaultKey(encodeCredentialVaultKey(key))).toEqual(key);
+  });
+
+  it("protects a portable recovery key with strict scrypt + AES-GCM", () => {
+    const key = Buffer.alloc(32, 0x5a);
+    const passphrase = "correct horse battery staple";
+    const envelope = sealCredentialRecovery(key, passphrase, {
+      salt: Buffer.alloc(16, 0x6b),
+      nonce: Buffer.alloc(12, 0x7c),
+    });
+
+    expect(JSON.stringify(envelope)).not.toContain(encodeCredentialVaultKey(key));
+    expect(envelope.keyId).toBe(credentialVaultKeyId(key));
+    expect(openCredentialRecovery(envelope, passphrase)).toEqual(key);
+    expect(() => openCredentialRecovery(envelope, "wrong passphrase value")).toThrow(
+      /authentication failed/i,
+    );
+    expect(() => openCredentialRecovery({
+      ...envelope,
+      tag: `${envelope.tag.slice(0, -1)}A`,
+    }, passphrase)).toThrow(/authentication failed/i);
+    expect(() => sealCredentialRecovery(key, "too-short")).toThrow(
+      /between 16 and 1024/i,
+    );
+
+    const root = mkdtempSync(join(tmpdir(), "avity-recovery-"));
+    const path = join(root, "private", "vault.recovery.json");
+    writeCredentialRecoveryFileAtomic(path, envelope);
+    expect(readCredentialRecoveryFile(path)).toEqual(envelope);
+    expect(lstatSync(path).mode & 0o777).toBe(0o600);
+    expect(() => writeCredentialRecoveryFileAtomic(path, envelope)).toThrow(
+      /already exists/i,
+    );
   });
 });
 
@@ -163,6 +200,34 @@ describe("encrypted credential vault file", () => {
       name.startsWith("credentials.vault.lock.stale-")
     )).toBe(true);
   });
+
+  it("rotates the master key without changing credential metadata or values", () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-vault-rekey-"));
+    const path = join(root, "credentials.vault");
+    const firstKey = Buffer.alloc(32, 0x31);
+    const nextKey = Buffer.alloc(32, 0x32);
+    const vault = new EncryptedCredentialVault(path, firstKey, {
+      now: () => NOW,
+    });
+    vault.initialize();
+    const before = vault.set("OPENAI_API_KEY", "provider-secret");
+
+    const rotated = vault.rotateMasterKey(nextKey);
+
+    expect(rotated.generation).toBe(before.generation + 1);
+    expect(rotated.keyId).toBe(credentialVaultKeyId(nextKey));
+    expect(rotated.entries).toEqual(before.entries);
+    expect(vault.snapshot()).toEqual(rotated);
+    expect(vault.environmentFor("control-plane")).toEqual({
+      OPENAI_API_KEY: "provider-secret",
+    });
+    expect(() =>
+      new EncryptedCredentialVault(path, firstKey).snapshot()
+    ).toThrow(/master key does not match/i);
+    expect(
+      new EncryptedCredentialVault(path, nextKey).environmentFor("control-plane"),
+    ).toEqual({ OPENAI_API_KEY: "provider-secret" });
+  });
 });
 
 describe("credential vault key stores", () => {
@@ -180,6 +245,10 @@ describe("credential vault key stores", () => {
     expect(() => store.load()).toThrow(/private regular file/i);
     chmodSync(path, 0o400);
     expect(() => store.load()).toThrow(/private regular file/i);
+    chmodSync(path, 0o600);
+    const next = randomBytes(32);
+    expect(store.replace(first, next)).toEqual(next);
+    expect(() => store.replace(first, randomBytes(32))).toThrow(/changed/i);
   });
 
   it("keeps the generated macOS key out of argv and verifies the readback", () => {
@@ -220,6 +289,15 @@ describe("credential vault key stores", () => {
       persisted,
       persisted,
     ]);
+
+    const next = randomBytes(32);
+    expect(store.replace(key, next)).toEqual(next);
+    const update = calls.find((call) =>
+      call.args[0] === "add-generic-password" && call.args.includes("-U")
+    );
+    expect(update?.args.at(-1)).toBe("-w");
+    expect(update?.args.join(" ")).not.toContain(encodeCredentialVaultKey(next));
+    expect(() => store.replace(key, randomBytes(32))).toThrow(/changed/i);
   });
 
   it("rejects a symlinked file key", () => {

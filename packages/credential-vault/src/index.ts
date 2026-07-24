@@ -3,6 +3,7 @@ import {
   createDecipheriv,
   createHash,
   randomBytes,
+  scryptSync,
 } from "node:crypto";
 import {
   chmodSync,
@@ -24,6 +25,10 @@ export const CREDENTIAL_VAULT_SCHEMA_VERSION = 1 as const;
 export const CREDENTIAL_VAULT_CIPHER = "aes-256-gcm" as const;
 export const MAX_CREDENTIAL_VAULT_BYTES = 2 * 1024 * 1024;
 export const MAX_CREDENTIAL_VALUE_BYTES = 64 * 1024;
+export const CREDENTIAL_RECOVERY_SCHEMA_VERSION = 1 as const;
+export const CREDENTIAL_RECOVERY_KDF_N = 32_768;
+export const CREDENTIAL_RECOVERY_KDF_R = 8;
+export const CREDENTIAL_RECOVERY_KDF_P = 1;
 
 export const VaultService = z.enum(["control-plane", "worker"]);
 export type VaultService = z.infer<typeof VaultService>;
@@ -111,6 +116,36 @@ const VaultEnvelope = z.object({
 }).strict();
 type VaultEnvelope = z.infer<typeof VaultEnvelope>;
 
+const CredentialRecoveryEnvelope = z.object({
+  schemaVersion: z.literal(CREDENTIAL_RECOVERY_SCHEMA_VERSION),
+  kdf: z.literal("scrypt"),
+  kdfN: z.literal(CREDENTIAL_RECOVERY_KDF_N),
+  kdfR: z.literal(CREDENTIAL_RECOVERY_KDF_R),
+  kdfP: z.literal(CREDENTIAL_RECOVERY_KDF_P),
+  cipher: z.literal(CREDENTIAL_VAULT_CIPHER),
+  keyId: z.string().regex(/^[a-f0-9]{64}$/),
+  salt: Base64Url,
+  nonce: Base64Url,
+  ciphertext: Base64Url,
+  tag: Base64Url,
+}).strict();
+export type CredentialRecoveryEnvelope = z.infer<
+  typeof CredentialRecoveryEnvelope
+>;
+
+export function parseCredentialRecoveryEnvelope(
+  value: unknown,
+): CredentialRecoveryEnvelope {
+  try {
+    return CredentialRecoveryEnvelope.parse(value);
+  } catch {
+    throw new CredentialVaultError(
+      "invalid_vault",
+      "credential recovery envelope is invalid",
+    );
+  }
+}
+
 export interface CredentialVaultEntryMetadata {
   readonly name: VaultSecretName;
   readonly service: VaultService;
@@ -192,6 +227,136 @@ function decodeCanonicalBase64Url(value: string): Buffer {
     throw new Error("non-canonical base64url");
   }
   return decoded;
+}
+
+function validatedRecoveryPassphrase(value: string): Buffer {
+  if (/[\u0000\r\n]/.test(value)) {
+    throw new CredentialVaultError(
+      "invalid_input",
+      "recovery passphrase must be a single line",
+    );
+  }
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.byteLength < 16 || bytes.byteLength > 1_024) {
+    throw new CredentialVaultError(
+      "invalid_input",
+      "recovery passphrase must contain between 16 and 1024 UTF-8 bytes",
+    );
+  }
+  return bytes;
+}
+
+function recoveryAdditionalAuthenticatedData(keyId: string): Buffer {
+  return Buffer.from(
+    [
+      "AvityOS credential recovery",
+      `v${CREDENTIAL_RECOVERY_SCHEMA_VERSION}`,
+      `scrypt:${CREDENTIAL_RECOVERY_KDF_N}:${CREDENTIAL_RECOVERY_KDF_R}:${CREDENTIAL_RECOVERY_KDF_P}`,
+      keyId,
+    ].join("\u0000"),
+    "utf8",
+  );
+}
+
+function deriveRecoveryKey(passphrase: string, salt: Buffer): Buffer {
+  return scryptSync(validatedRecoveryPassphrase(passphrase), salt, 32, {
+    N: CREDENTIAL_RECOVERY_KDF_N,
+    r: CREDENTIAL_RECOVERY_KDF_R,
+    p: CREDENTIAL_RECOVERY_KDF_P,
+    maxmem: 64 * 1024 * 1024,
+  });
+}
+
+export function sealCredentialRecovery(
+  masterKeyValue: Uint8Array,
+  passphrase: string,
+  options: {
+    readonly salt?: Uint8Array;
+    readonly nonce?: Uint8Array;
+  } = {},
+): CredentialRecoveryEnvelope {
+  const masterKey = validatedMasterKey(masterKeyValue);
+  const salt = Buffer.from(options.salt ?? randomBytes(16));
+  const nonce = Buffer.from(options.nonce ?? randomBytes(12));
+  if (salt.byteLength !== 16 || nonce.byteLength !== 12) {
+    throw new CredentialVaultError(
+      "invalid_input",
+      "recovery salt/nonce lengths are invalid",
+    );
+  }
+  const keyId = credentialVaultKeyId(masterKey);
+  const recoveryKey = deriveRecoveryKey(passphrase, salt);
+  const cipher = createCipheriv(CREDENTIAL_VAULT_CIPHER, recoveryKey, nonce);
+  cipher.setAAD(recoveryAdditionalAuthenticatedData(keyId));
+  const ciphertext = Buffer.concat([
+    cipher.update(masterKey),
+    cipher.final(),
+  ]);
+  return CredentialRecoveryEnvelope.parse({
+    schemaVersion: CREDENTIAL_RECOVERY_SCHEMA_VERSION,
+    kdf: "scrypt",
+    kdfN: CREDENTIAL_RECOVERY_KDF_N,
+    kdfR: CREDENTIAL_RECOVERY_KDF_R,
+    kdfP: CREDENTIAL_RECOVERY_KDF_P,
+    cipher: CREDENTIAL_VAULT_CIPHER,
+    keyId,
+    salt: salt.toString("base64url"),
+    nonce: nonce.toString("base64url"),
+    ciphertext: ciphertext.toString("base64url"),
+    tag: cipher.getAuthTag().toString("base64url"),
+  });
+}
+
+export function openCredentialRecovery(
+  value: unknown,
+  passphrase: string,
+): Buffer {
+  let envelope: CredentialRecoveryEnvelope;
+  envelope = parseCredentialRecoveryEnvelope(value);
+  try {
+    const salt = decodeCanonicalBase64Url(envelope.salt);
+    const nonce = decodeCanonicalBase64Url(envelope.nonce);
+    const ciphertext = decodeCanonicalBase64Url(envelope.ciphertext);
+    const tag = decodeCanonicalBase64Url(envelope.tag);
+    if (
+      salt.byteLength !== 16 ||
+      nonce.byteLength !== 12 ||
+      ciphertext.byteLength !== 32 ||
+      tag.byteLength !== 16
+    ) {
+      throw new Error("invalid recovery parameters");
+    }
+    const recoveryKey = deriveRecoveryKey(passphrase, salt);
+    const decipher = createDecipheriv(
+      CREDENTIAL_VAULT_CIPHER,
+      recoveryKey,
+      nonce,
+    );
+    decipher.setAAD(recoveryAdditionalAuthenticatedData(envelope.keyId));
+    decipher.setAuthTag(tag);
+    const masterKey = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]);
+    if (
+      masterKey.byteLength !== 32 ||
+      credentialVaultKeyId(masterKey) !== envelope.keyId
+    ) {
+      throw new Error("recovered key identifier mismatch");
+    }
+    return masterKey;
+  } catch (error) {
+    if (
+      error instanceof CredentialVaultError &&
+      error.code === "invalid_input"
+    ) {
+      throw error;
+    }
+    throw new CredentialVaultError(
+      "invalid_vault",
+      "credential recovery authentication failed",
+    );
+  }
 }
 
 export function sealCredentialVault(
@@ -455,7 +620,7 @@ export interface EncryptedCredentialVaultOptions {
 }
 
 export class EncryptedCredentialVault {
-  private readonly masterKey: Buffer;
+  private masterKey: Buffer;
   private readonly now: () => Date;
   private readonly nonce: () => Uint8Array;
 
@@ -571,6 +736,27 @@ export class EncryptedCredentialVault {
     }
   }
 
+  rotateMasterKey(nextMasterKeyValue: Uint8Array): CredentialVaultSnapshot {
+    const nextMasterKey = validatedMasterKey(nextMasterKeyValue);
+    if (credentialVaultKeyId(nextMasterKey) === this.keyId) {
+      return this.snapshot();
+    }
+    ensurePrivateDirectory(dirname(this.path));
+    const lock = acquireLock(`${this.path}.lock`);
+    try {
+      const current = this.read();
+      const next = VaultPlaintext.parse({
+        ...current,
+        generation: current.generation + 1,
+      });
+      this.write(next, false, nextMasterKey);
+      this.masterKey = nextMasterKey;
+      return this.snapshotFrom(next, nextMasterKey);
+    } finally {
+      lock.release();
+    }
+  }
+
   private read(): VaultPlaintext {
     if (!existsSync(this.path)) {
       throw new CredentialVaultError(
@@ -591,7 +777,11 @@ export class EncryptedCredentialVault {
     return openCredentialVault(envelope, this.masterKey);
   }
 
-  private write(plaintext: VaultPlaintext, exclusive: boolean): void {
+  private write(
+    plaintext: VaultPlaintext,
+    exclusive: boolean,
+    masterKey: Uint8Array = this.masterKey,
+  ): void {
     const parent = dirname(this.path);
     ensurePrivateDirectory(parent);
     if (!exclusive && existsSync(this.path)) {
@@ -605,7 +795,7 @@ export class EncryptedCredentialVault {
     }
     const envelope = sealCredentialVault(
       plaintext,
-      this.masterKey,
+      masterKey,
       this.nonce(),
     );
     const bytes = Buffer.from(`${JSON.stringify(envelope, null, 2)}\n`, "utf8");
@@ -637,15 +827,17 @@ export class EncryptedCredentialVault {
     }
     chmodSync(tempPath, 0o600);
     renameSync(tempPath, this.path);
-    chmodSync(this.path, 0o600);
     fsyncDirectory(parent);
   }
 
-  private snapshotFrom(plaintext: VaultPlaintext): CredentialVaultSnapshot {
+  private snapshotFrom(
+    plaintext: VaultPlaintext,
+    masterKey: Uint8Array = this.masterKey,
+  ): CredentialVaultSnapshot {
     return {
       schemaVersion: CREDENTIAL_VAULT_SCHEMA_VERSION,
       generation: plaintext.generation,
-      keyId: this.keyId,
+      keyId: credentialVaultKeyId(masterKey),
       entries: plaintext.entries.map((entry) => ({
         name: entry.name,
         service: vaultSecretService(entry.name),
@@ -663,3 +855,7 @@ export {
   type CredentialVaultKeyStore,
   type KeychainRunner,
 } from "./key-store.js";
+export {
+  readCredentialRecoveryFile,
+  writeCredentialRecoveryFileAtomic,
+} from "./recovery-file.js";

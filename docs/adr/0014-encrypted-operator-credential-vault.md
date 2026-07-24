@@ -80,7 +80,8 @@ provider adapters already enforce a smaller allowlist for each child process.
   is passed to its explicitly scoped provider children. This is an at-rest and
   service-boundary control, not protection from a fully compromised operator
   account.
-- Master-key rotation, portable disaster-recovery escrow and integration with
-  an external enterprise secret manager remain later chantier 7 work. Losing
-  the Keychain item or external key file makes the encrypted vault
-  intentionally unrecoverable.
+- Master-key rotation and portable disaster-recovery escrow are added by
+  ADR-0015. Integration with an external enterprise secret manager remains
+  later chantier 7 work. Losing both the Keychain/external key and the
+  separately held recovery escrow makes the encrypted vault intentionally
+  unrecoverable.

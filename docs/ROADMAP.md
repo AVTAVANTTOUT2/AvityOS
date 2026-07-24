@@ -110,9 +110,13 @@ reproductible dans `docs/TRACEABILITY.md`.
    coffre opérateur AES-256-GCM : clé maître Keychain macOS ou fichier externe
    `0600` sur Linux, registre fermé et scope par service, mutations atomiques,
    rotation stdin-only, migration vérifiée des anciens `.env` puis suppression
-   du clair, et injection mémoire sans propagation au Web/worker.
-   Restent notamment : rotation/récupération de la clé maître, sauvegarde et
-   restauration certifiantes, TLS/mTLS, rotation des autres credentials,
+   du clair, et injection mémoire sans propagation au Web/worker. Le checkpoint
+   7.2 livre la rotation transactionnelle de la clé maître avec rollback,
+   l'escrow portable scrypt + AES-GCM séparé, ainsi qu'un bundle
+   SQLite/coffre créé en ligne, vérifié par hash, intégrité, migrations, clés
+   étrangères et chaîne d'audit, puis restauré uniquement dans une racine
+   vierge et recertifié.
+   Restent notamment : TLS/mTLS, rotation des autres credentials,
    automatisation des releases versionnées et preuve de
    signature/notarisation Apple réelle. La politique de mise à jour signée et
    le rollback macOS sont livrés au checkpoint 6.6.

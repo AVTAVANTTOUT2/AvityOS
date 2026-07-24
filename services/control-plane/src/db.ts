@@ -1,6 +1,10 @@
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+} from "node:fs";
+import { dirname, isAbsolute } from "node:path";
 
 /**
  * Thin wrapper over the built-in node:sqlite driver (zero native
@@ -439,12 +443,71 @@ const MIGRATIONS: readonly { version: number; sql: string }[] = [
 ];
 
 export function openDatabase(dbPath: string): DB {
-  if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
+  const persistent = dbPath !== ":memory:";
+  if (persistent) {
+    if (!isAbsolute(dbPath) || dbPath === "/") {
+      throw new Error("persistent database path must be absolute and non-root");
+    }
+    const parent = dirname(dbPath);
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const parentStats = lstatSync(parent);
+    const expectedUid = process.getuid?.();
+    if (
+      parentStats.isSymbolicLink() ||
+      !parentStats.isDirectory() ||
+      (expectedUid !== undefined && parentStats.uid !== expectedUid)
+    ) {
+      throw new Error(
+        `database directory ${parent} must be a non-symlinked directory owned by this user`,
+      );
+    }
+    chmodSync(parent, 0o700);
+    protectDatabaseFile(dbPath, false);
+    protectDatabaseFile(`${dbPath}-wal`, false);
+    protectDatabaseFile(`${dbPath}-shm`, false);
+  }
   const db = new DB(new DatabaseSync(dbPath));
-  if (dbPath !== ":memory:") db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  migrate(db);
-  return db;
+  try {
+    if (persistent) {
+      protectDatabaseFile(dbPath, true);
+      db.pragma("journal_mode = WAL");
+      protectDatabaseFile(`${dbPath}-wal`, false);
+      protectDatabaseFile(`${dbPath}-shm`, false);
+    }
+    db.pragma("foreign_keys = ON");
+    migrate(db);
+    if (persistent) {
+      protectDatabaseFile(dbPath, true);
+      protectDatabaseFile(`${dbPath}-wal`, false);
+      protectDatabaseFile(`${dbPath}-shm`, false);
+    }
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+function protectDatabaseFile(path: string, required: boolean): void {
+  const stats = lstatSync(path, { throwIfNoEntry: false });
+  if (!stats) {
+    if (required) throw new Error(`database file is missing: ${path}`);
+    return;
+  }
+  const expectedUid = process.getuid?.();
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isFile() ||
+    (expectedUid !== undefined && stats.uid !== expectedUid)
+  ) {
+    throw new Error(
+      `database file ${path} must be a non-symlinked regular file owned by this user`,
+    );
+  }
+  chmodSync(path, 0o600);
+  if ((lstatSync(path).mode & 0o777) !== 0o600) {
+    throw new Error(`database file ${path} could not be protected with mode 0600`);
+  }
 }
 
 /**
