@@ -56,6 +56,14 @@ Never copy the key into the repository, operator directory or the same backup
 archive. `AVITY_VAULT_KEY_FILE` may also point at an owner-only secret mounted
 by the service supervisor.
 
+Create the portable recovery escrow and certified core backup using the
+stdin-only recipes in [BACKUP-RESTORE.md](./BACKUP-RESTORE.md). The recovery
+file must stay separate from every bundle. `avity vault key-rotate` stages and
+verifies the next recovery key before re-encrypting the vault. `avity backup
+create|verify|restore` certifies SQLite integrity, foreign keys, migrations,
+the audit chain, file hashes and vault recovery; restore always targets a new
+directory and requires the exact bundle ID.
+
 Rotate a credential without placing it in argv, shell history or output:
 
 ```sh

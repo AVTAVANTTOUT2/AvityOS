@@ -42,9 +42,18 @@ import {
   createCampaignStateStore,
 } from "./operator/campaign-report.js";
 import {
+  createOperatorBackup,
+  restoreOperatorBackup,
+  verifyOperatorBackup,
+} from "./operator/backup.js";
+import {
   migrateProtectedEnvironmentsToVault,
   openOperatorVault,
   operatorVaultStatus,
+  exportOperatorVaultRecovery,
+  restoreOperatorVaultKeyFromRecovery,
+  rotateOperatorVaultKey,
+  verifyOperatorVaultRecovery,
 } from "./operator/vault.js";
 
 interface ProviderStatusReasonView {
@@ -192,13 +201,25 @@ function hasFlag(ctx: Ctx, name: string): boolean {
   return ctx.args.includes(`--${name}`);
 }
 
-function secretFromPipedStdin(ctx: Ctx): string {
-  if (!hasFlag(ctx, "stdin")) {
-    throw new UsageError("credential values are accepted only through --stdin");
+function secretFromPipedStdin(
+  ctx: Ctx,
+  options: {
+    readonly flag?: "stdin" | "passphrase-stdin";
+    readonly label?: string;
+    readonly maxBytes?: number;
+  } = {},
+): string {
+  const flagName = options.flag ?? "stdin";
+  const label = options.label ?? "credential";
+  const maxBytes = options.maxBytes ?? MAX_CREDENTIAL_VALUE_BYTES;
+  if (!hasFlag(ctx, flagName)) {
+    throw new UsageError(
+      `${label} values are accepted only through --${flagName}`,
+    );
   }
   if (process.stdin.isTTY) {
     throw new UsageError(
-      "refusing echoed terminal input; pipe the credential to --stdin",
+      `refusing echoed terminal input; pipe the ${label} to --${flagName}`,
     );
   }
   const chunks: Buffer[] = [];
@@ -208,8 +229,8 @@ function secretFromPipedStdin(ctx: Ctx): string {
     const count = readSync(0, chunk, 0, chunk.byteLength, null);
     if (count === 0) break;
     total += count;
-    if (total > MAX_CREDENTIAL_VALUE_BYTES + 2) {
-      throw new UsageError("stdin credential exceeds 64 KiB");
+    if (total > maxBytes + 2) {
+      throw new UsageError(`stdin ${label} exceeds ${maxBytes} bytes`);
     }
     chunks.push(chunk.subarray(0, count));
   }
@@ -219,14 +240,14 @@ function secretFromPipedStdin(ctx: Ctx): string {
       Buffer.concat(chunks, total),
     );
   } catch {
-    throw new UsageError("stdin credential must be valid UTF-8");
+    throw new UsageError(`stdin ${label} must be valid UTF-8`);
   }
   const value = raw.endsWith("\r\n")
     ? raw.slice(0, -2)
     : raw.endsWith("\n")
       ? raw.slice(0, -1)
       : raw;
-  if (!value) throw new UsageError("stdin credential is empty");
+  if (!value) throw new UsageError(`stdin ${label} is empty`);
   return value;
 }
 
@@ -605,6 +626,230 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
           `precedence conflicts preserved: ${payload.conflictsResolvedByExistingPrecedence.length}`,
           `vault generation: ${payload.snapshot.generation}`,
           `key storage: ${payload.keyStorage}`,
+        ].join("\n")
+      );
+    },
+    "recovery-export": async (ctx) => {
+      const outputPath = flag(ctx, "output");
+      if (!outputPath) {
+        throw new UsageError("vault recovery-export requires --output <absolute-path>");
+      }
+      const passphrase = secretFromPipedStdin(ctx, {
+        flag: "passphrase-stdin",
+        label: "recovery passphrase",
+        maxBytes: 1_024,
+      });
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const result = exportOperatorVaultRecovery(
+        paths,
+        outputPath,
+        passphrase,
+        { ...(keyFile ? { keyFile } : {}) },
+      );
+      out(ctx, result, (payload: typeof result) =>
+        [
+          "credential recovery exported",
+          `path: ${payload.path}`,
+          `key id: ${payload.keyId}`,
+          `vault generation: ${payload.generation}`,
+          `entries: ${payload.entries}`,
+        ].join("\n")
+      );
+    },
+    "recovery-verify": async (ctx) => {
+      const inputPath = flag(ctx, "input");
+      if (!inputPath) {
+        throw new UsageError("vault recovery-verify requires --input <absolute-path>");
+      }
+      const passphrase = secretFromPipedStdin(ctx, {
+        flag: "passphrase-stdin",
+        label: "recovery passphrase",
+        maxBytes: 1_024,
+      });
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const result = verifyOperatorVaultRecovery(
+        paths,
+        inputPath,
+        passphrase,
+      );
+      out(ctx, result, (payload: typeof result) =>
+        `credential recovery verified\nkey id: ${payload.keyId}\nvault generation: ${payload.generation}`
+      );
+    },
+    "recovery-restore": async (ctx) => {
+      const inputPath = flag(ctx, "input");
+      const confirmKeyId = flag(ctx, "confirm-key-id");
+      if (!inputPath) {
+        throw new UsageError("vault recovery-restore requires --input <absolute-path>");
+      }
+      if (!confirmKeyId) {
+        throw new UsageError("vault recovery-restore requires --confirm-key-id <sha256>");
+      }
+      const passphrase = secretFromPipedStdin(ctx, {
+        flag: "passphrase-stdin",
+        label: "recovery passphrase",
+        maxBytes: 1_024,
+      });
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const result = restoreOperatorVaultKeyFromRecovery(
+        paths,
+        inputPath,
+        passphrase,
+        confirmKeyId,
+        { ...(keyFile ? { keyFile } : {}) },
+      );
+      persistOperatorVaultKeyFile(paths, keyFile);
+      out(ctx, result, (payload: typeof result) =>
+        [
+          payload.restored
+            ? "credential vault key restored"
+            : "credential vault key already matches recovery",
+          `key id: ${payload.keyId}`,
+          `key storage: ${payload.keyStorage}`,
+          `vault generation: ${payload.generation}`,
+        ].join("\n")
+      );
+    },
+    "key-rotate": async (ctx) => {
+      const recoveryPath = flag(ctx, "recovery");
+      if (!recoveryPath) {
+        throw new UsageError("vault key-rotate requires --recovery <absolute-path>");
+      }
+      const passphrase = secretFromPipedStdin(ctx, {
+        flag: "passphrase-stdin",
+        label: "recovery passphrase",
+        maxBytes: 1_024,
+      });
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const result = rotateOperatorVaultKey(
+        paths,
+        recoveryPath,
+        passphrase,
+        { ...(keyFile ? { keyFile } : {}) },
+      );
+      out(ctx, result, (payload: typeof result) =>
+        [
+          "credential vault master key rotated",
+          `previous key id: ${payload.previousKeyId}`,
+          `new key id: ${payload.keyId}`,
+          `key storage: ${payload.keyStorage}`,
+          `vault generation: ${payload.generation}`,
+          `recovery file: ${payload.path}`,
+        ].join("\n")
+      );
+    },
+  },
+
+  backup: {
+    create: async (ctx) => {
+      const databasePath = flag(ctx, "database");
+      const outputPath = flag(ctx, "output");
+      const recoveryPath = flag(ctx, "recovery");
+      if (!databasePath || !outputPath || !recoveryPath) {
+        throw new UsageError(
+          "backup create requires --database <path> --output <path> --recovery <path>",
+        );
+      }
+      const recoveryPassphrase = secretFromPipedStdin(ctx, {
+        flag: "passphrase-stdin",
+        label: "recovery passphrase",
+        maxBytes: 1_024,
+      });
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const result = createOperatorBackup({
+        paths,
+        databasePath,
+        outputPath,
+        recoveryPath,
+        recoveryPassphrase,
+      });
+      out(ctx, result, (payload: typeof result) =>
+        [
+          "operator backup certified",
+          `bundle: ${payload.manifest.bundleId}`,
+          `path: ${payload.path}`,
+          `database: ${payload.databaseIntegrity}`,
+          `foreign keys: ${payload.foreignKeys}`,
+          `audit chain: ${payload.auditChain}`,
+          `recovery key: ${payload.recoveryKey}`,
+          `projects: ${payload.manifest.database.projectCount}`,
+          `vault entries: ${payload.manifest.vault.entries}`,
+        ].join("\n")
+      );
+    },
+    verify: async (ctx) => {
+      const backupPath = flag(ctx, "bundle");
+      const recoveryPath = flag(ctx, "recovery");
+      if (!backupPath || !recoveryPath) {
+        throw new UsageError(
+          "backup verify requires --bundle <path> --recovery <path>",
+        );
+      }
+      const recoveryPassphrase = secretFromPipedStdin(ctx, {
+        flag: "passphrase-stdin",
+        label: "recovery passphrase",
+        maxBytes: 1_024,
+      });
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const result = verifyOperatorBackup({
+        paths,
+        backupPath,
+        recoveryPath,
+        recoveryPassphrase,
+      });
+      out(ctx, result, (payload: typeof result) =>
+        `operator backup verified\nbundle: ${payload.manifest.bundleId}\ndatabase: ${payload.databaseIntegrity}\naudit chain: ${payload.auditChain}\nrecovery key: ${payload.recoveryKey}`
+      );
+    },
+    restore: async (ctx) => {
+      const backupPath = flag(ctx, "bundle");
+      const destinationPath = flag(ctx, "destination");
+      const recoveryPath = flag(ctx, "recovery");
+      const confirmBundleId = flag(ctx, "confirm-bundle-id");
+      if (!backupPath || !destinationPath || !recoveryPath || !confirmBundleId) {
+        throw new UsageError(
+          "backup restore requires --bundle <path> --destination <path> --recovery <path> --confirm-bundle-id <id>",
+        );
+      }
+      const recoveryPassphrase = secretFromPipedStdin(ctx, {
+        flag: "passphrase-stdin",
+        label: "recovery passphrase",
+        maxBytes: 1_024,
+      });
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const result = restoreOperatorBackup({
+        paths,
+        backupPath,
+        destinationPath,
+        recoveryPath,
+        recoveryPassphrase,
+        confirmBundleId,
+      });
+      out(ctx, result, (payload: typeof result) =>
+        [
+          "operator backup restored and certified",
+          `bundle: ${payload.manifest.bundleId}`,
+          `destination: ${payload.path}`,
+          `database: ${payload.databasePath}`,
+          `vault: ${payload.vaultPath}`,
+          "existing live state was not replaced",
         ].join("\n")
       );
     },
@@ -1368,7 +1613,17 @@ commands:
   vault set <credential-name> --stdin [--key-file <0600-path>]
   vault remove <credential-name> --confirm <credential-name>
   vault migrate [--key-file <0600-path>]
+  vault recovery-export --output <path> --passphrase-stdin [--key-file <path>]
+  vault recovery-verify --input <path> --passphrase-stdin
+  vault recovery-restore --input <path> --confirm-key-id <sha256>
+       --passphrase-stdin [--key-file <0600-path>]
+  vault key-rotate --recovery <path> --passphrase-stdin [--key-file <path>]
                                         encrypted operator credential lifecycle
+  backup create --database <path> --output <path> --recovery <path>
+       --passphrase-stdin               create a certified private backup
+  backup verify --bundle <path> --recovery <path> --passphrase-stdin
+  backup restore --bundle <path> --destination <new-path>
+       --recovery <path> --confirm-bundle-id <id> --passphrase-stdin
   start|stop|restart [--service <name>] manage detached services
   status                                local service + control plane summary
   logs [--service <name>] [--max-bytes <n>]

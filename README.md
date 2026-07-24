@@ -235,7 +235,9 @@ Implemented and covered by automated tests:
   secret scanning and SBOM generation.
 - an AES-256-GCM operator credential vault with a Keychain/external-file
   master key, strict per-service scopes, atomic stdin-only rotation and
-  verified migration away from plaintext protected env files.
+  verified migration away from plaintext protected env files;
+- passphrase-encrypted portable master-key recovery plus certified online
+  SQLite/vault backup, verification and fresh-root restore.
 
 Known remaining proof or product work:
 
@@ -252,8 +254,7 @@ Known remaining proof or product work:
   public Developer ID signing/notarization and the first real HTTPS feed still
   require operator-owned credentials;
 - remote production exposure still requires operator-managed TLS termination;
-  vault master-key recovery/rotation and an external enterprise secret-manager
-  integration remain chantier 7 work.
+  external enterprise secret-manager integration remains chantier 7 work.
 
 The exact evidence and limitations are maintained in
 [docs/TRACEABILITY.md](docs/TRACEABILITY.md).

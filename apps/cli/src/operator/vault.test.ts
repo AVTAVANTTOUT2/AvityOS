@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -13,6 +15,7 @@ import { join } from "node:path";
 import {
   EncryptedCredentialVault,
   FileCredentialVaultKeyStore,
+  encodeCredentialVaultKey,
 } from "@avityos/credential-vault";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { main } from "../main.js";
@@ -25,10 +28,14 @@ import { resolveOperatorPaths } from "./paths.js";
 import { OperatorServiceLifecycle } from "./services.js";
 import {
   filterKnownCredentialsForService,
+  exportOperatorVaultRecovery,
   migrateProtectedEnvironmentsToVault,
   openOperatorVault,
   operatorVaultStatus,
+  restoreOperatorVaultKeyFromRecovery,
+  rotateOperatorVaultKey,
   resolveOperatorVaultKeyStore,
+  verifyOperatorVaultRecovery,
 } from "./vault.js";
 
 function fixturePaths() {
@@ -335,5 +342,98 @@ describe("operator credential vault", () => {
     expect(readFileSync(configPath, "utf8")).not.toContain(
       "rotated-api-token",
     );
+  });
+
+  it("exports, rotates, rolls back and restores a portable recovery key", () => {
+    const paths = fixturePaths();
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    const external = mkdtempSync(join(tmpdir(), "avity-vault-recovery-"));
+    chmodSync(external, 0o700);
+    const keyPath = join(external, "master.key");
+    const recoveryPath = join(external, "vault.recovery.json");
+    const keyStore = new FileCredentialVaultKeyStore(keyPath);
+    const firstKey = keyStore.create();
+    const vault = new EncryptedCredentialVault(
+      paths.credentialVaultPath,
+      firstKey,
+    );
+    vault.initialize();
+    vault.set("DEEPSEEK_API_KEY", "recovery-provider-secret");
+    const passphrase = "portable recovery passphrase";
+
+    const exported = exportOperatorVaultRecovery(
+      paths,
+      recoveryPath,
+      passphrase,
+      { keyFile: keyPath },
+    );
+    expect(exported.keyId).toBe(vault.keyId);
+    expect(verifyOperatorVaultRecovery(
+      paths,
+      recoveryPath,
+      passphrase,
+    )).toEqual(exported);
+    expect(readFileSync(recoveryPath, "utf8")).not.toContain(
+      encodeCredentialVaultKey(firstKey),
+    );
+    expect(readFileSync(recoveryPath, "utf8")).not.toContain(
+      "recovery-provider-secret",
+    );
+
+    const rotated = rotateOperatorVaultKey(
+      paths,
+      recoveryPath,
+      passphrase,
+      { keyFile: keyPath },
+    );
+    expect(rotated.previousKeyId).toBe(exported.keyId);
+    expect(rotated.keyId).not.toBe(exported.keyId);
+    expect(rotated.generation).toBe(exported.generation + 1);
+    expect(verifyOperatorVaultRecovery(
+      paths,
+      recoveryPath,
+      passphrase,
+    ).keyId).toBe(rotated.keyId);
+    expect(new EncryptedCredentialVault(
+      paths.credentialVaultPath,
+      keyStore.load()!,
+    ).environmentFor("control-plane")).toEqual({
+      DEEPSEEK_API_KEY: "recovery-provider-secret",
+    });
+
+    const beforeFailedRotation = keyStore.load()!;
+    chmodSync(paths.configDir, 0o500);
+    expect(() => rotateOperatorVaultKey(
+      paths,
+      recoveryPath,
+      passphrase,
+      { keyFile: keyPath },
+    )).toThrow(/private, writable/i);
+    chmodSync(paths.configDir, 0o700);
+    expect(keyStore.load()).toEqual(beforeFailedRotation);
+    expect(existsSync(`${recoveryPath}.next`)).toBe(false);
+    expect(verifyOperatorVaultRecovery(
+      paths,
+      recoveryPath,
+      passphrase,
+    ).keyId).toBe(rotated.keyId);
+
+    renameSync(keyPath, `${keyPath}.lost`);
+    expect(() => restoreOperatorVaultKeyFromRecovery(
+      paths,
+      recoveryPath,
+      passphrase,
+      "0".repeat(64),
+      { keyFile: keyPath },
+    )).toThrow(/confirm-key-id/);
+    const restored = restoreOperatorVaultKeyFromRecovery(
+      paths,
+      recoveryPath,
+      passphrase,
+      rotated.keyId,
+      { keyFile: keyPath },
+    );
+    expect(restored.restored).toBe(true);
+    expect(keyStore.load()).toEqual(beforeFailedRotation);
   });
 });

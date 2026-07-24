@@ -30,6 +30,19 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   on a missing/wrong key.
   Secret input is non-TTY stdin only and no value appears in list/status output.
   See ADR-0014.
+- **Master-key recovery and certified backup (checkpoint 7.2)** — a portable
+  `0600` recovery envelope wraps only the vault master key with scrypt and
+  AES-256-GCM; version/KDF/key ID are authenticated and the passphrase is
+  stdin-only. The envelope must remain outside repository/operator state and
+  separate from backup media. Keychain/file key replacement is compare-and-swap
+  with readback; rotation stages recovery first, locks and re-encrypts the
+  vault, rolls the key store back on pre-commit failure and retains ambiguous
+  evidence. Certified online backup uses SQLite `VACUUM INTO`, verifies
+  integrity, foreign keys, migrations, the independently recomputed audit
+  chain, file hashes and vault recovery before writing a secret-free strict
+  manifest. Restore requires the exact bundle ID, targets only a new external
+  root and re-certifies before publication. Persistent control-plane SQLite
+  state is owner-only and symlink-refusing. See ADR-0015.
 - **Remote bridge transport (checkpoints 5.1–5.2)** — account/device
   certificates and application envelopes are signed and end-to-end encrypted;
   the relay accepts only strict ciphertext structures and never imports
@@ -239,11 +252,12 @@ transport.
 
 ## Remaining limitations
 
-- The encrypted cross-platform operator vault is implemented, but master-key
-  rotation, portable recovery escrow and external enterprise secret-manager
-  integration remain. Decrypted values necessarily exist in the authorized
-  service process memory. Losing the macOS Keychain item or external Linux key
-  file makes the vault unrecoverable by design.
+- The encrypted cross-platform operator vault now has explicit master-key
+  rotation, portable recovery escrow and certified core backup/restore.
+  Enterprise secret-manager integration and automatic disaster cutover remain.
+  Decrypted values necessarily exist in the authorized service process memory;
+  loss of both the key store and separately held recovery escrow remains
+  unrecoverable by design.
 - HTTPS termination and certificate lifecycle for a remote control plane are a
   deployment responsibility; the worker enforces HTTPS but mTLS is not bundled.
 - Public macOS distribution still depends on an operator-owned Developer ID
