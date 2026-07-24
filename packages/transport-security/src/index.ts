@@ -300,6 +300,10 @@ export function createSecureFetchTransport(
         url,
         {
           agent,
+          // Keep the TLS identity explicit on each request so verification
+          // does not depend on Agent option inheritance across supported
+          // Node builds.
+          ...configuration,
           method,
           headers: Object.fromEntries(headers.entries()),
           signal: init.signal ?? undefined,

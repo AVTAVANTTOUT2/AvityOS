@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdtempSync,
-  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -137,16 +136,6 @@ function createTestPki(): TestPki {
     "server",
     "serverAuth",
   );
-  const serverChain = join(root, "server-chain.crt");
-  writeFileSync(
-    serverChain,
-    Buffer.concat([
-      readFileSync(server.cert),
-      Buffer.from("\n"),
-      readFileSync(caCert),
-    ]),
-    { mode: 0o644 },
-  );
   const worker = createSignedCertificate(
     root,
     caCert,
@@ -164,7 +153,7 @@ function createTestPki(): TestPki {
   return {
     root,
     caCert,
-    serverCert: serverChain,
+    serverCert: server.cert,
     serverKey: server.key,
     workerCert: worker.cert,
     workerKey: worker.key,
