@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { X509Certificate } from "node:crypto";
 import {
   chmodSync,
   mkdtempSync,
@@ -51,6 +52,8 @@ function createSelfSignedTrustAnchor(
 ): { readonly cert: string; readonly key: string } {
   const key = join(root, `${name}.key`);
   const cert = join(root, `${name}.crt`);
+  const request = join(root, `${name}.csr`);
+  const extensionFile = join(root, `${name}.ext`);
   const extensions = [
     "basicConstraints=critical,CA:TRUE",
     "subjectKeyIdentifier=hash",
@@ -62,20 +65,37 @@ function createSelfSignedTrustAnchor(
         ]
       : []),
   ];
+  writeFileSync(
+    extensionFile,
+    [...extensions, ""].join("\n"),
+    { mode: 0o600 },
+  );
   openssl([
     "req",
-    "-x509",
+    "-new",
     "-newkey",
     "rsa:2048",
     "-nodes",
     "-sha256",
-    "-days",
-    "1",
     "-subj",
     `/CN=${name}`,
-    ...extensions.flatMap((extension) => ["-addext", extension]),
     "-keyout",
     key,
+    "-out",
+    request,
+  ]);
+  openssl([
+    "x509",
+    "-req",
+    "-sha256",
+    "-days",
+    "1",
+    "-in",
+    request,
+    "-signkey",
+    key,
+    "-extfile",
+    extensionFile,
     "-out",
     cert,
   ]);
@@ -228,6 +248,7 @@ async function waitFor(
 describe("worker mutual TLS transport", () => {
   it("binds the enrolled worker bearer to its authorized client certificate", async () => {
     const pki = createTestPki();
+    expect(new X509Certificate(readFileSync(pki.workerCaCert)).ca).toBe(true);
     const serverTls = loadControlPlaneTlsConfiguration(
       {
         AVITY_TLS_CERT_PATH: pki.serverCert,
@@ -265,7 +286,6 @@ describe("worker mutual TLS transport", () => {
         apiToken: "admin-token",
         https: serverTls.serverOptions,
         workerMtlsRequired: serverTls.workerMtlsRequired,
-        workerTrustAnchors: serverTls.workerTrustAnchors,
       });
       app.server.on("secureConnection", (socket: TLSSocket) => {
         const certificate = socket.getPeerCertificate();

@@ -22,7 +22,6 @@ export interface ControlPlaneTlsConfiguration {
   readonly enabled: boolean;
   readonly protocol: "http" | "https";
   readonly workerMtlsRequired: boolean;
-  readonly workerTrustAnchors?: readonly X509Certificate[];
   readonly serverOptions?: HttpsServerOptions;
 }
 
@@ -129,19 +128,6 @@ function readCertificate(path: string, label: string): string {
   }
 }
 
-function parseCertificateBundle(
-  pem: string,
-  label: string,
-): readonly X509Certificate[] {
-  const blocks = pem.match(
-    /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
-  );
-  if (!blocks?.length) {
-    throw new Error(`${label} must contain at least one PEM certificate`);
-  }
-  return blocks.map((block) => new X509Certificate(block));
-}
-
 function readPrivateKey(path: string, label: string): Buffer {
   const parent = dirname(path);
   const parentStats = lstatSync(parent);
@@ -204,9 +190,6 @@ export function loadControlPlaneTlsConfiguration(
   const ca = clientCaPath
     ? readCertificate(clientCaPath, "worker mTLS client CA")
     : undefined;
-  const workerTrustAnchors = ca
-    ? parseCertificateBundle(ca, "worker mTLS client CA")
-    : undefined;
   createSecureContext({
     cert,
     key,
@@ -218,7 +201,6 @@ export function loadControlPlaneTlsConfiguration(
     enabled: true,
     protocol: "https",
     workerMtlsRequired: Boolean(ca),
-    ...(workerTrustAnchors ? { workerTrustAnchors } : {}),
     serverOptions: {
       cert,
       key,
@@ -400,66 +382,11 @@ export function createSecureFetchTransport(
 
 export function authorizedPeerCertificateFingerprint(
   socket: unknown,
-  trustedClientCas: readonly X509Certificate[] = [],
 ): string | null {
-  if (!(socket instanceof TLSSocket)) return null;
+  if (!(socket instanceof TLSSocket) || !socket.authorized) return null;
   const certificate = socket.getPeerCertificate();
   if (!certificate.raw || certificate.raw.byteLength === 0) return null;
-  const peer = new X509Certificate(certificate.raw);
-  const authorizationError = socket.authorizationError as unknown;
-  const authorizationErrorCode =
-    typeof authorizationError === "string"
-      ? authorizationError
-      : authorizationError instanceof Error
-        ? (
-            typeof (authorizationError as NodeJS.ErrnoException).code ===
-                "string"
-              ? (authorizationError as NodeJS.ErrnoException).code
-              : authorizationError.message
-          )
-        : null;
-  if (
-    !socket.authorized &&
-    (authorizationErrorCode !== "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
-      !clientCertificateIsAuthorizedBy(peer, trustedClientCas))
-  ) {
-    return null;
-  }
-  return peer.fingerprint256
+  return new X509Certificate(certificate.raw).fingerprint256
     .replaceAll(":", "")
     .toLowerCase();
-}
-
-export function clientCertificateIsAuthorizedBy(
-  certificate: X509Certificate,
-  trustedClientCas: readonly X509Certificate[],
-  now = Date.now(),
-): boolean {
-  const validAt = (candidate: X509Certificate): boolean => {
-    const from = Date.parse(candidate.validFrom);
-    const to = Date.parse(candidate.validTo);
-    return Number.isFinite(from) &&
-      Number.isFinite(to) &&
-      from <= now &&
-      now <= to;
-  };
-  const usage = certificate.keyUsage;
-  if (
-    certificate.ca ||
-    !validAt(certificate) ||
-    (usage !== undefined && !usage.includes("1.3.6.1.5.5.7.3.2"))
-  ) {
-    return false;
-  }
-  return trustedClientCas.some((issuer) => {
-    try {
-      // The signature is the portable trust proof. Node's checkIssued() also
-      // compares issuer metadata, but diverges between OpenSSL and LibreSSL.
-      return issuer.ca &&
-        validAt(issuer) &&
-        certificate.verify(issuer.publicKey);
-    } catch {
-      return false;
-    }
-  });
 }

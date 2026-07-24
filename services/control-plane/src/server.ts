@@ -22,11 +22,7 @@ import {
 } from "@avityos/contracts";
 import { IllegalTransitionError } from "@avityos/orchestration";
 import { isCommandAllowed, type CommandPolicy } from "@avityos/policy";
-import {
-  createHash,
-  randomBytes,
-  type X509Certificate,
-} from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { ServerOptions as HttpsServerOptions } from "node:https";
 import { authorizedPeerCertificateFingerprint } from "@avityos/transport-security";
@@ -66,8 +62,6 @@ export interface ServerOptions {
   https?: HttpsServerOptions;
   /** Require and bind an authorized client certificate on worker routes. */
   workerMtlsRequired?: boolean;
-  /** Parsed client CAs for strict fallback validation on affected runtimes. */
-  workerTrustAnchors?: readonly X509Certificate[];
 }
 
 /**
@@ -109,8 +103,6 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   }) as FastifyInstance;
   await app.register(cors, { origin: [...(opts.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS)], credentials: true });
   const startedAt = Date.now();
-  const workerPeerFingerprint = (socket: unknown): string | null =>
-    authorizedPeerCertificateFingerprint(socket, opts.workerTrustAnchors);
 
   app.addHook("onRequest", async (req, reply) => {
     const path = req.url.split("?")[0] ?? req.url;
@@ -123,7 +115,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (
       opts.workerMtlsRequired &&
       workerDataRoute &&
-      !workerPeerFingerprint(req.raw.socket)
+      !authorizedPeerCertificateFingerprint(req.raw.socket)
     ) {
       await reply.status(401).send({
         error: {
@@ -775,7 +767,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
         }
       | undefined;
     const peerFingerprint = opts.workerMtlsRequired
-      ? workerPeerFingerprint(req.raw.socket)
+      ? authorizedPeerCertificateFingerprint(req.raw.socket)
       : null;
     if (
       !row ||
@@ -869,7 +861,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const token = randomBytes(24).toString("hex");
     const ts = now();
     const mtlsFingerprint = opts.workerMtlsRequired
-      ? workerPeerFingerprint(req.raw.socket)
+      ? authorizedPeerCertificateFingerprint(req.raw.socket)
       : null;
     store.db
       .prepare(
@@ -935,7 +927,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (
       opts.workerMtlsRequired &&
       row.mtls_fingerprint !==
-        workerPeerFingerprint(req.raw.socket)
+        authorizedPeerCertificateFingerprint(req.raw.socket)
     ) {
       return apiError(
         reply,
