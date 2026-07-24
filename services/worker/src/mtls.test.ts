@@ -6,7 +6,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect as connectTls } from "node:tls";
+import {
+  connect as connectTls,
+  type TLSSocket,
+} from "node:tls";
 import {
   buildServer,
   DEFAULT_ENGINE_CONFIG,
@@ -242,6 +245,7 @@ describe("worker mutual TLS transport", () => {
     );
     let app: FastifyInstance | null = null;
     let agent: WorkerAgent | null = null;
+    let lastPeerDiagnostics: Record<string, unknown> | null = null;
     try {
       app = await buildServer({
         store,
@@ -250,6 +254,16 @@ describe("worker mutual TLS transport", () => {
         apiToken: "admin-token",
         https: serverTls.serverOptions,
         workerMtlsRequired: serverTls.workerMtlsRequired,
+      });
+      app.server.on("secureConnection", (socket: TLSSocket) => {
+        const certificate = socket.getPeerCertificate();
+        lastPeerDiagnostics = {
+          authorized: socket.authorized,
+          authorizationError: socket.authorizationError ?? null,
+          subject: certificate.subject ?? null,
+          issuer: certificate.issuer ?? null,
+          hasRawCertificate: Boolean(certificate.raw?.byteLength),
+        };
       });
       await app.listen({ port: 0, host: "127.0.0.1" });
       const address = app.server.address();
@@ -307,7 +321,15 @@ describe("worker mutual TLS transport", () => {
         apiToken: "admin-token",
         fetchImpl: trusted.fetch,
       });
-      const credentials = await enrollmentAgent.enroll();
+      let credentials: Awaited<ReturnType<WorkerAgent["enroll"]>>;
+      try {
+        credentials = await enrollmentAgent.enroll();
+      } catch (error) {
+        throw new Error(
+          `worker enrollment TLS diagnostics: ${JSON.stringify(lastPeerDiagnostics)}`,
+          { cause: error },
+        );
+      }
       const persisted = store.db.prepare(
         "SELECT mtls_fingerprint FROM workers WHERE id = ?",
       ).get(credentials.id) as { mtls_fingerprint: string };
