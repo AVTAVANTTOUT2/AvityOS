@@ -61,12 +61,21 @@ describe("remote bridge durable local state", () => {
       name: "Forged remote",
     }, NOW)).toThrow(/signature/i);
     first.registerDevice(hostCertificate, NOW);
-    first.registerDevice(remoteCertificate, NOW);
     first.savePairingSession(pairing.session, NOW);
-    expect(first.consumePairingSession(
+    expect(first.getPairingSession(pairing.session.sessionId)?.consumedAt).toBeNull();
+    expect(first.completePairingSession(
       pairing.session.sessionId,
+      remoteCertificate,
       "2026-07-24T10:01:00.000Z",
     ).consumedAt).toBe("2026-07-24T10:01:00.000Z");
+    expect(first.getDeviceCertificate(remote.deviceId)).toEqual(remoteCertificate);
+    expect(first.listDevices(account.accountId).map((device) => ({
+      deviceId: device.certificate.deviceId,
+      status: device.status,
+    }))).toEqual(expect.arrayContaining([
+      { deviceId: host.deviceId, status: "active" },
+      { deviceId: remote.deviceId, status: "active" },
+    ]));
     expect(() => first.consumePairingSession(
       pairing.session.sessionId,
       "2026-07-24T10:02:00.000Z",

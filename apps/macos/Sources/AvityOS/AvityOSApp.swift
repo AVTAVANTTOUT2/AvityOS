@@ -272,6 +272,14 @@ struct SettingsView: View {
     @EnvironmentObject private var client: ApiClient
     @State private var endpoint = ""
     @State private var token = ""
+    @State private var relayURL = ""
+    @State private var relayAdminToken = ""
+    @State private var hostDeviceName = Host.current().localizedName ?? "Mac hôte"
+    @State private var pairingSessionId = ""
+    @State private var pairingBundle = ""
+    @State private var pairingRequest = ""
+    @State private var pairingBootstrap = ""
+    @State private var remoteOperationInProgress = false
 
     var body: some View {
         Form {
@@ -289,13 +297,179 @@ struct SettingsView: View {
                 }
                 LabeledContent("État", value: client.tokenConfigured ? "Token protégé dans Keychain" : "Authentification requise")
             }
+            Section("Pont distant — mode hôte") {
+                if !client.remoteHostStatus.supported {
+                    ContentUnavailableView(
+                        "Mode hôte indisponible",
+                        systemImage: "lock.slash",
+                        description: Text(
+                            "Le control-plane hôte doit fonctionner sur macOS avec Keychain."
+                        )
+                    )
+                } else {
+                    TextField("URL HTTPS du relais", text: $relayURL)
+                    SecureField("Jeton administrateur du relais", text: $relayAdminToken)
+                    TextField("Nom de cet appareil", text: $hostDeviceName)
+                    HStack {
+                        Button(client.remoteHostStatus.configured
+                            ? "Mettre à jour"
+                            : "Activer le mode hôte"
+                        ) {
+                            remoteOperationInProgress = true
+                            Task {
+                                await client.configureRemoteHost(
+                                    relayURL: relayURL,
+                                    relayAdminToken: relayAdminToken,
+                                    deviceName: hostDeviceName
+                                )
+                                relayAdminToken = ""
+                                remoteOperationInProgress = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            remoteOperationInProgress ||
+                            relayURL.isEmpty ||
+                            relayAdminToken.isEmpty ||
+                            hostDeviceName.isEmpty
+                        )
+                        if client.remoteHostStatus.configured {
+                            LabeledContent(
+                                "Connecteur",
+                                value: remoteConnectorLabel
+                            )
+                        }
+                    }
+
+                    if client.remoteHostStatus.configured {
+                        DisclosureGroup("Appairer un appareil") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Button("Créer une offre à usage unique") {
+                                    remoteOperationInProgress = true
+                                    Task {
+                                        if let response = await client.createRemotePairing() {
+                                            pairingSessionId = response.sessionId
+                                            pairingBundle = response.pairingBundle
+                                            pairingRequest = ""
+                                            pairingBootstrap = ""
+                                        }
+                                        remoteOperationInProgress = false
+                                    }
+                                }
+                                .disabled(remoteOperationInProgress)
+
+                                if !pairingBundle.isEmpty {
+                                    Text("1. Transférez cette offre par un canal hors bande.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    TextEditor(text: $pairingBundle)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .frame(minHeight: 76)
+                                    Button("Copier l’offre") {
+                                        copyToPasteboard(pairingBundle)
+                                    }
+
+                                    Text("2. Collez la requête chiffrée produite par l’appareil.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    TextEditor(text: $pairingRequest)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .frame(minHeight: 76)
+                                    Button("Accepter et enrôler") {
+                                        remoteOperationInProgress = true
+                                        Task {
+                                            if let response = await client.acceptRemotePairing(
+                                                sessionId: pairingSessionId,
+                                                request: pairingRequest
+                                            ) {
+                                                pairingBootstrap = response.bootstrap
+                                            }
+                                            remoteOperationInProgress = false
+                                        }
+                                    }
+                                    .disabled(
+                                        remoteOperationInProgress ||
+                                        pairingRequest.isEmpty
+                                    )
+                                }
+
+                                if !pairingBootstrap.isEmpty {
+                                    Text("3. Retournez ce bootstrap chiffré au nouvel appareil.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    TextEditor(text: $pairingBootstrap)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .frame(minHeight: 76)
+                                    Button("Copier le bootstrap") {
+                                        copyToPasteboard(pairingBootstrap)
+                                    }
+                                }
+                            }
+                            .padding(.top, 6)
+                        }
+
+                        DisclosureGroup(
+                            "Appareils (\(client.remoteHostStatus.devices.count))"
+                        ) {
+                            ForEach(client.remoteHostStatus.devices) { device in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(device.name)
+                                        Text(device.deviceId)
+                                            .font(.system(.caption2, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(device.isHost ? "Hôte" : device.status)
+                                        .font(.caption)
+                                    if !device.isHost && device.status == "active" {
+                                        Button("Révoquer", role: .destructive) {
+                                            Task {
+                                                await client.revokeRemoteDevice(
+                                                    id: device.deviceId
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if let error = client.lastError {
                 Section("Dernière erreur") { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            }
+            if let error = client.remoteHostError {
+                Section("Erreur du pont distant") {
+                    Text(error).foregroundStyle(.red).textSelection(.enabled)
+                }
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Réglages")
-        .onAppear { endpoint = client.baseURL.absoluteString }
+        .onAppear {
+            endpoint = client.baseURL.absoluteString
+            relayURL = client.remoteHostStatus.relayUrl ?? relayURL
+        }
+        .onChange(of: client.remoteHostStatus.relayUrl) { _, value in
+            if let value { relayURL = value }
+        }
+    }
+
+    private var remoteConnectorLabel: String {
+        switch client.remoteHostStatus.connectorState {
+        case "online": "En ligne"
+        case "connecting": "Connexion…"
+        case "degraded": "Dégradé"
+        case "stopped": "Arrêté"
+        default: client.remoteHostStatus.connectorState
+        }
+    }
+
+    private func copyToPasteboard(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
 }
 

@@ -1,9 +1,16 @@
 #!/usr/bin/env node
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type ProviderAdapter } from "@avityos/providers";
+import { RemoteBridgeStateStore } from "@avityos/remote-bridge";
 import {
   applyCampaignFaultInjection,
   resolveCampaignFault,
@@ -24,6 +31,11 @@ import {
   PROVIDER_CHAIN_PREFERENCE_REAL,
 } from "./providers.js";
 import { buildProviderStatus } from "./provider-status.js";
+import { MacOSRemoteHostKeychainStore } from "./remote-host-keychain.js";
+import {
+  RemoteHostManager,
+  type RemoteControlDispatcher,
+} from "./remote-host.js";
 import { buildServer, DEFAULT_ALLOWED_ORIGINS } from "./server.js";
 import { Store } from "./store.js";
 
@@ -128,18 +140,64 @@ async function main(): Promise<void> {
     ? process.env.AVITY_ALLOWED_ORIGINS.split(",").map((s) => s.trim())
     : [...DEFAULT_ALLOWED_ORIGINS];
 
-  const app = await buildServer({
+  const apiToken = loadOrCreateApiToken();
+  let app: Awaited<ReturnType<typeof buildServer>> | null = null;
+  let remoteStateStore: RemoteBridgeStateStore | null = null;
+  let remoteHost: RemoteHostManager | undefined;
+  if (process.platform === "darwin") {
+    const remoteDatabasePath = process.env.AVITY_REMOTE_BRIDGE_DB_PATH ??
+      join(homedir(), ".avity", "remote", "bridge.sqlite");
+    const remoteDirectory = dirname(remoteDatabasePath);
+    mkdirSync(remoteDirectory, { recursive: true, mode: 0o700 });
+    chmodSync(remoteDirectory, 0o700);
+    remoteStateStore = new RemoteBridgeStateStore(remoteDatabasePath);
+    const dispatch: RemoteControlDispatcher = async (request) => {
+      if (!app) throw new Error("control plane is not ready for remote dispatch");
+      const response = await app.inject({
+        method: request.method,
+        url: request.path,
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${apiToken}`,
+          "content-type": "application/json",
+        },
+        payload: request.body === undefined
+          ? undefined
+          : JSON.stringify(request.body),
+      });
+      if (Buffer.byteLength(response.body) > 3 * 1024 * 1024) {
+        throw new Error("local control-plane response exceeds remote bridge limit");
+      }
+      let body: unknown;
+      try {
+        body = JSON.parse(response.body);
+      } catch {
+        throw new Error("local control-plane response is not valid JSON");
+      }
+      return { status: response.statusCode, body };
+    };
+    remoteHost = new RemoteHostManager({
+      stateStore: remoteStateStore,
+      secretStore: new MacOSRemoteHostKeychainStore(),
+      dispatch,
+    });
+  }
+
+  app = await buildServer({
     store,
     engine,
     version: VERSION,
-    apiToken: loadOrCreateApiToken(),
+    apiToken,
     allowedOrigins,
     providerStatus,
+    remoteHost,
   });
 
   const shutdown = async () => {
+    await remoteHost?.stop();
     await engine.stop();
-    await app.close();
+    await app?.close();
+    remoteStateStore?.close();
     db.close();
     process.exit(0);
   };
@@ -147,6 +205,7 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
 
   await app.listen({ port, host });
+  await remoteHost?.start();
   console.log(`AvityOS control plane v${VERSION} listening on http://${host}:${port} (db: ${dbPath})`);
 }
 

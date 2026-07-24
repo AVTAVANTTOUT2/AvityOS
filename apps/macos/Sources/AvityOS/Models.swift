@@ -65,6 +65,49 @@ struct HealthResponse: Codable {
     let version: String
 }
 
+struct RemoteHostDevice: Codable, Identifiable, Hashable {
+    let deviceId: String
+    let name: String
+    let status: String
+    let validUntil: String
+    let isHost: Bool
+
+    var id: String { deviceId }
+}
+
+struct RemoteHostStatus: Codable, Hashable {
+    let supported: Bool
+    let configured: Bool
+    let connectorState: String
+    let relayUrl: String?
+    let accountId: String?
+    let hostDeviceId: String?
+    let devices: [RemoteHostDevice]
+    let lastError: String?
+
+    static let unsupported = RemoteHostStatus(
+        supported: false,
+        configured: false,
+        connectorState: "unsupported",
+        relayUrl: nil,
+        accountId: nil,
+        hostDeviceId: nil,
+        devices: [],
+        lastError: nil
+    )
+}
+
+struct RemotePairingBundleResponse: Codable {
+    let sessionId: String
+    let expiresAt: String
+    let pairingBundle: String
+}
+
+struct RemotePairingBootstrapResponse: Codable {
+    let sessionId: String
+    let bootstrap: String
+}
+
 struct APIErrorResponse: Codable {
     struct Detail: Codable {
         let code: String

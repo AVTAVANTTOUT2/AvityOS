@@ -6,7 +6,10 @@ reconnection, project/mission/run/terminal views, approve/reject interventions,
 deep links, native notifications, Dock badge, settings, and a menu-bar
 companion showing live counts. The native API client enforces HTTPS away from
 loopback, preserves structured API errors and resumes SSE from its last durable
-event cursor instead of replaying the full history after every reconnect.
+event cursor instead of replaying the full history after every reconnect. Its
+host-mode settings initialize the end-to-end encrypted remote bridge, create
+one-time pairing offers, accept encrypted requests, return encrypted device
+bootstraps and revoke paired devices.
 
 ## Development build (no certificate required)
 
@@ -42,5 +45,14 @@ development workflow depends on it.
   always stored in macOS Keychain, never UserDefaults or a plist. Remote
   endpoints are rejected unless they use HTTPS. Bearers are sent only in
   Authorization headers and never appear in URLs.
+- Remote-host private identities and relay credentials are held in macOS
+  Keychain. Public certificates, replay cursors and metadata-only audit use the
+  private mode-0600 bridge database. Pairing secrets are process-memory-only;
+  the per-device relay bearer is transferred only inside the encrypted
+  bootstrap.
 - The wire models in `ApiClient.swift` mirror `packages/contracts`; update
   them together.
+
+The native remote-device consumer is the next checkpoint. This checkpoint's
+UI deliberately exposes the manual offer/request/bootstrap handoff so every
+secret boundary is inspectable without claiming an unfinished remote mode.

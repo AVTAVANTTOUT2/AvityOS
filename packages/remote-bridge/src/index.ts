@@ -18,6 +18,8 @@ import {
   RemoteDeviceCertificate,
   RemoteEncryptedEnvelope,
   RemotePairingAcceptance,
+  RemotePairingBootstrap,
+  RemotePairingBootstrapPayload,
   RemotePairingOffer,
   RemotePairingRequest,
   RemotePairingRequestPayload,
@@ -25,6 +27,7 @@ import {
   type RemoteEncryptedEnvelope as RemoteEncryptedEnvelopeType,
   type RemoteDeviceCertificate as RemoteDeviceCertificateType,
   type RemotePairingAcceptance as RemotePairingAcceptanceType,
+  type RemotePairingBootstrap as RemotePairingBootstrapType,
   type RemotePairingOffer as RemotePairingOfferType,
   type RemotePairingRequest as RemotePairingRequestType,
   type RemotePairingSession as RemotePairingSessionType,
@@ -48,6 +51,7 @@ export * from "./state.js";
 
 const PAIRING_REQUEST_CONTEXT = "avityos-remote-pairing-request-v1";
 const PAIRING_ACCEPTANCE_CONTEXT = "avityos-remote-pairing-acceptance-v1";
+const PAIRING_BOOTSTRAP_CONTEXT = "avityos-remote-pairing-bootstrap-v1";
 const ENVELOPE_CONTEXT = "avityos-remote-envelope-v1";
 const DEFAULT_PAIRING_TTL_MS = 5 * 60_000;
 const DEFAULT_CERTIFICATE_TTL_MS = 365 * 24 * 60 * 60_000;
@@ -120,7 +124,10 @@ function maxClockSkew(value: number | undefined): number {
   return skew;
 }
 
-function pairingAad(sessionId: string, direction: "request" | "acceptance"): Buffer {
+function pairingAad(
+  sessionId: string,
+  direction: "request" | "acceptance" | "bootstrap",
+): Buffer {
   return Buffer.from(canonicalJson({
     protocolVersion: REMOTE_BRIDGE_PROTOCOL_VERSION,
     sessionId,
@@ -476,6 +483,86 @@ export function openRemotePairingAcceptance(input: {
   }
   assertIdentityMatchesCertificate(input.device, certificate);
   return certificate;
+}
+
+export function createRemotePairingBootstrap(input: {
+  readonly acceptance: RemotePairingAcceptanceType;
+  readonly pairingSecret: string;
+  readonly relayUrl: string;
+  readonly relayAccessToken: string;
+}): RemotePairingBootstrapType {
+  const acceptance = RemotePairingAcceptance.parse(input.acceptance);
+  const payload = RemotePairingBootstrapPayload.parse({
+    acceptance,
+    relayUrl: input.relayUrl,
+    relayAccessToken: input.relayAccessToken,
+  });
+  const key = derivePairingKey(
+    input.pairingSecret,
+    acceptance.sessionId,
+    PAIRING_BOOTSTRAP_CONTEXT,
+  );
+  return RemotePairingBootstrap.parse({
+    protocolVersion: REMOTE_BRIDGE_PROTOCOL_VERSION,
+    sessionId: acceptance.sessionId,
+    ...encryptJson(
+      payload,
+      key,
+      pairingAad(acceptance.sessionId, "bootstrap"),
+    ),
+  });
+}
+
+export function openRemotePairingBootstrap(input: {
+  readonly offer: RemotePairingOfferType;
+  readonly bootstrap: RemotePairingBootstrapType;
+  readonly pairingSecret: string;
+  readonly device: RemoteDeviceIdentity;
+  readonly now?: Date | string | number;
+}): {
+  readonly certificate: RemoteDeviceCertificateType;
+  readonly relayUrl: string;
+  readonly relayAccessToken: string;
+} {
+  const offer = RemotePairingOffer.parse(input.offer);
+  const bootstrap = RemotePairingBootstrap.parse(input.bootstrap);
+  if (
+    bootstrap.sessionId !== offer.sessionId ||
+    new Date(offer.expiresAt).getTime() < validDate(
+      input.now ?? Date.now(),
+      "pairing bootstrap timestamp",
+    ).getTime()
+  ) {
+    throw new RemoteBridgeSecurityError(
+      "pairing bootstrap does not match an active offer",
+    );
+  }
+  const key = derivePairingKey(
+    input.pairingSecret,
+    bootstrap.sessionId,
+    PAIRING_BOOTSTRAP_CONTEXT,
+  );
+  const payload = RemotePairingBootstrapPayload.parse(decryptJson(
+    bootstrap,
+    key,
+    pairingAad(bootstrap.sessionId, "bootstrap"),
+  ));
+  if (payload.acceptance.sessionId !== bootstrap.sessionId) {
+    throw new RemoteBridgeSecurityError(
+      "pairing bootstrap acceptance does not match its session",
+    );
+  }
+  return {
+    certificate: openRemotePairingAcceptance({
+      offer,
+      acceptance: payload.acceptance,
+      pairingSecret: input.pairingSecret,
+      device: input.device,
+      now: input.now,
+    }),
+    relayUrl: payload.relayUrl,
+    relayAccessToken: payload.relayAccessToken,
+  };
 }
 
 function envelopeHeader(envelope: Omit<RemoteEncryptedEnvelopeType, "ciphertext" | "authTag" | "signature">) {

@@ -34,6 +34,11 @@ export interface RemoteActionAuditRecord extends Omit<RemoteActionAuditInput, "c
   readonly entryHash: string;
 }
 
+export interface RemoteBridgeDeviceRecord {
+  readonly certificate: RemoteDeviceCertificateType;
+  readonly status: "active" | "revoked";
+}
+
 function timestamp(value: Date | string | number): string {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) throw new Error("invalid remote bridge timestamp");
@@ -204,6 +209,29 @@ export class RemoteBridgeStateStore {
     return Boolean(row) && row?.revoked_at === null;
   }
 
+  getDeviceCertificate(deviceIdValue: string): RemoteDeviceCertificateType | null {
+    const deviceId = RemoteDeviceId.parse(deviceIdValue);
+    const row = this.db.prepare(`
+      SELECT certificate FROM remote_devices WHERE device_id = ?
+    `).get(deviceId) as Record<string, unknown> | undefined;
+    if (!row || typeof row.certificate !== "string") return null;
+    return RemoteDeviceCertificate.parse(JSON.parse(row.certificate));
+  }
+
+  listDevices(accountIdValue: string): RemoteBridgeDeviceRecord[] {
+    const accountId = RemoteAccountId.parse(accountIdValue);
+    const rows = this.db.prepare(`
+      SELECT certificate, revoked_at
+      FROM remote_devices
+      WHERE account_id = ?
+      ORDER BY updated_at DESC, device_id ASC
+    `).all(accountId) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      certificate: RemoteDeviceCertificate.parse(JSON.parse(String(row.certificate))),
+      status: row.revoked_at === null ? "active" : "revoked",
+    }));
+  }
+
   savePairingSession(sessionValue: RemotePairingSessionType, now = Date.now()): void {
     const session = RemotePairingSession.parse(sessionValue);
     const serialized = JSON.stringify(session);
@@ -225,6 +253,43 @@ export class RemoteBridgeStateStore {
       serialized,
       timestamp(now),
     );
+  }
+
+  getPairingSession(sessionIdValue: string): RemotePairingSessionType | null {
+    const sessionId = RemotePairingSessionId.parse(sessionIdValue);
+    const row = this.db.prepare(`
+      SELECT session FROM remote_pairing_sessions WHERE session_id = ?
+    `).get(sessionId) as Record<string, unknown> | undefined;
+    if (!row || typeof row.session !== "string") return null;
+    return RemotePairingSession.parse(JSON.parse(row.session));
+  }
+
+  completePairingSession(
+    sessionIdValue: string,
+    certificateValue: RemoteDeviceCertificateType,
+    now = Date.now(),
+  ): RemotePairingSessionType {
+    const sessionId = RemotePairingSessionId.parse(sessionIdValue);
+    const certificate = RemoteDeviceCertificate.parse(certificateValue);
+    return this.transaction(() => {
+      const session = this.getPairingSession(sessionId);
+      if (!session) throw new Error("pairing session not found");
+      if (session.consumedAt) throw new Error("pairing session already consumed");
+      const consumedAt = timestamp(now);
+      if (new Date(session.expiresAt).getTime() < new Date(consumedAt).getTime()) {
+        throw new Error("pairing session expired");
+      }
+      if (certificate.accountId !== session.accountId) {
+        throw new Error("paired device certificate belongs to another account");
+      }
+      this.registerDevice(certificate, now);
+      const consumed = RemotePairingSession.parse({ ...session, consumedAt });
+      this.db.prepare(`
+        UPDATE remote_pairing_sessions SET session = ?, updated_at = ?
+        WHERE session_id = ?
+      `).run(JSON.stringify(consumed), consumedAt, session.sessionId);
+      return consumed;
+    });
   }
 
   consumePairingSession(sessionId: string, now = Date.now()): RemotePairingSessionType {

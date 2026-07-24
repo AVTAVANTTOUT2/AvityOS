@@ -367,6 +367,9 @@ importers:
       '@avityos/providers':
         specifier: workspace:*
         version: link:../../packages/providers
+      '@avityos/remote-bridge':
+        specifier: workspace:*
+        version: link:../../packages/remote-bridge
       '@fastify/cors':
         specifier: 10.0.2
         version: 10.0.2

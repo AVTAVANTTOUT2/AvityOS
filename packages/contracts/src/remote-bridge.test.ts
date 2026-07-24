@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  RemoteControlRequest,
   RemoteDeviceCertificate,
   RemoteEncryptedEnvelope,
+  RemotePairingBootstrap,
   RemotePairingOffer,
   RemotePairingRequest,
   RemoteRelayAckRequest,
@@ -49,5 +51,31 @@ describe("remote bridge contracts", () => {
       nextCursor: 0,
     }).success).toBe(false);
     expect(RemoteRelayAckRequest.safeParse({ throughCursor: 0 }).success).toBe(false);
+  });
+
+  it("keeps remote control and bootstrap payloads strict and versioned", () => {
+    expect(RemoteControlRequest.parse({
+      protocolVersion: 1,
+      requestId: `rreq_${"a".repeat(32)}`,
+      method: "GET",
+      path: "/v1/projects",
+    })).toMatchObject({ method: "GET", path: "/v1/projects" });
+    expect(RemoteControlRequest.safeParse({
+      protocolVersion: 1,
+      requestId: `rreq_${"a".repeat(32)}`,
+      method: "DELETE",
+      path: "/v1/projects",
+    }).success).toBe(false);
+    expect(RemoteControlRequest.safeParse({
+      protocolVersion: 1,
+      requestId: `rreq_${"a".repeat(32)}`,
+      method: "GET",
+      path: "https://attacker.example/v1/projects",
+    }).success).toBe(false);
+    expect(RemotePairingBootstrap.safeParse({
+      protocolVersion: 1,
+      sessionId: `rpair_${"b".repeat(32)}`,
+      relayAccessToken: "must-never-be-plaintext",
+    }).success).toBe(false);
   });
 });

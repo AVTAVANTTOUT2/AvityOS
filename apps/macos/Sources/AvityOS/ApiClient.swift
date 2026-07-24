@@ -64,6 +64,8 @@ final class ApiClient: ObservableObject {
     @Published private(set) var runs: [RunInfo] = []
     @Published private(set) var terminals: [TerminalInfo] = []
     @Published private(set) var lastError: String?
+    @Published private(set) var remoteHostStatus = RemoteHostStatus.unsupported
+    @Published private(set) var remoteHostError: String?
     @Published private(set) var tokenConfigured: Bool
 
     private static let defaultEndpoint = URL(string: "http://127.0.0.1:7717/")!
@@ -247,6 +249,9 @@ final class ApiClient: ObservableObject {
             )
             let runResponse: ItemsResponse<RunInfo> = try await get("/v1/runs")
             let terminalResponse: ItemsResponse<TerminalInfo> = try await get("/v1/terminals")
+            let loadedRemoteHostStatus: RemoteHostStatus? = try? await get(
+                "/v1/remote-host"
+            )
 
             version = health.version
             projects = projectResponse.items
@@ -254,6 +259,10 @@ final class ApiClient: ObservableObject {
             approvals = approvalResponse.items
             runs = runResponse.items
             terminals = terminalResponse.items
+            if let loadedRemoteHostStatus {
+                remoteHostStatus = loadedRemoteHostStatus
+                remoteHostError = loadedRemoteHostStatus.lastError
+            }
             connected = health.status == "ok"
             lastError = nil
         } catch {
@@ -285,6 +294,81 @@ final class ApiClient: ObservableObject {
         } catch {
             lastError = error.localizedDescription
             return []
+        }
+    }
+
+    func configureRemoteHost(
+        relayURL: String,
+        relayAdminToken: String,
+        deviceName: String
+    ) async {
+        struct Body: Codable {
+            let relayUrl: String
+            let relayAdminToken: String
+            let deviceName: String
+        }
+        do {
+            remoteHostStatus = try await post(
+                "/v1/remote-host/configure",
+                body: Body(
+                    relayUrl: relayURL,
+                    relayAdminToken: relayAdminToken,
+                    deviceName: deviceName
+                )
+            )
+            remoteHostError = remoteHostStatus.lastError
+        } catch {
+            remoteHostError = error.localizedDescription
+        }
+    }
+
+    func createRemotePairing() async -> RemotePairingBundleResponse? {
+        struct EmptyBody: Codable {}
+        do {
+            let response: RemotePairingBundleResponse = try await post(
+                "/v1/remote-host/pairing-sessions",
+                body: EmptyBody()
+            )
+            remoteHostError = nil
+            return response
+        } catch {
+            remoteHostError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func acceptRemotePairing(
+        sessionId: String,
+        request: String
+    ) async -> RemotePairingBootstrapResponse? {
+        struct Body: Codable {
+            let request: String
+        }
+        do {
+            let response: RemotePairingBootstrapResponse = try await post(
+                "/v1/remote-host/pairing-sessions/\(sessionId)/accept",
+                body: Body(request: request)
+            )
+            let status: RemoteHostStatus = try await get("/v1/remote-host")
+            remoteHostStatus = status
+            remoteHostError = status.lastError
+            return response
+        } catch {
+            remoteHostError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func revokeRemoteDevice(id: String) async {
+        struct EmptyBody: Codable {}
+        do {
+            remoteHostStatus = try await post(
+                "/v1/remote-host/devices/\(id)/revoke",
+                body: EmptyBody()
+            )
+            remoteHostError = remoteHostStatus.lastError
+        } catch {
+            remoteHostError = error.localizedDescription
         }
     }
 

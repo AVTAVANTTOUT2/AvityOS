@@ -23,7 +23,14 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   administrator secret from per-device bearer hashes, makes relay queues,
   deduplication and cursors transactional/durable, enforces revocation, and
   persists metadata-only chained local audit. Private keys remain exclusively
-  in the platform secret store. See ADR-0006 through ADR-0008.
+  in the platform secret store. Checkpoint 6.2 ajoute le runtime hôte macOS :
+  clés privées et credentials relais résident dans Keychain et sont fournis au
+  processus `security` par stdin (jamais argv) ; le secret d'appairage reste
+  uniquement en mémoire pendant cinq minutes ; le bearer propre au nouvel
+  appareil et l'URL du relais sont inclus dans un bootstrap AES-GCM opaque. Le
+  connecteur n'ouvre aucun listener et n'accepte qu'une allowlist stricte de
+  lectures natives plus la résolution d'approbations. La révocation locale est
+  fail-closed avant la tentative relais. Voir ADR-0006 à ADR-0009.
 - **Validation** — shared zod schemas validate bodies/enums. Project onboarding
   resolves repository paths with `realpath`, requires a readable/writable Git
   working tree, verifies the local default branch and matches GitHub identity

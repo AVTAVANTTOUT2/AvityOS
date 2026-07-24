@@ -78,8 +78,13 @@ reproductible dans `docs/TRACEABILITY.md`.
    6.1 aligne le client sur les contrats réels (dont `TerminalSession.command`),
    impose HTTPS hors loopback, conserve les erreurs API structurées, reprend
    SSE par curseur et couvre transport/actions avec des tests déterministes.
-   Restent notamment : mode hôte complet, mode distant, tests UI, bundle
-   signé, notarisation, installation propre et stratégie de mise à jour.
+   Le checkpoint 6.2 livre le mode hôte macOS : identités et credentials dans
+   Keychain, état public/rejeu/audit durable, API locale d'administration,
+   appairage à usage unique avec bootstrap du token appareil chiffré, révocation
+   et connecteur strictement sortant limité aux lectures natives et à la
+   résolution d'approbations, avec écran Réglages associé. Restent notamment :
+   mode appareil distant natif, tests UI, bundle signé, notarisation,
+   installation propre et stratégie de mise à jour.
 
 7. **🟡 Fondations présentes, industrialisation manquante — Durcissement de
    distribution.** Déjà présents : CI Linux et macOS, audits, licences,
