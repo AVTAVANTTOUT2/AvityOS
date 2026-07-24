@@ -118,10 +118,25 @@ and `GITHUB_TOKEN`. The Web receives none; the worker receives only its
 worker token. `vault list` exposes names/scopes/timestamps, never values.
 `credential-rotate` accepts the eight external provider/GitHub names plus
 `AVITY_API_TOKEN`, and requires an existing value plus a running control
-plane. It intentionally rejects `AVITY_WORKER_TOKEN`; use `vault set` only for
-its initial offline provisioning until the worker-specific two-phase protocol
-lands. `vault set` and `login` refuse to replace an existing credential, so
-they cannot bypass an activation protocol.
+plane. Rotate the existing local worker bearer without supplying or printing a
+new secret:
+
+```sh
+avity vault worker-token-rotate
+```
+
+The command requires an initialized vault, running control-plane and worker,
+the configured `AVITY_WORKER_ID`, and no active terminal on that worker. The
+server generates the pending bearer, marks the worker draining, and stores only
+its hash. The CLI updates the worker-scoped vault by CAS, restarts only the
+worker, waits for a fresh authenticated heartbeat (bound to the enrollment
+certificate when mTLS is enabled), then commits and returns it online. A
+pre-commit failure restores/restarts the old token and aborts pending. If the
+commit response is ambiguous, rerun the command: a pending vault token is
+resumed; an already committed token can safely begin a fresh rotation.
+
+`vault set` and `login` refuse to replace an existing credential, so they
+cannot bypass an activation protocol.
 
 Removal is explicit and normally followed by a service restart:
 

@@ -76,7 +76,19 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   with the same stdin value rather than rolling back a possibly committed
   token. Verification failure before commit restores the old vault value and
   aborts the pending hash. Browser sessions using the retired token must log
-  in again. Worker-bearer rotation remains separate. See ADR-0018.
+  in again. See ADR-0018.
+- **Two-phase worker-bearer rotation (checkpoint 7.6)** —
+  `vault worker-token-rotate` accepts no credential input: the server generates
+  a 192-bit token, persists only its pending hash and moves the idle worker to
+  `draining` so it cannot lease new work. The CLI compare-and-swaps the
+  encrypted worker-scoped vault entry and restarts only that worker. Commit is
+  allowed only after the pending bearer authenticates a fresh worker request;
+  when mTLS is enabled, the request must use the exact enrollment certificate,
+  and a rogue certificate signed by the same CA does not mark proof. Commit
+  promotes the hash and returns the worker online; pre-commit failure restores
+  the old vault token, aborts pending and recertifies a fresh heartbeat.
+  Active terminals, concurrent rotations, plaintext DB storage and positional
+  token arguments are refused. See ADR-0019.
 - **Remote bridge transport (checkpoints 5.1–5.2)** — account/device
   certificates and application envelopes are signed and end-to-end encrypted;
   the relay accepts only strict ciphertext structures and never imports
