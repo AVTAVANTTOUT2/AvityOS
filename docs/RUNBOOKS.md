@@ -64,7 +64,8 @@ create|verify|restore` certifies SQLite integrity, foreign keys, migrations,
 the audit chain, file hashes and vault recovery; restore always targets a new
 directory and requires the exact bundle ID.
 
-Rotate a credential without placing it in argv, shell history or output:
+Store a credential for the first time without placing it in argv, shell
+history or output:
 
 ```sh
 read -r -s AVITY_SECRET
@@ -75,11 +76,32 @@ avity restart --service control-plane
 avity doctor
 ```
 
+For an existing external credential, use the transactional activation path:
+
+```sh
+read -r -s AVITY_SECRET
+printf '%s' "$AVITY_SECRET" |
+  avity vault credential-rotate DEEPSEEK_API_KEY --stdin
+unset AVITY_SECRET
+```
+
+The command compare-and-swaps the encrypted value, restarts only the control
+plane, and performs bounded authenticated health/provider-registration probes.
+If activation fails it compare-and-swaps the previous value back, restarts and
+probes again. A concurrent newer value is never overwritten. A successful
+local activation proves scoped injection and service readiness, not that the
+vendor will accept the credential on a billed request; recertify with an
+explicit provider mission.
+
 Supported names are closed: `AVITY_API_TOKEN`, `AVITY_WORKER_TOKEN`,
 `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`,
 `CODEX_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CURSOR_API_KEY`, `GH_TOKEN`
 and `GITHUB_TOKEN`. The Web receives none; the worker receives only its
 worker token. `vault list` exposes names/scopes/timestamps, never values.
+`credential-rotate` accepts the eight external provider/GitHub names and
+requires an existing value plus a running control plane. It intentionally
+rejects `AVITY_API_TOKEN` and `AVITY_WORKER_TOKEN`; use `vault set` only for
+initial offline provisioning until their two-phase server protocols land.
 
 Removal is explicit and normally followed by a service restart:
 

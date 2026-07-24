@@ -7,6 +7,8 @@ import type { E2EPreflightReport } from "@avityos/contracts";
 import {
   MAX_CREDENTIAL_VALUE_BYTES,
   isVaultSecretName,
+  type VaultSecretName,
+  type VaultService,
 } from "@avityos/credential-vault";
 import {
   ApiError,
@@ -52,6 +54,7 @@ import {
   operatorVaultStatus,
   exportOperatorVaultRecovery,
   restoreOperatorVaultKeyFromRecovery,
+  rotateOperatorServiceCredential,
   rotateOperatorVaultKey,
   verifyOperatorVaultRecovery,
 } from "./operator/vault.js";
@@ -251,7 +254,10 @@ function secretFromPipedStdin(
   return value;
 }
 
-function assertVaultSetInvocation(ctx: Ctx): void {
+function assertVaultSecretInvocation(
+  ctx: Ctx,
+  subcommand: "set" | "credential-rotate",
+): void {
   for (let index = 2; index < ctx.args.length; index += 1) {
     const value = ctx.args[index];
     if (value === "--stdin") continue;
@@ -264,7 +270,7 @@ function assertVaultSetInvocation(ctx: Ctx): void {
       continue;
     }
     throw new UsageError(
-      "vault set accepts no credential value in argv; pipe it with --stdin",
+      `vault ${subcommand} accepts no credential value in argv; pipe it with --stdin`,
     );
   }
 }
@@ -439,6 +445,74 @@ async function collectCliDoctorReport(client: Client) {
   });
 }
 
+const CREDENTIAL_PROVIDER: Partial<Record<VaultSecretName, string>> = {
+  ANTHROPIC_API_KEY: "anthropic",
+  CLAUDE_CODE_OAUTH_TOKEN: "claude-code",
+  CODEX_API_KEY: "codex",
+  CURSOR_API_KEY: "cursor",
+  DEEPSEEK_API_KEY: "deepseek",
+  OPENAI_API_KEY: "openai",
+};
+
+async function activateRotatedCredential(
+  paths: ReturnType<typeof resolveOperatorPaths>,
+  service: VaultService,
+  name: VaultSecretName,
+): Promise<void> {
+  if (service !== "control-plane") {
+    throw new Error(
+      `credential ${name} requires an unsupported ${service} activation protocol`,
+    );
+  }
+  const lifecycle = new OperatorServiceLifecycle(paths);
+  await lifecycle.restart([service]);
+  const serviceEnvironment = loadOperatorServiceEnvironment(paths, service);
+  const client = new Client(
+    {
+      controlPlaneUrl:
+        serviceEnvironment.AVITY_CONTROL_PLANE_URL ??
+        loadConfig().controlPlaneUrl,
+      ...(serviceEnvironment.AVITY_API_TOKEN
+        ? { apiToken: serviceEnvironment.AVITY_API_TOKEN }
+        : {}),
+      requestTimeoutMs: 1_000,
+    },
+    {
+      ...serviceEnvironment,
+      ...loadEffectiveCliTlsEnvironment(),
+    },
+  );
+  const providerName = CREDENTIAL_PROVIDER[name];
+  try {
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      try {
+        const health = await client.get<{ status: string }>("/v1/health");
+        const report = await client.get<ProviderStatusReportView>(
+          "/v1/providers/status",
+        );
+        const provider = providerName
+          ? report.providers.find((entry) => entry.name === providerName)
+          : undefined;
+        const credentialLoaded = !providerName ||
+          (provider?.registered === true &&
+            !provider.reasons.some((reason) => reason.code === "auth_missing"));
+        if (health.status === "ok" && credentialLoaded) return;
+      } catch {
+        // The detached service may still be starting. Retry within the fixed
+        // activation window without exposing any credential or response body.
+      }
+      if (attempt < 20) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    throw new Error(
+      `control-plane did not activate credential ${name} within 20 bounded probes`,
+    );
+  } finally {
+    client.close();
+  }
+}
+
 function campaignRetentionCount(): number {
   const raw = process.env.AVITY_E2E_REPORT_RETENTION ?? "20";
   if (!/^\d+$/.test(raw)) {
@@ -566,7 +640,7 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       if (!isVaultSecretName(name)) {
         throw new UsageError(`unsupported credential name: ${name}`);
       }
-      assertVaultSetInvocation(ctx);
+      assertVaultSecretInvocation(ctx, "set");
       const value = secretFromPipedStdin(ctx);
       const paths = resolveOperatorPaths({
         repositoryRoot: resolveRepositoryRoot(),
@@ -586,6 +660,42 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       };
       out(ctx, data, (payload: typeof data) =>
         `${payload.rotated ? "rotated" : "stored"} ${payload.name}; vault generation ${payload.generation}`
+      );
+    },
+    "credential-rotate": async (ctx) => {
+      const name = requireArg(ctx, 1, "credential-name");
+      if (!isVaultSecretName(name)) {
+        throw new UsageError(`unsupported credential name: ${name}`);
+      }
+      assertVaultSecretInvocation(ctx, "credential-rotate");
+      const value = secretFromPipedStdin(ctx);
+      const paths = resolveOperatorPaths({
+        repositoryRoot: resolveRepositoryRoot(),
+      });
+      const lifecycle = new OperatorServiceLifecycle(paths);
+      const status = await lifecycle.status();
+      if (status.controlPlane.state !== "running") {
+        throw new Error(
+          "transactional credential rotation requires the control-plane service to be running",
+        );
+      }
+      const keyFile = operatorVaultKeyFile(ctx, paths);
+      const result = await rotateOperatorServiceCredential(
+        paths,
+        name,
+        value,
+        {
+          activate: (service, credentialName) =>
+            activateRotatedCredential(paths, service, credentialName),
+        },
+        { ...(keyFile ? { keyFile } : {}) },
+      );
+      out(ctx, result, (payload: typeof result) =>
+        [
+          `rotated and activated ${payload.name}`,
+          `service: ${payload.service}`,
+          `vault generation: ${payload.previousGeneration} -> ${payload.generation}`,
+        ].join("\n")
       );
     },
     remove: async (ctx) => {
@@ -1626,6 +1736,7 @@ commands:
   setup [--force]                       secure local operator bootstrap
   vault init|status|list [--key-file <0600-path>]
   vault set <credential-name> --stdin [--key-file <0600-path>]
+  vault credential-rotate <credential-name> --stdin [--key-file <0600-path>]
   vault remove <credential-name> --confirm <credential-name>
   vault migrate [--key-file <0600-path>]
   vault recovery-export --output <path> --passphrase-stdin [--key-file <path>]
