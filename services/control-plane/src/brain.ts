@@ -108,7 +108,9 @@ interface StepResult<T> {
 
 export class BrainPipeline {
   private readonly inFlight = new Map<string, symbol>();
+  private readonly activeTasks = new Set<Promise<EnsurePlanResult>>();
   private readonly activeHandles = new Map<string, RunHandle>();
+  private readonly retryWaiters = new Set<() => void>();
   private stopped = false;
 
   constructor(
@@ -119,10 +121,31 @@ export class BrainPipeline {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    for (const [runId, handle] of this.activeHandles) {
-      await handle.cancel();
-      this.activeHandles.delete(runId);
-    }
+    for (const cancelWait of this.retryWaiters) cancelWait();
+    this.retryWaiters.clear();
+    const handles = [...this.activeHandles.values()];
+    this.activeHandles.clear();
+    await Promise.allSettled(handles.map((handle) => handle.cancel()));
+    await Promise.allSettled([...this.activeTasks]);
+    this.inFlight.clear();
+  }
+
+  private async waitForRetry(ms: number): Promise<void> {
+    if (this.stopped) throw new BrainStopped();
+    await new Promise<void>((resolve, reject) => {
+      let timer: NodeJS.Timeout;
+      const cancel = () => {
+        clearTimeout(timer);
+        this.retryWaiters.delete(cancel);
+        reject(new BrainStopped());
+      };
+      timer = setTimeout(() => {
+        this.retryWaiters.delete(cancel);
+        resolve();
+      }, ms);
+      this.retryWaiters.add(cancel);
+      if (this.stopped) cancel();
+    });
   }
 
   /** Cancel in-flight brain provider handles for one project (atomic pause). */
@@ -188,9 +211,12 @@ export class BrainPipeline {
     if (this.inFlight.has(projectId)) return { status: "deferred", reason: "planning already in flight" };
     const token = Symbol(projectId);
     this.inFlight.set(projectId, token);
+    const task = this.run(projectId, objectiveId, replan ?? null);
+    this.activeTasks.add(task);
     try {
-      return await this.run(projectId, objectiveId, replan ?? null);
+      return await task;
     } finally {
+      this.activeTasks.delete(task);
       // cancelProject deliberately frees the slot so resume can start a fresh
       // generation before an uncooperative old provider returns. The old
       // continuation must never delete the replacement generation's token.
@@ -802,7 +828,7 @@ export class BrainPipeline {
           case "wait_for_reset":
           case "retry_backoff":
             attempt += 1;
-            await sleep(decision.waitMs);
+            await this.waitForRetry(decision.waitMs);
             continue;
           case "switch_model": {
             const idx = models.indexOf(model);
@@ -1167,8 +1193,4 @@ function buildStepPrompts(input: {
     ].join("\n"),
     userPrompt: sections.join("\n\n"),
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
