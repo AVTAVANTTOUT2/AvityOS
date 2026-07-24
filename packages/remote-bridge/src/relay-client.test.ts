@@ -8,11 +8,13 @@ import type {
 import {
   RemoteOutboundConnector,
   RemoteRelayHttpClient,
+  createDurableRemoteOutboundConnector,
   generateRemoteAccountIdentity,
   generateRemoteDeviceIdentity,
   issueRemoteDeviceCertificate,
   openRemoteEnvelope,
   sealRemoteEnvelope,
+  type RemoteConnectorPersistedState,
   type RemoteRelayClient,
 } from "./index.js";
 
@@ -91,6 +93,67 @@ describe("remote relay HTTP client", () => {
 });
 
 describe("outbound connector delivery state", () => {
+  it("fails closed for locally revoked host and sender devices", async () => {
+    const setup = setupDevices();
+    const inbound = sealRemoteEnvelope({
+      plaintext: "must-not-run",
+      contentType: "text/plain",
+      sequence: 1,
+      senderIdentity: setup.remote,
+      senderCertificate: setup.remoteCertificate,
+      recipientCertificate: setup.hostCertificate,
+      accountSigningPublicKey: setup.account.signingPublicKey,
+      sentAt: NOW,
+    });
+    const relay: RemoteRelayClient = {
+      async publish(envelope): Promise<RemoteRelayPublishResult> {
+        return { messageId: envelope.messageId, acceptedAt: NOW, duplicate: false };
+      },
+      async poll(): Promise<RemoteRelayInbox> {
+        return {
+          items: [{ cursor: 1, receivedAt: NOW, envelope: inbound }],
+          nextCursor: 1,
+        };
+      },
+      async acknowledge(input): Promise<RemoteRelayAckResult> {
+        return { throughCursor: input.throughCursor, deleted: 1 };
+      },
+    };
+    const activeDevices = new Set([setup.host.deviceId, setup.remote.deviceId]);
+    const stateStore = {
+      isDeviceActive: (deviceId: string) => activeDevices.has(deviceId),
+      loadConnectorState: () => null,
+      saveConnectorState: () => undefined,
+      appendRemoteAction: () => undefined,
+    };
+    const connectorOptions = {
+      relay,
+      identity: setup.host,
+      certificate: setup.hostCertificate,
+      accountSigningPublicKey: setup.account.signingPublicKey,
+      resolveSenderCertificate: () => setup.remoteCertificate,
+      handleRequest: () => {
+        throw new Error("handler must not run");
+      },
+      classifyAction: () => "project.pause",
+      stateStore,
+      pollWaitMs: 0,
+      now: () => new Date(NOW),
+    };
+
+    activeDevices.delete(setup.host.deviceId);
+    expect(() => createDurableRemoteOutboundConnector(connectorOptions)).toThrow(
+      /local remote-bridge device is not active/i,
+    );
+
+    activeDevices.add(setup.host.deviceId);
+    const connector = createDurableRemoteOutboundConnector(connectorOptions);
+    activeDevices.delete(setup.remote.deviceId);
+    await expect(connector.processOnce()).rejects.toThrow(
+      /remote sender device is not active/i,
+    );
+  });
+
   it("retries an ambiguous acknowledgement without rerunning the handler or response", async () => {
     const setup = setupDevices();
     const inbound = sealRemoteEnvelope({
@@ -133,6 +196,8 @@ describe("outbound connector delivery state", () => {
       },
     };
     let handlerCalls = 0;
+    const auditActions: string[] = [];
+    let persistedState: RemoteConnectorPersistedState | null = null;
     const connector = new RemoteOutboundConnector({
       relay,
       identity: setup.host,
@@ -145,21 +210,53 @@ describe("outbound connector delivery state", () => {
       },
       pollWaitMs: 0,
       now: () => new Date(NOW),
+      persistState: (state) => {
+        persistedState = structuredClone(state);
+      },
+      classifyAction: () => "project.pause",
+      recordAudit: (event) => {
+        auditActions.push(`${event.action}:${event.outcome}`);
+        expect(JSON.stringify(event)).not.toContain("perform-local-action");
+      },
     });
 
     await expect(connector.processOnce()).rejects.toThrow(/simulated response loss/i);
     expect(connector.state.deliveryPending).toBe(true);
     expect(handlerCalls).toBe(1);
     expect(published).toHaveLength(1);
+    expect(auditActions).toEqual(["project.pause:accepted"]);
 
-    expect(await connector.processOnce()).toBe(1);
-    expect(connector.state).toMatchObject({
+    expect(persistedState).not.toBeNull();
+    const restartedConnector = new RemoteOutboundConnector({
+      relay,
+      identity: setup.host,
+      certificate: setup.hostCertificate,
+      accountSigningPublicKey: setup.account.signingPublicKey,
+      resolveSenderCertificate: () => setup.remoteCertificate,
+      handleRequest: () => {
+        handlerCalls += 1;
+        return { plaintext: "must-not-run", contentType: "text/plain" };
+      },
+      initialPersistedState: persistedState!,
+      persistState: (state) => {
+        persistedState = structuredClone(state);
+      },
+      classifyAction: () => "must-not-classify",
+      recordAudit: (event) => {
+        auditActions.push(`${event.action}:${event.outcome}`);
+      },
+      pollWaitMs: 0,
+      now: () => new Date(NOW),
+    });
+    expect(await restartedConnector.processOnce()).toBe(1);
+    expect(restartedConnector.state).toMatchObject({
       relayCursor: 1,
       deliveryPending: false,
     });
     expect(handlerCalls).toBe(1);
     expect(published).toHaveLength(1);
     expect(acknowledgementAttempts).toBe(2);
+    expect(auditActions).toEqual(["project.pause:accepted"]);
 
     const opened = openRemoteEnvelope({
       envelope: published[0],

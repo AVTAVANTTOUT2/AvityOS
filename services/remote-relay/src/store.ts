@@ -1,13 +1,17 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   RemoteEncryptedEnvelope,
   RemoteRelayAckResult,
+  RemoteRelayDeviceRecord,
   RemoteRelayInbox,
   RemoteRelayPublishResult,
+  RemoteRelayRegisterDeviceRequest,
   type RemoteEncryptedEnvelope as RemoteEncryptedEnvelopeType,
   type RemoteRelayAckResult as RemoteRelayAckResultType,
+  type RemoteRelayDeviceRecord as RemoteRelayDeviceRecordType,
   type RemoteRelayInbox as RemoteRelayInboxType,
   type RemoteRelayPublishResult as RemoteRelayPublishResultType,
+  type RemoteRelayRegisterDeviceRequest as RemoteRelayRegisterDeviceRequestType,
 } from "@avityos/contracts";
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60_000;
@@ -35,7 +39,31 @@ interface SeenMessage {
 
 interface CursorState {
   readonly cursor: number;
-  readonly expiresAt: number;
+}
+
+interface AuthorizedDevice {
+  readonly tokenHash: Buffer;
+  readonly certificate: string;
+  readonly updatedAt: string;
+  readonly revokedAt: string | null;
+}
+
+export interface RemoteRelayStore {
+  registerDevice(input: RemoteRelayRegisterDeviceRequestType): RemoteRelayDeviceRecordType;
+  revokeDevice(accountId: string, deviceId: string): RemoteRelayDeviceRecordType | null;
+  authorizeDevice(accountId: string, deviceId: string, accessToken: string): boolean;
+  isDeviceActive(accountId: string, deviceId: string): boolean;
+  publish(envelopeInput: unknown): RemoteRelayPublishResultType;
+  list(accountId: string, deviceId: string, afterCursor: number, limit: number): RemoteRelayInboxType;
+  acknowledge(accountId: string, deviceId: string, throughCursor: number): RemoteRelayAckResultType;
+  waitForItems(input: {
+    readonly accountId: string;
+    readonly deviceId: string;
+    readonly afterCursor: number;
+    readonly waitMs: number;
+    readonly signal?: AbortSignal;
+  }): Promise<void>;
+  stats(): { readonly inboxes: number; readonly queuedEnvelopes: number };
 }
 
 export interface InMemoryRelayStoreOptions {
@@ -72,7 +100,7 @@ function fingerprint(serializedEnvelope: string): string {
   return createHash("sha256").update(serializedEnvelope).digest("hex");
 }
 
-export class InMemoryRelayStore {
+export class InMemoryRelayStore implements RemoteRelayStore {
   private readonly ttlMs: number;
   private readonly maxItemsPerInbox: number;
   private readonly maxTotalItems: number;
@@ -86,6 +114,7 @@ export class InMemoryRelayStore {
   private readonly cursorStates = new Map<string, CursorState>();
   private readonly seenMessages = new Map<string, SeenMessage>();
   private readonly waiters = new Map<string, Set<() => void>>();
+  private readonly devices = new Map<string, AuthorizedDevice>();
   private waiterCount = 0;
 
   constructor(options: InMemoryRelayStoreOptions = {}) {
@@ -149,15 +178,6 @@ export class InMemoryRelayStore {
     for (const [messageId, seen] of this.seenMessages) {
       if (seen.expiresAt <= now) this.seenMessages.delete(messageId);
     }
-    for (const [key, state] of this.cursorStates) {
-      if (
-        state.expiresAt <= now &&
-        !this.inboxes.has(key) &&
-        !this.waiters.has(key)
-      ) {
-        this.cursorStates.delete(key);
-      }
-    }
   }
 
   private notify(key: string): void {
@@ -165,6 +185,50 @@ export class InMemoryRelayStore {
     if (!current) return;
     this.waiters.delete(key);
     for (const resolve of current) resolve();
+  }
+
+  registerDevice(inputValue: RemoteRelayRegisterDeviceRequestType): RemoteRelayDeviceRecordType {
+    const input = RemoteRelayRegisterDeviceRequest.parse(inputValue);
+    const updatedAt = new Date(this.now()).toISOString();
+    const key = inboxKey(input.certificate.accountId, input.certificate.deviceId);
+    this.devices.set(key, {
+      tokenHash: createHash("sha256").update(input.accessToken).digest(),
+      certificate: JSON.stringify(input.certificate),
+      updatedAt,
+      revokedAt: null,
+    });
+    return RemoteRelayDeviceRecord.parse({
+      accountId: input.certificate.accountId,
+      deviceId: input.certificate.deviceId,
+      status: "active",
+      updatedAt,
+    });
+  }
+
+  revokeDevice(accountId: string, deviceId: string): RemoteRelayDeviceRecordType | null {
+    const key = inboxKey(accountId, deviceId);
+    const existing = this.devices.get(key);
+    if (!existing) return null;
+    const updatedAt = new Date(this.now()).toISOString();
+    this.devices.set(key, { ...existing, updatedAt, revokedAt: updatedAt });
+    return RemoteRelayDeviceRecord.parse({
+      accountId,
+      deviceId,
+      status: "revoked",
+      updatedAt,
+    });
+  }
+
+  authorizeDevice(accountId: string, deviceId: string, accessToken: string): boolean {
+    const device = this.devices.get(inboxKey(accountId, deviceId));
+    if (!device || device.revokedAt) return false;
+    const suppliedHash = createHash("sha256").update(accessToken).digest();
+    return timingSafeEqual(suppliedHash, device.tokenHash);
+  }
+
+  isDeviceActive(accountId: string, deviceId: string): boolean {
+    const device = this.devices.get(inboxKey(accountId, deviceId));
+    return Boolean(device && !device.revokedAt);
   }
 
   publish(envelopeInput: unknown): RemoteRelayPublishResultType {
@@ -222,7 +286,7 @@ export class InMemoryRelayStore {
     const expiresAt = now + this.ttlMs;
     items.push({ cursor, receivedAt, expiresAt, sizeBytes, envelope });
     this.inboxes.set(key, items);
-    this.cursorStates.set(key, { cursor, expiresAt });
+    this.cursorStates.set(key, { cursor });
     this.seenMessages.set(envelope.messageId, {
       fingerprint: envelopeFingerprint,
       acceptedAt: receivedAt,
@@ -268,13 +332,6 @@ export class InMemoryRelayStore {
     const deleted = current.length - retained.length;
     if (retained.length > 0) this.inboxes.set(key, retained);
     else this.inboxes.delete(key);
-    const cursorState = this.cursorStates.get(key);
-    if (cursorState) {
-      this.cursorStates.set(key, {
-        cursor: cursorState.cursor,
-        expiresAt: now + this.ttlMs,
-      });
-    }
     return RemoteRelayAckResult.parse({ throughCursor, deleted });
   }
 

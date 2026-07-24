@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { buildRemoteRelayServer } from "./server.js";
-import { InMemoryRelayStore } from "./store.js";
+import { SqliteRelayStore } from "./sqlite-store.js";
 
 const VERSION = "0.1.0";
 
@@ -75,23 +77,26 @@ async function main(): Promise<void> {
   if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
     throw new Error("AVITY_RELAY_HOST must remain loopback; expose it through a local HTTPS reverse proxy");
   }
+  const databasePath = process.env.AVITY_RELAY_DB_PATH ?? join(homedir(), ".avity", "relay.sqlite");
+  const store = new SqliteRelayStore(databasePath, {
+    ttlMs,
+    maxItemsPerInbox,
+    maxTotalItems,
+    maxBytesPerInbox,
+    maxTotalBytes,
+    maxInboxStates,
+    maxSeenMessages,
+    maxWaiters,
+  });
   const app = await buildRemoteRelayServer({
     accessToken,
     version: VERSION,
-    store: new InMemoryRelayStore({
-      ttlMs,
-      maxItemsPerInbox,
-      maxTotalItems,
-      maxBytesPerInbox,
-      maxTotalBytes,
-      maxInboxStates,
-      maxSeenMessages,
-      maxWaiters,
-    }),
+    store,
   });
 
   const shutdown = async (): Promise<void> => {
     await app.close();
+    store.close();
   };
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());
