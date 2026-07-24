@@ -27,6 +27,10 @@ import { realpathSync } from "node:fs";
 import type { ServerOptions as HttpsServerOptions } from "node:https";
 import { authorizedPeerCertificateFingerprint } from "@avityos/transport-security";
 import { buildE2EPreflight } from "./e2e-preflight.js";
+import {
+  ApiTokenAuthority,
+  ApiTokenRotationError,
+} from "./api-token-authority.js";
 import type { Engine } from "./engine.js";
 import { getCachedGitHubReadiness } from "./github-readiness.js";
 import type { ProviderStatusReport } from "./provider-status.js";
@@ -62,6 +66,8 @@ export interface ServerOptions {
   https?: HttpsServerOptions;
   /** Require and bind an authorized client certificate on worker routes. */
   workerMtlsRequired?: boolean;
+  /** Keep internal authenticated clients on the promoted administrator token. */
+  onApiTokenCommitted?: (token: string) => void;
 }
 
 /**
@@ -96,6 +102,12 @@ function apiError(reply: FastifyReply, status: number, code: ApiErrorCode, messa
  */
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
   const { store, engine } = opts;
+  if (opts.apiToken !== undefined && opts.apiToken.length === 0) {
+    throw new Error("API token must not be empty");
+  }
+  const apiTokenAuthority = opts.apiToken
+    ? new ApiTokenAuthority(store.db, opts.apiToken)
+    : null;
   const app = Fastify({
     logger: false,
     forceCloseConnections: true,
@@ -125,16 +137,15 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       });
       return;
     }
-    if (!opts.apiToken) return;
+    if (!apiTokenAuthority) return;
     if (req.url.startsWith("/v1/health")) return;
     // These routes authenticate with short-lived worker credentials and
     // terminal lease tokens instead of the user/admin bearer token.
     const workerAuthenticatedRoute =
       workerDataRoute && path !== "/v1/workers/enroll";
     if (workerAuthenticatedRoute) return;
-    const header = req.headers.authorization;
-    const cookieToken = parseCookie(req.headers.cookie ?? "", "avity_session");
-    if (header !== `Bearer ${opts.apiToken}` && cookieToken !== opts.apiToken) {
+    const token = presentedApiToken(req);
+    if (!apiTokenAuthority.role(token)) {
       await reply.status(401).send({ error: { code: "policy_denied", message: "invalid or missing API token" } });
     }
   });
@@ -180,7 +191,8 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   // keeps the long-lived token out of localStorage and SSE query strings.
   app.post("/v1/session", async (_req, reply) => {
     const secure = opts.https ? "; Secure" : "";
-    reply.header("set-cookie", "avity_session=" + encodeURIComponent(opts.apiToken ?? "") + "; HttpOnly; SameSite=Strict; Path=/" + secure);
+    const token = presentedApiToken(_req) ?? "";
+    reply.header("set-cookie", "avity_session=" + encodeURIComponent(token) + "; HttpOnly; SameSite=Strict; Path=/" + secure);
     return { ok: true };
   });
 
@@ -188,6 +200,112 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const secure = opts.https ? "; Secure" : "";
     reply.header("set-cookie", "avity_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" + secure);
     return { ok: true };
+  });
+
+  // ── administrator bearer rotation ──────────────────────────────────────
+
+  const ApiTokenRotationInput = z.object({
+    nextToken: z.string()
+      .min(32)
+      .max(4096)
+      .refine((value) => !/[\u0000\r\n]/.test(value), {
+        message: "nextToken must be a single-line token",
+      }),
+  }).strict();
+
+  function rotationError(
+    reply: FastifyReply,
+    error: unknown,
+  ) {
+    if (!(error instanceof ApiTokenRotationError)) throw error;
+    const status =
+      error.code === "unauthorized" ? 403
+        : error.code === "not_found" ? 404
+        : error.code === "unchanged" ? 409
+        : 409;
+    const code: ApiErrorCode =
+      error.code === "unauthorized" ? "policy_denied"
+        : error.code === "not_found" ? "not_found"
+        : "conflict";
+    return apiError(reply, status, code, error.message);
+  }
+
+  app.get("/v1/auth/api-token-rotation", async (req, reply) => {
+    if (!apiTokenAuthority) {
+      return apiError(reply, 409, "policy_denied", "API token authentication is disabled");
+    }
+    const token = presentedApiToken(req);
+    if (!token) {
+      return apiError(reply, 403, "policy_denied", "API token is required");
+    }
+    reply.header("cache-control", "no-store");
+    try {
+      return apiTokenAuthority.status(token);
+    } catch (error) {
+      return rotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/auth/api-token-rotations", async (req, reply) => {
+    if (!apiTokenAuthority) {
+      return apiError(reply, 409, "policy_denied", "API token authentication is disabled");
+    }
+    const token = presentedApiToken(req);
+    if (!token) {
+      return apiError(reply, 403, "policy_denied", "current API token is required");
+    }
+    const body = parse(ApiTokenRotationInput, req.body);
+    reply.header("cache-control", "no-store");
+    try {
+      const prepared = apiTokenAuthority.prepare(token, body.nextToken);
+      store.appendAudit(null, "user", "api_token.prepare", prepared.rotationId);
+      return reply.status(201).send(prepared);
+    } catch (error) {
+      return rotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/auth/api-token-rotations/:id/commit", async (req, reply) => {
+    if (!apiTokenAuthority) {
+      return apiError(reply, 409, "policy_denied", "API token authentication is disabled");
+    }
+    const { id } = req.params as { id: string };
+    const token = bearerToken(req.headers.authorization);
+    if (!token) {
+      return apiError(reply, 403, "policy_denied", "pending API bearer is required");
+    }
+    reply.header("cache-control", "no-store");
+    try {
+      const committed = apiTokenAuthority.commit(id, token);
+      opts.onApiTokenCommitted?.(token);
+      if (!committed.idempotent) {
+        store.appendAudit(null, "user", "api_token.commit", id);
+      }
+      return committed;
+    } catch (error) {
+      return rotationError(reply, error);
+    }
+  });
+
+  app.post("/v1/auth/api-token-rotations/:id/abort", async (req, reply) => {
+    if (!apiTokenAuthority) {
+      return apiError(reply, 409, "policy_denied", "API token authentication is disabled");
+    }
+    const { id } = req.params as { id: string };
+    const token = presentedApiToken(req);
+    if (!token) {
+      return apiError(reply, 403, "policy_denied", "current API token is required");
+    }
+    reply.header("cache-control", "no-store");
+    try {
+      const aborted = apiTokenAuthority.abort(id, token);
+      if (!aborted.idempotent) {
+        store.appendAudit(null, "user", "api_token.abort", id);
+      }
+      return aborted;
+    } catch (error) {
+      return rotationError(reply, error);
+    }
   });
 
   // ── native remote host ──────────────────────────────────────────────────
@@ -1076,6 +1194,17 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function bearerToken(header: string | undefined): string | null {
+  return header?.startsWith("Bearer ")
+    ? header.slice("Bearer ".length)
+    : null;
+}
+
+function presentedApiToken(req: FastifyRequest): string | null {
+  return bearerToken(req.headers.authorization) ??
+    parseCookie(req.headers.cookie ?? "", "avity_session");
 }
 
 function parseCookie(header: string, name: string): string | null {

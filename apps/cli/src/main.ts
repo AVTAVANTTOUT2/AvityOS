@@ -54,6 +54,7 @@ import {
   operatorVaultStatus,
   exportOperatorVaultRecovery,
   restoreOperatorVaultKeyFromRecovery,
+  rotateOperatorApiToken,
   rotateOperatorServiceCredential,
   rotateOperatorVaultKey,
   verifyOperatorVaultRecovery,
@@ -513,6 +514,69 @@ async function activateRotatedCredential(
   }
 }
 
+function createApiTokenRotationClient(
+  paths: ReturnType<typeof resolveOperatorPaths>,
+  token: string,
+): Client {
+  const serviceEnvironment = loadOperatorServiceEnvironment(
+    paths,
+    "control-plane",
+  );
+  return new Client(
+    {
+      controlPlaneUrl:
+        serviceEnvironment.AVITY_CONTROL_PLANE_URL ??
+        loadConfig().controlPlaneUrl,
+      apiToken: token,
+      requestTimeoutMs: 2_000,
+    },
+    {
+      ...serviceEnvironment,
+      ...loadEffectiveCliTlsEnvironment(),
+    },
+  );
+}
+
+async function withApiTokenRotationClient<T>(
+  paths: ReturnType<typeof resolveOperatorPaths>,
+  token: string,
+  operation: (client: Client) => Promise<T>,
+): Promise<T> {
+  const client = createApiTokenRotationClient(paths, token);
+  try {
+    return await operation(client);
+  } finally {
+    client.close();
+  }
+}
+
+async function commitApiTokenRotation(
+  paths: ReturnType<typeof resolveOperatorPaths>,
+  rotationId: string,
+  nextToken: string,
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await withApiTokenRotationClient(
+        paths,
+        nextToken,
+        (client) =>
+          client.post(
+            `/v1/auth/api-token-rotations/${rotationId}/commit`,
+          ),
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
+  throw lastError;
+}
+
 function campaignRetentionCount(): number {
   const raw = process.env.AVITY_E2E_REPORT_RETENTION ?? "20";
   if (!/^\d+$/.test(raw)) {
@@ -652,6 +716,11 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
       });
       const previous = vault.snapshot();
       const rotated = previous.entries.some((entry) => entry.name === name);
+      if (rotated) {
+        throw new UsageError(
+          `credential ${name} already exists; use vault credential-rotate`,
+        );
+      }
       const snapshot = vault.set(name, value);
       const data = {
         name,
@@ -680,19 +749,63 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
         );
       }
       const keyFile = operatorVaultKeyFile(ctx, paths);
-      const result = await rotateOperatorServiceCredential(
-        paths,
-        name,
-        value,
-        {
-          activate: (service, credentialName) =>
-            activateRotatedCredential(paths, service, credentialName),
-        },
-        { ...(keyFile ? { keyFile } : {}) },
-      );
+      const result = name === "AVITY_API_TOKEN"
+        ? await rotateOperatorApiToken(
+            paths,
+            value,
+            {
+              status: (token) =>
+                withApiTokenRotationClient(
+                  paths,
+                  token,
+                  (client) =>
+                    client.get("/v1/auth/api-token-rotation"),
+                ),
+              prepare: (currentToken, nextToken) =>
+                withApiTokenRotationClient(
+                  paths,
+                  currentToken,
+                  (client) =>
+                    client.post("/v1/auth/api-token-rotations", {
+                      nextToken,
+                    }),
+                ),
+              verify: (token) =>
+                withApiTokenRotationClient(
+                  paths,
+                  token,
+                  async (client) => {
+                    await client.get("/v1/auth/api-token-rotation");
+                    await client.get("/v1/providers/status");
+                  },
+                ),
+              commit: (rotationId, nextToken) =>
+                commitApiTokenRotation(paths, rotationId, nextToken),
+              abort: (rotationId, currentToken) =>
+                withApiTokenRotationClient(
+                  paths,
+                  currentToken,
+                  (client) =>
+                    client.post(
+                      `/v1/auth/api-token-rotations/${rotationId}/abort`,
+                    ),
+                ),
+            },
+            { ...(keyFile ? { keyFile } : {}) },
+          )
+        : await rotateOperatorServiceCredential(
+            paths,
+            name,
+            value,
+            {
+              activate: (service, credentialName) =>
+                activateRotatedCredential(paths, service, credentialName),
+            },
+            { ...(keyFile ? { keyFile } : {}) },
+          );
       out(ctx, result, (payload: typeof result) =>
         [
-          `rotated and activated ${payload.name}`,
+          `${payload.resumed ? "resumed" : "rotated and activated"} ${payload.name}`,
           `service: ${payload.service}`,
           `vault generation: ${payload.previousGeneration} -> ${payload.generation}`,
         ].join("\n")
@@ -1057,7 +1170,16 @@ const commands: Record<string, Handler | Record<string, Handler>> = {
             create: false,
             ...(keyFile ? { keyFile } : {}),
           });
-          vault.set("AVITY_API_TOKEN", token);
+          const existing =
+            vault.environmentFor("control-plane").AVITY_API_TOKEN;
+          if (existing && existing !== token) {
+            throw new Error(
+              "AVITY_API_TOKEN already exists; use vault credential-rotate AVITY_API_TOKEN --stdin",
+            );
+          }
+          if (!existing) {
+            vault.set("AVITY_API_TOKEN", token);
+          }
         } catch (error) {
           throw new Error(
             `credential vault rotation failed: ${

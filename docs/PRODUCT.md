@@ -31,7 +31,8 @@ human intervention, across many isolated projects in parallel.
 - **CLI** — `avity` covers the full loop headlessly with `--json` output
   for scripting, including a Keychain/file-key encrypted credential vault with
   stdin-only updates, transactional service activation/rollback for external
-  credentials and verified migration from protected plaintext env files.
+  credentials, two-phase administrator-bearer rotation and verified migration
+  from protected plaintext env files.
 
 ## Quality bar
 

@@ -11,6 +11,7 @@ import { openDatabase } from "./db.js";
 import { DEFAULT_ENGINE_CONFIG, Engine } from "./engine.js";
 import { clearGitHubReadinessCache, getCachedGitHubReadiness } from "./github-readiness.js";
 import { buildProviderStatus } from "./provider-status.js";
+import { ApiTokenAuthority } from "./api-token-authority.js";
 import { buildServer } from "./server.js";
 import { Store, WORKER_HEARTBEAT_WINDOW_MS } from "./store.js";
 
@@ -21,9 +22,11 @@ let store: Store;
 let engine: Engine;
 let baseUrl: string;
 let scratch: string;
+let committedApiToken: string | null;
 
 beforeEach(async () => {
   scratch = await mkdtemp(join(tmpdir(), "avity-sec-"));
+  committedApiToken = null;
   const db = openDatabase(":memory:");
   store = new Store(db);
   const providers = new Map<string, ProviderAdapter>([["fake", new FakeProviderAdapter()]]);
@@ -43,6 +46,9 @@ beforeEach(async () => {
       routing: engine.getProviderRoutingSnapshot(),
       campaignFault: null,
     }),
+    onApiTokenCommitted: (token) => {
+      committedApiToken = token;
+    },
   });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const address = app.server.address();
@@ -74,6 +80,15 @@ async function makeRepoProject(): Promise<{ projectId: string; repo: string }> {
 }
 
 describe("API authentication", () => {
+  it("refuses an explicitly empty bearer instead of disabling authentication", async () => {
+    await expect(buildServer({
+      store,
+      engine,
+      version: "test",
+      apiToken: "",
+    })).rejects.toThrow(/must not be empty/i);
+  });
+
   it("rejects requests without the bearer token", async () => {
     expect((await fetch(`${baseUrl}/v1/projects`)).status).toBe(401);
     expect((await fetch(`${baseUrl}/v1/projects`, { headers: { authorization: "Bearer wrong" } })).status).toBe(401);
@@ -107,6 +122,138 @@ describe("API authentication", () => {
     expect(ok.status).toBe(200);
     const body = await ok.json() as { note: string };
     expect(body.note).toMatch(/never runs provider health checks/i);
+  });
+
+  it("rotates the administrator bearer in two durable phases without persisting plaintext", async () => {
+    const nextToken = "next-administrator-token-".padEnd(48, "a");
+    const laterToken = "later-administrator-token-".padEnd(48, "b");
+    const preparedResponse = await fetch(
+      `${baseUrl}/v1/auth/api-token-rotations`,
+      {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ nextToken }),
+      },
+    );
+    expect(preparedResponse.status).toBe(201);
+    expect(preparedResponse.headers.get("cache-control")).toBe("no-store");
+    const prepared = await preparedResponse.json() as {
+      rotationId: string;
+      state: string;
+    };
+    expect(prepared).toMatchObject({ state: "prepared" });
+    expect(prepared.rotationId).toMatch(/^atr_[a-f0-9]{32}$/);
+
+    const serializedAuthority = JSON.stringify(
+      store.db.prepare("SELECT * FROM api_auth_tokens").all(),
+    );
+    expect(serializedAuthority).not.toContain(TOKEN);
+    expect(serializedAuthority).not.toContain(nextToken);
+
+    expect((await fetch(`${baseUrl}/v1/projects`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    })).status).toBe(200);
+    expect((await fetch(`${baseUrl}/v1/projects`, {
+      headers: { authorization: `Bearer ${nextToken}` },
+    })).status).toBe(200);
+    const conflictingPrepare = await fetch(
+      `${baseUrl}/v1/auth/api-token-rotations`,
+      {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ nextToken: laterToken }),
+      },
+    );
+    expect(conflictingPrepare.status).toBe(409);
+    expect(await conflictingPrepare.json()).toMatchObject({
+      error: { code: "conflict" },
+    });
+
+    const restartedAuthority = new ApiTokenAuthority(store.db, nextToken);
+    expect(restartedAuthority.role(TOKEN)).toBe("current");
+    expect(restartedAuthority.role(nextToken)).toBe("pending");
+    expect(() =>
+      new ApiTokenAuthority(
+        store.db,
+        "unrelated-administrator-token-".padEnd(48, "x"),
+      )
+    ).toThrow(/does not match/i);
+
+    const deniedCommit = await fetch(
+      `${baseUrl}/v1/auth/api-token-rotations/${prepared.rotationId}/commit`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+    );
+    expect(deniedCommit.status).toBe(403);
+
+    const committedResponse = await fetch(
+      `${baseUrl}/v1/auth/api-token-rotations/${prepared.rotationId}/commit`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${nextToken}` },
+      },
+    );
+    expect(committedResponse.status).toBe(200);
+    expect(await committedResponse.json()).toMatchObject({
+      state: "committed",
+      idempotent: false,
+    });
+    expect(committedApiToken).toBe(nextToken);
+    expect(() => new ApiTokenAuthority(store.db, TOKEN)).toThrow(
+      /does not match/i,
+    );
+    expect(new ApiTokenAuthority(store.db, nextToken).role(nextToken)).toBe(
+      "current",
+    );
+    expect((await fetch(`${baseUrl}/v1/projects`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    })).status).toBe(401);
+    expect((await fetch(`${baseUrl}/v1/projects`, {
+      headers: { authorization: `Bearer ${nextToken}` },
+    })).status).toBe(200);
+
+    const repeatedCommit = await fetch(
+      `${baseUrl}/v1/auth/api-token-rotations/${prepared.rotationId}/commit`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${nextToken}` },
+      },
+    );
+    expect(repeatedCommit.status).toBe(200);
+    expect(await repeatedCommit.json()).toMatchObject({
+      state: "committed",
+      idempotent: true,
+    });
+
+    const secondPrepared = await fetch(
+      `${baseUrl}/v1/auth/api-token-rotations`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${nextToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ nextToken: laterToken }),
+      },
+    );
+    const second = await secondPrepared.json() as { rotationId: string };
+    const aborted = await fetch(
+      `${baseUrl}/v1/auth/api-token-rotations/${second.rotationId}/abort`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${nextToken}` },
+      },
+    );
+    expect(aborted.status).toBe(200);
+    expect(await aborted.json()).toMatchObject({
+      state: "aborted",
+      idempotent: false,
+    });
+    expect((await fetch(`${baseUrl}/v1/projects`, {
+      headers: { authorization: `Bearer ${laterToken}` },
+    })).status).toBe(401);
   });
 
   it("protects remote-host administration and reports unsupported platforms honestly", async () => {

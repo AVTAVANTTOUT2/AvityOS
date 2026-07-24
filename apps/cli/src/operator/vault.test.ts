@@ -33,6 +33,7 @@ import {
   openOperatorVault,
   operatorVaultStatus,
   restoreOperatorVaultKeyFromRecovery,
+  rotateOperatorApiToken,
   rotateOperatorServiceCredential,
   rotateOperatorVaultKey,
   resolveOperatorVaultKeyStore,
@@ -256,6 +257,172 @@ describe("operator credential vault", () => {
     )).rejects.toThrow(/dedicated in-band token rotation/i);
   });
 
+  it("coordinates durable two-phase API token rotation and ambiguous recovery", async () => {
+    const paths = fixturePaths();
+    const keyPath = join(paths.rootDir, "..", "api-rotation-master.key");
+    const key = new FileCredentialVaultKeyStore(keyPath).create();
+    const vault = new EncryptedCredentialVault(paths.credentialVaultPath, key);
+    vault.initialize();
+    vault.set("AVITY_API_TOKEN", "current-administrator-token");
+
+    const calls: string[] = [];
+    const rotated = await rotateOperatorApiToken(
+      paths,
+      "next-administrator-token",
+      {
+        status: async () => ({
+          state: "stable",
+          rotationId: null,
+          tokenRole: "current",
+        }),
+        prepare: async (current, next) => {
+          expect(current).toBe("current-administrator-token");
+          expect(next).toBe("next-administrator-token");
+          calls.push("prepare");
+          return { rotationId: "atr_success" };
+        },
+        verify: async (token) => {
+          calls.push(`verify:${token}`);
+          expect(vault.environmentFor("control-plane").AVITY_API_TOKEN).toBe(
+            token,
+          );
+        },
+        commit: async (rotationId, token) => {
+          calls.push(`commit:${rotationId}:${token}`);
+        },
+        abort: async () => {
+          throw new Error("abort must not run");
+        },
+      },
+      { keyFile: keyPath },
+    );
+    expect(rotated).toMatchObject({
+      name: "AVITY_API_TOKEN",
+      rotationId: "atr_success",
+      previousGeneration: 1,
+      generation: 2,
+      resumed: false,
+    });
+    expect(JSON.stringify(rotated)).not.toMatch(
+      /current-administrator|next-administrator/,
+    );
+    expect(calls).toEqual([
+      "prepare",
+      "verify:next-administrator-token",
+      "commit:atr_success:next-administrator-token",
+    ]);
+
+    let verificationAttempt = 0;
+    await expect(rotateOperatorApiToken(
+      paths,
+      "rejected-administrator-token",
+      {
+        status: async () => {
+          throw new Error("status must not run");
+        },
+        prepare: async () => ({ rotationId: "atr_rollback" }),
+        verify: async (token) => {
+          verificationAttempt += 1;
+          if (verificationAttempt === 1) throw new Error("new token rejected");
+          expect(token).toBe("next-administrator-token");
+        },
+        commit: async () => {
+          throw new Error("commit must not run");
+        },
+        abort: async (rotationId, token) => {
+          expect(rotationId).toBe("atr_rollback");
+          expect(token).toBe("next-administrator-token");
+        },
+      },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/previous credential restored/i);
+    expect(vault.environmentFor("control-plane").AVITY_API_TOKEN).toBe(
+      "next-administrator-token",
+    );
+
+    await expect(rotateOperatorApiToken(
+      paths,
+      "commit-ambiguous-token",
+      {
+        status: async () => {
+          throw new Error("status must not run");
+        },
+        prepare: async () => ({ rotationId: "atr_ambiguous" }),
+        verify: async () => undefined,
+        commit: async () => {
+          throw new Error("response lost");
+        },
+        abort: async () => {
+          throw new Error("ambiguous commit must not roll back");
+        },
+      },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/finalization is ambiguous/i);
+    expect(vault.environmentFor("control-plane").AVITY_API_TOKEN).toBe(
+      "commit-ambiguous-token",
+    );
+
+    const resumed = await rotateOperatorApiToken(
+      paths,
+      "commit-ambiguous-token",
+      {
+        status: async () => ({
+          state: "prepared",
+          rotationId: "atr_ambiguous",
+          tokenRole: "pending",
+        }),
+        prepare: async () => {
+          throw new Error("prepare must not repeat");
+        },
+        verify: async (token) => {
+          expect(token).toBe("commit-ambiguous-token");
+        },
+        commit: async (rotationId, token) => {
+          expect(rotationId).toBe("atr_ambiguous");
+          expect(token).toBe("commit-ambiguous-token");
+        },
+        abort: async () => {
+          throw new Error("abort must not run");
+        },
+      },
+      { keyFile: keyPath },
+    );
+    expect(resumed).toMatchObject({
+      rotationId: "atr_ambiguous",
+      previousGeneration: 5,
+      generation: 5,
+      resumed: true,
+    });
+
+    let concurrentAbort = false;
+    await expect(rotateOperatorApiToken(
+      paths,
+      "candidate-after-resume",
+      {
+        status: async () => {
+          throw new Error("status must not run");
+        },
+        prepare: async () => ({ rotationId: "atr_concurrent" }),
+        verify: async () => {
+          vault.set("AVITY_API_TOKEN", "concurrent-vault-token");
+        },
+        commit: async () => {
+          throw new Error("commit must not run after a concurrent change");
+        },
+        abort: async (rotationId, token) => {
+          concurrentAbort = true;
+          expect(rotationId).toBe("atr_concurrent");
+          expect(token).toBe("commit-ambiguous-token");
+        },
+      },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/changed concurrently.*pending rotation aborted/i);
+    expect(concurrentAbort).toBe(true);
+    expect(vault.environmentFor("control-plane").AVITY_API_TOKEN).toBe(
+      "concurrent-vault-token",
+    );
+  });
+
   it("injects decrypted values in memory and overrides legacy credentials", async () => {
     const paths = fixturePaths();
     mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
@@ -432,7 +599,7 @@ describe("operator credential vault", () => {
     expect(scrubPlaintextApiTokenFromConfig()).toBe(false);
   });
 
-  it("rotates login credentials into an initialized vault, not operator.env", async () => {
+  it("stores first login credentials in the vault and refuses rotation bypass", async () => {
     const paths = fixturePaths();
     const keyPath = join(paths.rootDir, "..", "master.key");
     const key = new FileCredentialVaultKeyStore(keyPath).create();
@@ -463,6 +630,24 @@ describe("operator credential vault", () => {
       "rotated-api-token",
     );
     expect(readFileSync(configPath, "utf8")).not.toContain(
+      "rotated-api-token",
+    );
+
+    writeFileSync(tokenPath, "bypass-token\n", { mode: 0o600 });
+    const error = vi.spyOn(console, "error").mockImplementation(
+      () => undefined,
+    );
+    expect(await main([
+      "login",
+      "--url",
+      "http://127.0.0.1:7717",
+      "--token-file",
+      tokenPath,
+    ])).toBe(1);
+    expect(error.mock.calls.flat().join("\n")).toMatch(
+      /use vault credential-rotate AVITY_API_TOKEN/i,
+    );
+    expect(vault.environmentFor("control-plane").AVITY_API_TOKEN).toBe(
       "rotated-api-token",
     );
   });

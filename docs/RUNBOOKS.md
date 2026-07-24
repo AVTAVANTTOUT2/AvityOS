@@ -93,15 +93,35 @@ local activation proves scoped injection and service readiness, not that the
 vendor will accept the credential on a billed request; recertify with an
 explicit provider mission.
 
+Rotate the existing administrator bearer through the same stdin-only command:
+
+```sh
+read -r -s AVITY_SECRET
+printf '%s' "$AVITY_SECRET" |
+  avity vault credential-rotate AVITY_API_TOKEN --stdin
+unset AVITY_SECRET
+```
+
+The control plane first persists only a pending SHA-256 hash while the old
+bearer remains valid. The CLI compare-and-swaps the encrypted vault, proves
+authenticated protected requests with the new bearer and commits it without a
+service restart. A pre-commit verification failure restores the old vault
+value and aborts the pending hash. If the commit response is lost, the new
+value stays in the vault because the server may already have revoked the old
+one; rerun the exact command with the same new value to resume idempotently.
+Existing browser sessions made with the retired bearer must log in again.
+
 Supported names are closed: `AVITY_API_TOKEN`, `AVITY_WORKER_TOKEN`,
 `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`,
 `CODEX_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CURSOR_API_KEY`, `GH_TOKEN`
 and `GITHUB_TOKEN`. The Web receives none; the worker receives only its
 worker token. `vault list` exposes names/scopes/timestamps, never values.
-`credential-rotate` accepts the eight external provider/GitHub names and
-requires an existing value plus a running control plane. It intentionally
-rejects `AVITY_API_TOKEN` and `AVITY_WORKER_TOKEN`; use `vault set` only for
-initial offline provisioning until their two-phase server protocols land.
+`credential-rotate` accepts the eight external provider/GitHub names plus
+`AVITY_API_TOKEN`, and requires an existing value plus a running control
+plane. It intentionally rejects `AVITY_WORKER_TOKEN`; use `vault set` only for
+its initial offline provisioning until the worker-specific two-phase protocol
+lands. `vault set` and `login` refuse to replace an existing credential, so
+they cannot bypass an activation protocol.
 
 Removal is explicit and normally followed by a service restart:
 

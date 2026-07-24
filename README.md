@@ -236,7 +236,8 @@ Implemented and covered by automated tests:
 - an AES-256-GCM operator credential vault with a Keychain/external-file
   master key, strict per-service scopes, verified migration away from
   plaintext protected env files, and transactional external-credential
-  activation with service restart and compare-and-swap rollback;
+  activation with service restart and compare-and-swap rollback, plus durable
+  two-phase administrator-bearer rotation without a service restart;
 - passphrase-encrypted portable master-key recovery plus certified online
   SQLite/vault backup, verification and fresh-root restore.
 - native TLS 1.3 for the control plane plus certificate-bound worker mTLS,
@@ -256,9 +257,10 @@ Known remaining proof or product work:
   ad hoc signed installable bundle plus a signed update/rollback workflow;
   public Developer ID signing/notarization and the first real HTTPS feed still
   require operator-owned credentials;
-- native remote TLS/mTLS and transactional provider-credential activation are
-  implemented; in-band AvityOS bearer/certificate rotation and external
-  enterprise secret-manager integration remain chantier 7 work.
+- native remote TLS/mTLS, transactional provider-credential activation and
+  in-band administrator-bearer rotation are implemented; worker
+  bearer/certificate rotation and external enterprise secret-manager
+  integration remain chantier 7 work.
 
 The exact evidence and limitations are maintained in
 [docs/TRACEABILITY.md](docs/TRACEABILITY.md).

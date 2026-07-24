@@ -123,8 +123,12 @@ reproductible dans `docs/TRACEABILITY.md`.
    externes : compare-and-swap chiffré, redémarrage du seul service concerné,
    probe authentifié borné, puis rollback compare-and-swap et réactivation de
    l'ancienne valeur si la nouvelle configuration ne démarre pas. Les bearers
-   AvityOS sont exclus tant que leur protocole serveur en deux phases n'est
-   pas livré. Restent notamment : rotation des bearers et certificats,
+   AvityOS sont exclus de ce flux. Le checkpoint 7.5 livre le protocole
+   serveur en deux phases pour `AVITY_API_TOKEN` : hashes current/pending
+   durables, chevauchement d'authentification, preuve avec le nouveau client,
+   promotion/annulation idempotente et coordination CAS du coffre sans
+   redémarrage. Restent notamment : rotation du bearer worker et des
+   certificats,
    automatisation des releases versionnées et preuve de
    signature/notarisation Apple réelle. La politique de mise à jour signée et
    le rollback macOS sont livrés au checkpoint 6.6.
