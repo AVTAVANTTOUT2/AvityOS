@@ -34,7 +34,7 @@ final class AvityOSUITests: XCTestCase {
     }
 
     @MainActor
-    func testRegisteredDeepLinkOpensSettings() async throws {
+    func testRegisteredDeepLinkOpensSettings() throws {
         let app = launchApp()
         defer { app.terminate() }
         let workspace = NSWorkspace.shared
@@ -46,10 +46,11 @@ final class AvityOSUITests: XCTestCase {
             "Missing built application at \(appURL.path)"
         )
         let deepLink = try XCTUnwrap(URL(string: "avity://settings"))
-        _ = try await workspace.open(
+        workspace.open(
             [deepLink],
             withApplicationAt: appURL,
-            configuration: NSWorkspace.OpenConfiguration()
+            configuration: NSWorkspace.OpenConfiguration(),
+            completionHandler: nil
         )
         let settingsAppeared = element(
             "screen.settings",
