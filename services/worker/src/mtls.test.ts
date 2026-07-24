@@ -174,20 +174,29 @@ describe("worker mutual TLS transport", () => {
           typeof address === "object" && address ? address.port : 0
         }`;
 
-      const withoutCertificate = await caOnly.fetch(
-        `${baseUrl}/v1/workers/enroll`,
-        {
-          method: "POST",
-          headers: {
-            authorization: "Bearer admin-token",
-            "content-type": "application/json",
+      let withoutCertificate: Response;
+      try {
+        withoutCertificate = await caOnly.fetch(
+          `${baseUrl}/v1/workers/enroll`,
+          {
+            method: "POST",
+            headers: {
+              authorization: "Bearer admin-token",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              name: "no-certificate",
+              capabilities: ["shell"],
+            }),
           },
-          body: JSON.stringify({
-            name: "no-certificate",
-            capabilities: ["shell"],
-          }),
-        },
-      );
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `server-certificate trust probe failed on ${process.version}: ${detail}`,
+          { cause: error },
+        );
+      }
       expect(withoutCertificate.status).toBe(401);
 
       const browserSession = await caOnly.fetch(`${baseUrl}/v1/session`, {

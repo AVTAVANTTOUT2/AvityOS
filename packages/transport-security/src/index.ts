@@ -267,12 +267,17 @@ function requestBody(
 export function createSecureFetchTransport(
   configuration: ClientTlsConfiguration,
 ): SecureFetchTransport {
+  const secureContext = createSecureContext({
+    ...configuration,
+    minVersion: "TLSv1.3",
+  });
   const agent = new HttpsAgent({
     keepAlive: true,
     maxSockets: 8,
     maxFreeSockets: 2,
     timeout: 30_000,
     ...configuration,
+    secureContext,
     minVersion: "TLSv1.3",
     rejectUnauthorized: true,
   });
