@@ -85,13 +85,17 @@ class RecordingFake extends FakeProviderAdapter {
 /** Provider that ignores timeoutMs and only stops when the pipeline cancels it. */
 class NeverCompletingFake extends FakeProviderAdapter {
   cancelled = false;
+  drained = false;
   override startRun() {
     let release: (() => void) | null = null;
     let cancelled = false;
+    const provider = this;
     async function* events() {
       await new Promise<void>((resolve) => {
         release = resolve;
       });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      provider.drained = true;
       if (!cancelled) {
         yield { type: "completed" as const, resultText: "unexpected late result" };
       }
@@ -103,6 +107,24 @@ class NeverCompletingFake extends FakeProviderAdapter {
         cancelled = true;
         release?.();
       },
+    };
+  }
+}
+
+/** Provider that sends the brain into the longest configured retry wait. */
+class RateLimitedFake extends FakeProviderAdapter {
+  override startRun() {
+    async function* events() {
+      yield {
+        type: "error" as const,
+        category: "rate_limited" as const,
+        message: "synthetic rate limit",
+        retryAfterMs: 120_000,
+      };
+    }
+    return {
+      events: events(),
+      cancel: async () => {},
     };
   }
 }
@@ -558,6 +580,64 @@ describe("AI brain pipeline", () => {
       state: "failed",
       errorCategory: "transient_network",
     });
+  });
+
+  it("drains cancelled planning continuations before engine stop returns", async () => {
+    const provider = new NeverCompletingFake();
+    ({ store, engine } = makeEngine(db, {
+      providers: new Map<string, ProviderAdapter>([["fake", provider]]),
+      config: { brainStepTimeoutMs: 10_000 },
+    }));
+    const repo = await makeFixtureRepo(scratch);
+    const project = store.createProject({
+      name: "Drained stop", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Stop planning before deleting its temporary repository",
+      ["all asynchronous planning work is drained"],
+    );
+    engine.analyzeObjective(project.id, objective.id);
+    await waitFor(
+      () => store.listBrainRuns(project.id, objective.id).some((run) => run.state === "running"),
+    );
+
+    await engine.stop();
+
+    expect(provider.cancelled).toBe(true);
+    expect(provider.drained).toBe(true);
+    await expect(rm(repo, { recursive: true, force: true })).resolves.toBeUndefined();
+  });
+
+  it("interrupts a long provider retry wait while draining engine stop", async () => {
+    const provider = new RateLimitedFake();
+    ({ store, engine } = makeEngine(db, {
+      providers: new Map<string, ProviderAdapter>([["fake", provider]]),
+      config: {
+        maxProviderRetries: 1,
+        maxWaitMs: 120_000,
+        brainStepTimeoutMs: 10_000,
+      },
+    }));
+    const project = store.createProject({
+      name: "Interruptible retry", description: "", repoPath: null, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    const objective = store.createObjective(
+      project.id,
+      "Stop promptly while a provider retry is waiting",
+      ["shutdown never waits for the provider reset window"],
+    );
+    engine.analyzeObjective(project.id, objective.id);
+    await waitFor(() => store.eventsAfter(0, project.id).some(
+      (event) => event.type === "provider.fallback" && event.payload.action === "wait_for_reset",
+    ));
+
+    const startedAt = Date.now();
+    await engine.stop();
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
   it("rejects a stale replan base without replacing the active plan", async () => {
