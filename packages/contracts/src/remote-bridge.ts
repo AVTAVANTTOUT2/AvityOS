@@ -137,3 +137,23 @@ export const RemoteRelayAckResult = z.object({
   deleted: z.number().int().nonnegative().safe(),
 }).strict();
 export type RemoteRelayAckResult = z.infer<typeof RemoteRelayAckResult>;
+
+export const RemoteRelayDeviceAccessToken = z.string()
+  .min(32)
+  .max(4_096)
+  .regex(/^\S+$/);
+export type RemoteRelayDeviceAccessToken = z.infer<typeof RemoteRelayDeviceAccessToken>;
+
+export const RemoteRelayRegisterDeviceRequest = z.object({
+  certificate: RemoteDeviceCertificate,
+  accessToken: RemoteRelayDeviceAccessToken,
+}).strict();
+export type RemoteRelayRegisterDeviceRequest = z.infer<typeof RemoteRelayRegisterDeviceRequest>;
+
+export const RemoteRelayDeviceRecord = z.object({
+  accountId: RemoteAccountId,
+  deviceId: RemoteDeviceId,
+  status: z.enum(["active", "revoked"]),
+  updatedAt: Timestamp,
+}).strict();
+export type RemoteRelayDeviceRecord = z.infer<typeof RemoteRelayDeviceRecord>;

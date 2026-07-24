@@ -4,12 +4,15 @@ import { z } from "zod";
 import {
   RemoteAccountId,
   RemoteDeviceId,
+  RemoteEncryptedEnvelope,
   RemoteRelayAckRequest,
+  RemoteRelayRegisterDeviceRequest,
 } from "@avityos/contracts";
 import {
   InMemoryRelayStore,
   RemoteRelayCapacityError,
   RemoteRelayConflictError,
+  type RemoteRelayStore,
 } from "./store.js";
 
 const InboxParams = z.object({
@@ -26,18 +29,25 @@ const InboxQuery = z.object({
 export interface RemoteRelayServerOptions {
   readonly accessToken: string;
   readonly version: string;
-  readonly store?: InMemoryRelayStore;
+  readonly store?: RemoteRelayStore;
 }
 
 function apiError(reply: FastifyReply, status: number, code: string, message: string) {
   return reply.status(status).send({ error: { code, message } });
 }
 
-function bearerMatches(header: string | undefined, expected: string): boolean {
-  const supplied = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+function tokensMatch(supplied: string, expected: string): boolean {
   const suppliedHash = createHash("sha256").update(supplied).digest();
   const expectedHash = createHash("sha256").update(expected).digest();
   return timingSafeEqual(suppliedHash, expectedHash);
+}
+
+function bearerMatches(header: string | undefined, expected: string): boolean {
+  return tokensMatch(bearerToken(header), expected);
+}
+
+function bearerToken(header: string | undefined): string {
+  return header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
 }
 
 function validAccessToken(value: string): boolean {
@@ -59,9 +69,12 @@ export async function buildRemoteRelayServer(
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    if ((request.url.split("?")[0] ?? request.url) === "/v1/health") return;
-    if (!bearerMatches(request.headers.authorization, options.accessToken)) {
-      await apiError(reply, 401, "policy_denied", "invalid or missing relay access token");
+    const path = request.url.split("?")[0] ?? request.url;
+    if (
+      path.startsWith("/v1/admin/") &&
+      !bearerMatches(request.headers.authorization, options.accessToken)
+    ) {
+      await apiError(reply, 401, "policy_denied", "invalid or missing relay administrator token");
     }
   });
 
@@ -103,13 +116,40 @@ export async function buildRemoteRelayServer(
   }));
 
   app.post("/v1/relay/envelopes", async (request, reply) => {
-    const result = store.publish(request.body);
+    const suppliedToken = bearerToken(request.headers.authorization);
+    if (!suppliedToken) {
+      return apiError(reply, 401, "policy_denied", "invalid or revoked relay device credential");
+    }
+    const accountId = RemoteAccountId.parse(request.headers["x-avity-account-id"]);
+    const deviceId = RemoteDeviceId.parse(request.headers["x-avity-device-id"]);
+    if (!store.authorizeDevice(
+      accountId,
+      deviceId,
+      suppliedToken,
+    )) {
+      return apiError(reply, 401, "policy_denied", "invalid or revoked relay device credential");
+    }
+    const envelope = RemoteEncryptedEnvelope.parse(request.body);
+    if (envelope.accountId !== accountId || envelope.senderDeviceId !== deviceId) {
+      return apiError(reply, 403, "policy_denied", "relay sender identity does not match its credential");
+    }
+    if (!store.isDeviceActive(envelope.accountId, envelope.recipientDeviceId)) {
+      return apiError(reply, 403, "policy_denied", "relay recipient device is not active");
+    }
+    const result = store.publish(envelope);
     return reply.status(result.duplicate ? 200 : 202).send(result);
   });
 
   app.get("/v1/relay/accounts/:accountId/devices/:deviceId/inbox", async (request, reply) => {
     const params = InboxParams.parse(request.params);
     const query = InboxQuery.parse(request.query);
+    if (!store.authorizeDevice(
+      params.accountId,
+      params.deviceId,
+      bearerToken(request.headers.authorization),
+    )) {
+      return apiError(reply, 401, "policy_denied", "invalid or revoked relay device credential");
+    }
     const controller = new AbortController();
     const onClose = (): void => {
       if (!reply.raw.writableEnded) controller.abort();
@@ -129,14 +169,43 @@ export async function buildRemoteRelayServer(
     }
   });
 
-  app.post("/v1/relay/accounts/:accountId/devices/:deviceId/ack", async (request) => {
+  app.post("/v1/relay/accounts/:accountId/devices/:deviceId/ack", async (request, reply) => {
     const params = InboxParams.parse(request.params);
+    if (!store.authorizeDevice(
+      params.accountId,
+      params.deviceId,
+      bearerToken(request.headers.authorization),
+    )) {
+      return apiError(reply, 401, "policy_denied", "invalid or revoked relay device credential");
+    }
     const body = RemoteRelayAckRequest.parse(request.body);
     return store.acknowledge(
       params.accountId,
       params.deviceId,
       body.throughCursor,
     );
+  });
+
+  app.post("/v1/admin/devices", async (request, reply) => {
+    const body = RemoteRelayRegisterDeviceRequest.parse(request.body);
+    if (tokensMatch(body.accessToken, options.accessToken)) {
+      return apiError(
+        reply,
+        400,
+        "validation_failed",
+        "relay administrator and device credentials must be distinct",
+      );
+    }
+    return reply.status(200).send(store.registerDevice(body));
+  });
+
+  app.post("/v1/admin/accounts/:accountId/devices/:deviceId/revoke", async (request, reply) => {
+    const params = InboxParams.parse(request.params);
+    const record = store.revokeDevice(params.accountId, params.deviceId);
+    if (!record) {
+      return apiError(reply, 404, "not_found", "relay device is not registered");
+    }
+    return record;
   });
 
   return app;

@@ -58,16 +58,18 @@ reproductible dans `docs/TRACEABILITY.md`.
    - rejet fonctionnel volontaire suivi d'une correction validée ;
    C'est la **prochaine priorité produit**.
 
-5. **🟡 Fondations en cours — Pont distant sécurisé.**
+5. **✅ Cœur livré — Pont distant sécurisé.**
    Le checkpoint 5.1 définit les contrats stricts, la racine de confiance
    compte/appareil, les certificats Ed25519, l'appairage chiffré par secret
    hors bande et les enveloppes E2E X25519 + HKDF-SHA-256 + AES-256-GCM,
    signées et protégées contre le rejeu. Le checkpoint 5.2 ajoute le service
    relais ciphertext-only borné, le long-poll/ack et un connecteur hôte qui
    n'ouvre que des connexions sortantes, avec preuve réseau aller-retour sans
-   clair sur le relais. Restent pour 5.3 : persistance des comptes/appareils,
-   autorisation par appareil, révocation, curseurs anti-rejeu/livraison
-   durables et audit des actions distantes.
+   clair sur le relais. Le checkpoint 5.3 rend comptes/appareils, inboxes,
+   déduplication et curseurs durables dans SQLite, sépare token administrateur
+   et credentials par appareil, applique la révocation immédiate, consomme
+   l'appairage atomiquement et chaîne l'audit local des actions distantes.
+   L'expérience native d'appairage et de mode distant appartient au chantier 6.
 
 6. **🟡 Client natif déjà présent, finition produit et distribution manquantes
    — Application macOS complète.** Déjà présents : SwiftUI, Keychain,

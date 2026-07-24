@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   RemoteOutboundConnector,
+  RemoteRelayAdminHttpClient,
   RemoteRelayHttpClient,
   RemoteRelayHttpError,
   generateRemoteAccountIdentity,
@@ -16,6 +17,9 @@ import {
 } from "./store.js";
 
 const ACCESS_TOKEN = "relay-test-token-".padEnd(32, "x");
+const HOST_TOKEN = "host-device-token-".padEnd(32, "h");
+const REMOTE_TOKEN = "remote-device-token-".padEnd(32, "r");
+const OTHER_TOKEN = "other-device-token-".padEnd(32, "o");
 const NOW = "2026-07-24T10:00:00.000Z";
 const runningServers: Array<Awaited<ReturnType<typeof buildRemoteRelayServer>>> = [];
 
@@ -72,10 +76,25 @@ async function startRelay(store = new InMemoryRelayStore()) {
   return { app, baseUrl, store };
 }
 
+async function registerDevice(
+  baseUrl: string,
+  certificate: ReturnType<typeof setupDevices>["hostCertificate"],
+  accessToken: string,
+): Promise<void> {
+  const admin = new RemoteRelayAdminHttpClient({
+    baseUrl,
+    accessToken: ACCESS_TOKEN,
+  });
+  expect((await admin.registerDevice(certificate, accessToken)).status).toBe("active");
+}
+
 describe("ciphertext-only relay and outbound connector", () => {
   it("round-trips a request and response without exposing plaintext to the relay", async () => {
     const { baseUrl, store } = await startRelay();
     const setup = setupDevices();
+    await registerDevice(baseUrl, setup.hostCertificate, HOST_TOKEN);
+    await registerDevice(baseUrl, setup.remoteCertificate, REMOTE_TOKEN);
+    await registerDevice(baseUrl, setup.otherCertificate, OTHER_TOKEN);
     const fetchCalls: Array<{ url: string; authorization: string | null }> = [];
     const trackedFetch: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
@@ -87,12 +106,12 @@ describe("ciphertext-only relay and outbound connector", () => {
     };
     const remoteRelay = new RemoteRelayHttpClient({
       baseUrl,
-      accessToken: ACCESS_TOKEN,
+      accessToken: REMOTE_TOKEN,
       fetchImpl: trackedFetch,
     });
     const hostRelay = new RemoteRelayHttpClient({
       baseUrl,
-      accessToken: ACCESS_TOKEN,
+      accessToken: HOST_TOKEN,
     });
     const plaintext = "remote-control-secret-never-visible";
     const requestEnvelope = sealRemoteEnvelope({
@@ -167,15 +186,25 @@ describe("ciphertext-only relay and outbound connector", () => {
     });
     expect(openedResponse.plaintext.toString("utf8")).toBe(`ack:${plaintext}`);
 
-    const wrongInbox = await remoteRelay.poll({
+    await expect(remoteRelay.poll({
+      accountId: setup.account.accountId,
+      deviceId: setup.other.deviceId,
+      afterCursor: 0,
+      waitMs: 0,
+    })).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({ status: 401 });
+    const otherRelay = new RemoteRelayHttpClient({
+      baseUrl,
+      accessToken: OTHER_TOKEN,
+    });
+    const wrongInbox = await otherRelay.poll({
       accountId: setup.account.accountId,
       deviceId: setup.other.deviceId,
       afterCursor: 0,
       waitMs: 0,
     });
     expect(wrongInbox.items).toEqual([]);
-    expect(fetchCalls.every((call) => !call.url.includes(ACCESS_TOKEN))).toBe(true);
-    expect(fetchCalls.every((call) => call.authorization === `Bearer ${ACCESS_TOKEN}`)).toBe(true);
+    expect(fetchCalls.every((call) => !call.url.includes(REMOTE_TOKEN))).toBe(true);
+    expect(fetchCalls.every((call) => call.authorization === `Bearer ${REMOTE_TOKEN}`)).toBe(true);
   });
 
   it("authenticates, rejects plaintext and conflicts on a reused message id", async () => {
@@ -185,7 +214,7 @@ describe("ciphertext-only relay and outbound connector", () => {
     expect(health.headers.get("cache-control")).toBe("no-store");
     expect(health.headers.get("x-content-type-options")).toBe("nosniff");
     const fakeHealthPrefix = await fetch(`${baseUrl}/v1/health-private`);
-    expect(fakeHealthPrefix.status).toBe(401);
+    expect(fakeHealthPrefix.status).toBe(404);
 
     const unauthorized = await fetch(`${baseUrl}/v1/relay/envelopes`, {
       method: "POST",
@@ -206,7 +235,16 @@ describe("ciphertext-only relay and outbound connector", () => {
     expect(await plaintextAttempt.text()).not.toContain("do-not-echo-this");
 
     const setup = setupDevices();
-    const client = new RemoteRelayHttpClient({ baseUrl, accessToken: ACCESS_TOKEN });
+    await registerDevice(baseUrl, setup.remoteCertificate, REMOTE_TOKEN);
+    const admin = new RemoteRelayAdminHttpClient({
+      baseUrl,
+      accessToken: ACCESS_TOKEN,
+    });
+    await expect(admin.registerDevice(
+      setup.hostCertificate,
+      ACCESS_TOKEN,
+    )).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({ status: 400 });
+    const client = new RemoteRelayHttpClient({ baseUrl, accessToken: REMOTE_TOKEN });
     const envelope = sealRemoteEnvelope({
       plaintext: "ciphertext",
       contentType: "text/plain",
@@ -217,11 +255,24 @@ describe("ciphertext-only relay and outbound connector", () => {
       accountSigningPublicKey: setup.account.signingPublicKey,
       sentAt: NOW,
     });
+    await expect(client.publish(envelope)).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({
+      status: 403,
+    });
+    await registerDevice(baseUrl, setup.hostCertificate, HOST_TOKEN);
     await client.publish(envelope);
     await expect(client.publish({
       ...envelope,
       ciphertext: tamperBase64Url(envelope.ciphertext),
     })).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({ status: 409 });
+
+    expect((await admin.revokeDevice(
+      setup.account.accountId,
+      setup.remote.deviceId,
+    )).status).toBe("revoked");
+    await expect(client.publish({
+      ...envelope,
+      messageId: `rmsg_${"f".repeat(32)}`,
+    })).rejects.toMatchObject<Partial<RemoteRelayHttpError>>({ status: 401 });
   });
 
   it("wakes long polls and enforces queue capacity and expiry", async () => {
@@ -233,7 +284,10 @@ describe("ciphertext-only relay and outbound connector", () => {
     });
     const { baseUrl } = await startRelay(store);
     const setup = setupDevices();
-    const client = new RemoteRelayHttpClient({ baseUrl, accessToken: ACCESS_TOKEN });
+    await registerDevice(baseUrl, setup.hostCertificate, HOST_TOKEN);
+    await registerDevice(baseUrl, setup.remoteCertificate, REMOTE_TOKEN);
+    const client = new RemoteRelayHttpClient({ baseUrl, accessToken: REMOTE_TOKEN });
+    const hostClient = new RemoteRelayHttpClient({ baseUrl, accessToken: HOST_TOKEN });
     const first = sealRemoteEnvelope({
       plaintext: "one",
       contentType: "text/plain",
@@ -244,7 +298,7 @@ describe("ciphertext-only relay and outbound connector", () => {
       accountSigningPublicKey: setup.account.signingPublicKey,
       sentAt: NOW,
     });
-    const waiting = client.poll({
+    const waiting = hostClient.poll({
       accountId: setup.account.accountId,
       deviceId: setup.host.deviceId,
       afterCursor: 0,

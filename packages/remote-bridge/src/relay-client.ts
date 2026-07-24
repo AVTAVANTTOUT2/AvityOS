@@ -1,14 +1,18 @@
 import {
   RemoteAccountId,
   RemoteDeviceId,
+  RemoteDeviceCertificate,
   RemoteEncryptedEnvelope,
   RemoteRelayAckResult,
   RemoteRelayInbox,
   RemoteRelayPublishResult,
+  RemoteRelayDeviceRecord,
   type RemoteEncryptedEnvelope as RemoteEncryptedEnvelopeType,
+  type RemoteDeviceCertificate as RemoteDeviceCertificateType,
   type RemoteRelayAckResult as RemoteRelayAckResultType,
   type RemoteRelayInbox as RemoteRelayInboxType,
   type RemoteRelayPublishResult as RemoteRelayPublishResultType,
+  type RemoteRelayDeviceRecord as RemoteRelayDeviceRecordType,
 } from "@avityos/contracts";
 
 export interface RemoteRelayClient {
@@ -147,6 +151,10 @@ export class RemoteRelayHttpClient implements RemoteRelayClient {
     return RemoteRelayPublishResult.parse(await this.request("/v1/relay/envelopes", {
       method: "POST",
       body: JSON.stringify(envelope),
+      headers: {
+        "x-avity-account-id": envelope.accountId,
+        "x-avity-device-id": envelope.senderDeviceId,
+      },
       signal,
     }));
   }
@@ -201,6 +209,69 @@ export class RemoteRelayHttpClient implements RemoteRelayClient {
         body: JSON.stringify({ throughCursor }),
         signal: input.signal,
       },
+    ));
+  }
+}
+
+export class RemoteRelayAdminHttpClient {
+  private readonly baseUrl: URL;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(private readonly options: RemoteRelayHttpClientOptions) {
+    assertAccessToken(options.accessToken);
+    this.baseUrl = validatedBaseUrl(options.baseUrl);
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  private async request(path: string, init: RequestInit): Promise<unknown> {
+    const basePath = this.baseUrl.pathname === "/" ? "" : this.baseUrl.pathname;
+    const url = new URL(`${basePath}${path}`, `${this.baseUrl.origin}/`);
+    const response = await this.fetchImpl(url, {
+      ...init,
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${this.options.accessToken}`,
+        ...(init.body ? { "content-type": "application/json" } : {}),
+        ...init.headers,
+      },
+    });
+    const payload = await responseJson(response);
+    if (!response.ok) {
+      const detail = serverErrorMessage(payload);
+      throw new RemoteRelayHttpError(
+        response.status,
+        detail
+          ? `remote relay administrator request failed (${response.status}): ${detail}`
+          : `remote relay administrator request failed (${response.status})`,
+      );
+    }
+    return payload;
+  }
+
+  async registerDevice(
+    certificateInput: RemoteDeviceCertificateType,
+    deviceAccessToken: string,
+    signal?: AbortSignal,
+  ): Promise<RemoteRelayDeviceRecordType> {
+    const certificate = RemoteDeviceCertificate.parse(certificateInput);
+    assertAccessToken(deviceAccessToken);
+    return RemoteRelayDeviceRecord.parse(await this.request("/v1/admin/devices", {
+      method: "POST",
+      body: JSON.stringify({ certificate, accessToken: deviceAccessToken }),
+      signal,
+    }));
+  }
+
+  async revokeDevice(
+    accountIdInput: string,
+    deviceIdInput: string,
+    signal?: AbortSignal,
+  ): Promise<RemoteRelayDeviceRecordType> {
+    const accountId = RemoteAccountId.parse(accountIdInput);
+    const deviceId = RemoteDeviceId.parse(deviceIdInput);
+    return RemoteRelayDeviceRecord.parse(await this.request(
+      `/v1/admin/accounts/${accountId}/devices/${deviceId}/revoke`,
+      { method: "POST", signal },
     ));
   }
 }

@@ -45,9 +45,9 @@ and escalates an approval otherwise. To change behavior, adjust engine config
 - Compromised: `avity worker revoke <id>` immediately invalidates its
   token (hash comparison fails on next call). Re-enroll a clean host.
 
-## Remote relay checkpoint 5.2
+## Durable remote relay
 
-Build and start the transient ciphertext relay on loopback:
+Build and start the durable ciphertext relay on loopback:
 
 ```sh
 pnpm --filter @avityos/remote-relay build
@@ -61,10 +61,23 @@ binary refuses a non-loopback bind and the client refuses clear HTTP outside
 loopback. Keep the relay access token in an environment file readable only by
 the service account. Never reuse the control-plane token.
 
-Checkpoint 5.2 queues are intentionally in memory. A relay or connector
-restart loses pending state; per-device authorization, persistence, revocation
-and crash-safe audit arrive in 5.3. Do not present 5.2 alone as durable or
-exactly-once.
+The bearer above is the relay **administrator** credential. Use
+`RemoteRelayAdminHttpClient` to register each signed device certificate with a
+distinct random device token; devices use only their own token for publish,
+poll and ack. The relay rejects administrator-token reuse and messages to an
+unknown or revoked recipient. Calling `revokeDevice(accountId, deviceId)`
+invalidates it immediately. Re-registering rotates the token and clears
+revocation.
+
+The relay database defaults to `~/.avity/relay.sqlite` (`0600`). Back it up
+together with the local bridge-state database while the services are stopped.
+SQLite preserves ciphertext queues, deduplication, authorization and cursors
+across restarts. Never place private keys or raw pairing secrets in either DB;
+they belong in Keychain. Generic external handler side effects remain
+at-least-once if the process crashes before the handler returns. An offline
+device must reconnect within `AVITY_RELAY_TTL_MS` while messages are pending;
+an expired pending envelope creates a deliberate fail-closed cursor gap rather
+than silently dropping a remote action.
 
 ## Web UI shows "Hors ligne"
 

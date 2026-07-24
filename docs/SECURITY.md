@@ -19,9 +19,11 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   control-plane or decryption code. Host connectivity is outbound long-poll
   only. Relay bearers stay in Authorization headers, remote URLs require HTTPS
   outside loopback, inboxes are bounded/expiring, and responses are `no-store`.
-  Routing IDs, sizes and timing remain visible. Current queues, replay cursors
-  and authorization are volatile/global until checkpoint 5.3; see ADR-0006 and
-  ADR-0007.
+  Routing IDs, sizes and timing remain visible. Checkpoint 5.3 separates the
+  administrator secret from per-device bearer hashes, makes relay queues,
+  deduplication and cursors transactional/durable, enforces revocation, and
+  persists metadata-only chained local audit. Private keys remain exclusively
+  in the platform secret store. See ADR-0006 through ADR-0008.
 - **Validation** — shared zod schemas validate bodies/enums. Project onboarding
   resolves repository paths with `realpath`, requires a readable/writable Git
   working tree, verifies the local default branch and matches GitHub identity

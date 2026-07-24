@@ -30,8 +30,21 @@ import {
   type RemotePairingSession as RemotePairingSessionType,
 } from "@avityos/contracts";
 import type { RemoteRelayClient } from "./relay-client.js";
+import {
+  RemoteBridgeSecurityError,
+  canonicalJson,
+  decode,
+  importPublicKey,
+  validDate,
+  verifyRemoteDeviceCertificate,
+} from "./security.js";
 
 export * from "./relay-client.js";
+export {
+  RemoteBridgeSecurityError,
+  verifyRemoteDeviceCertificate,
+} from "./security.js";
+export * from "./state.js";
 
 const PAIRING_REQUEST_CONTEXT = "avityos-remote-pairing-request-v1";
 const PAIRING_ACCEPTANCE_CONTEXT = "avityos-remote-pairing-acceptance-v1";
@@ -71,39 +84,8 @@ export interface AcceptedPairing {
   readonly acceptance: RemotePairingAcceptanceType;
 }
 
-export class RemoteBridgeSecurityError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "RemoteBridgeSecurityError";
-  }
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right));
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
-  }
-  throw new RemoteBridgeSecurityError("unsupported canonical value");
-}
-
 function encode(value: Uint8Array): string {
   return Buffer.from(value).toString("base64url");
-}
-
-function decode(value: string, label: string): Buffer {
-  try {
-    const decoded = Buffer.from(value, "base64url");
-    if (decoded.length === 0) throw new Error("empty");
-    return decoded;
-  } catch {
-    throw new RemoteBridgeSecurityError(`invalid ${label}`);
-  }
 }
 
 function exportPublicKey(key: KeyObject): string {
@@ -112,14 +94,6 @@ function exportPublicKey(key: KeyObject): string {
 
 function exportPrivateKey(key: KeyObject): string {
   return encode(key.export({ format: "der", type: "pkcs8" }));
-}
-
-function importPublicKey(value: string): KeyObject {
-  try {
-    return createPublicKey({ key: decode(value, "public key"), format: "der", type: "spki" });
-  } catch {
-    throw new RemoteBridgeSecurityError("invalid public key");
-  }
 }
 
 function importPrivateKey(value: string): KeyObject {
@@ -134,14 +108,6 @@ function createId(prefix: "racc" | "rdev" | "rpair" | "rmsg"): string {
   return `${prefix}_${randomBytes(16).toString("hex")}`;
 }
 
-function validDate(input: Date | string | number, label: string): Date {
-  const date = input instanceof Date ? input : new Date(input);
-  if (!Number.isFinite(date.getTime())) {
-    throw new RemoteBridgeSecurityError(`invalid ${label}`);
-  }
-  return date;
-}
-
 function iso(input: Date | string | number): string {
   return validDate(input, "timestamp").toISOString();
 }
@@ -152,11 +118,6 @@ function maxClockSkew(value: number | undefined): number {
     throw new RemoteBridgeSecurityError("maximum clock skew must be between 0 and 24 hours");
   }
   return skew;
-}
-
-function certificatePayload(certificate: RemoteDeviceCertificateType): Omit<RemoteDeviceCertificateType, "signature"> {
-  const { signature: _signature, ...payload } = certificate;
-  return payload;
 }
 
 function pairingAad(sessionId: string, direction: "request" | "acceptance"): Buffer {
@@ -310,29 +271,6 @@ export function issueRemoteDeviceCertificate(input: {
     importPrivateKey(input.account.signingPrivateKey),
   ));
   return RemoteDeviceCertificate.parse({ ...unsigned, signature });
-}
-
-export function verifyRemoteDeviceCertificate(
-  certificateInput: unknown,
-  accountSigningPublicKey: string,
-  now: Date | string | number = Date.now(),
-): RemoteDeviceCertificateType {
-  const certificate = RemoteDeviceCertificate.parse(certificateInput);
-  const current = validDate(now, "certificate verification timestamp").getTime();
-  if (
-    current < new Date(certificate.issuedAt).getTime() ||
-    current > new Date(certificate.validUntil).getTime()
-  ) {
-    throw new RemoteBridgeSecurityError("device certificate is not currently valid");
-  }
-  const valid = verify(
-    null,
-    Buffer.from(canonicalJson(certificatePayload(certificate))),
-    importPublicKey(accountSigningPublicKey),
-    decode(certificate.signature, "certificate signature"),
-  );
-  if (!valid) throw new RemoteBridgeSecurityError("device certificate signature is invalid");
-  return certificate;
 }
 
 export function createRemotePairingSession(input: {
@@ -765,6 +703,18 @@ export interface RemoteConnectorResponse {
   readonly contentType: string;
 }
 
+export interface RemoteConnectorAuditEvent {
+  readonly accountId: string;
+  readonly localDeviceId: string;
+  readonly remoteDeviceId: string;
+  readonly messageId: string;
+  readonly contentType: string;
+  readonly action: string;
+  readonly outcome: "accepted" | "failed";
+  readonly errorCode?: string;
+  readonly createdAt: string;
+}
+
 export interface RemoteOutboundConnectorOptions {
   readonly relay: RemoteRelayClient;
   readonly identity: RemoteDeviceIdentity;
@@ -779,16 +729,38 @@ export interface RemoteOutboundConnectorOptions {
   readonly initialRelayCursor?: number;
   readonly initialInboundSequences?: ReadonlyMap<string, number>;
   readonly initialOutboundSequences?: ReadonlyMap<string, number>;
+  readonly initialPersistedState?: RemoteConnectorPersistedState;
+  readonly persistState?: (
+    state: RemoteConnectorPersistedState,
+  ) => void | Promise<void>;
+  readonly classifyAction?: (
+    request: RemoteConnectorRequest,
+  ) => string | Promise<string>;
+  readonly recordAudit?: (
+    event: RemoteConnectorAuditEvent,
+  ) => void | Promise<void>;
   readonly pollWaitMs?: number;
   readonly now?: () => Date;
 }
 
-interface PendingRemoteDelivery {
+export interface RemoteConnectorPendingDeliveryState {
   readonly relayCursor: number;
   readonly senderDeviceId: string;
   readonly inboundSequence: number;
   readonly responseEnvelope: RemoteEncryptedEnvelopeType | null;
   readonly outboundSequence: number | null;
+  readonly responsePublished: boolean;
+  readonly sequencesCommitted: boolean;
+}
+
+export interface RemoteConnectorPersistedState {
+  readonly relayCursor: number;
+  readonly inboundSequences: readonly (readonly [string, number])[];
+  readonly outboundSequences: readonly (readonly [string, number])[];
+  readonly pending: RemoteConnectorPendingDeliveryState | null;
+}
+
+interface PendingRemoteDelivery extends RemoteConnectorPendingDeliveryState {
   responsePublished: boolean;
   sequencesCommitted: boolean;
 }
@@ -810,14 +782,35 @@ function validatedSequenceMap(
   return result;
 }
 
+function validatedAuditIdentifier(value: string, label: string, maximum = 200): string {
+  const normalized = value.trim();
+  if (
+    !normalized ||
+    normalized.length > maximum ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(normalized)
+  ) {
+    throw new RemoteBridgeSecurityError(`invalid remote audit ${label}`);
+  }
+  return normalized;
+}
+
+function safeAuditErrorCode(error: unknown): string {
+  const candidate = error instanceof Error ? error.name : "unknown_error";
+  try {
+    return validatedAuditIdentifier(candidate, "error code", 120);
+  } catch {
+    return "handler_error";
+  }
+}
+
 /**
  * Long-polling host connector. It exposes no listener: every network operation
  * is an outbound fetch to the relay, and application plaintext exists only
  * between local decryption and the supplied local handler.
  *
- * Cursor/sequence state is deliberately in memory in checkpoint 5.2. Durable
- * replay cursors and crash recovery are added with persistence in checkpoint
- * 5.3; callers must not claim restart-safe delivery before then.
+ * Durable replay cursors and crash recovery are enabled when a persisted state
+ * and persistence callback are supplied. Prefer
+ * `createDurableRemoteOutboundConnector` for the fail-closed production path.
  */
 export class RemoteOutboundConnector {
   private relayCursor: number;
@@ -838,18 +831,54 @@ export class RemoteOutboundConnector {
     );
     assertIdentityMatchesCertificate(options.identity, this.certificate);
     assertDeviceKeyPairs(options.identity);
-    this.relayCursor = options.initialRelayCursor ?? 0;
+    if (
+      options.initialPersistedState &&
+      (
+        options.initialRelayCursor !== undefined ||
+        options.initialInboundSequences !== undefined ||
+        options.initialOutboundSequences !== undefined
+      )
+    ) {
+      throw new RemoteBridgeSecurityError("persisted connector state conflicts with legacy initial state");
+    }
+    this.relayCursor = options.initialPersistedState?.relayCursor ?? options.initialRelayCursor ?? 0;
     if (!Number.isSafeInteger(this.relayCursor) || this.relayCursor < 0) {
       throw new RemoteBridgeSecurityError("initial relay cursor is invalid");
     }
     this.inboundSequences = validatedSequenceMap(
-      options.initialInboundSequences,
+      options.initialPersistedState
+        ? new Map(options.initialPersistedState.inboundSequences)
+        : options.initialInboundSequences,
       "initial inbound sequences",
     );
     this.outboundSequences = validatedSequenceMap(
-      options.initialOutboundSequences,
+      options.initialPersistedState
+        ? new Map(options.initialPersistedState.outboundSequences)
+        : options.initialOutboundSequences,
       "initial outbound sequences",
     );
+    if (options.initialPersistedState?.pending) {
+      const pending = options.initialPersistedState.pending;
+      if (
+        !Number.isSafeInteger(pending.relayCursor) ||
+        pending.relayCursor <= this.relayCursor ||
+        !/^rdev_[a-f0-9]{32}$/.test(pending.senderDeviceId) ||
+        !Number.isSafeInteger(pending.inboundSequence) ||
+        pending.inboundSequence <= 0 ||
+        (
+          pending.outboundSequence !== null &&
+          (!Number.isSafeInteger(pending.outboundSequence) || pending.outboundSequence <= 0)
+        )
+      ) {
+        throw new RemoteBridgeSecurityError("persisted pending delivery is invalid");
+      }
+      this.pending = {
+        ...pending,
+        responseEnvelope: pending.responseEnvelope
+          ? RemoteEncryptedEnvelope.parse(pending.responseEnvelope)
+          : null,
+      };
+    }
     this.pollWaitMs = options.pollWaitMs ?? 25_000;
     if (!Number.isSafeInteger(this.pollWaitMs) || this.pollWaitMs < 0 || this.pollWaitMs > 25_000) {
       throw new RemoteBridgeSecurityError("connector poll wait must be between 0 and 25 seconds");
@@ -870,12 +899,26 @@ export class RemoteOutboundConnector {
     };
   }
 
+  get persistedState(): RemoteConnectorPersistedState {
+    return {
+      relayCursor: this.relayCursor,
+      inboundSequences: [...this.inboundSequences.entries()],
+      outboundSequences: [...this.outboundSequences.entries()],
+      pending: this.pending ? { ...this.pending } : null,
+    };
+  }
+
+  private async persistCurrentState(): Promise<void> {
+    await this.options.persistState?.(this.persistedState);
+  }
+
   private async finishPending(signal?: AbortSignal): Promise<void> {
     const pending = this.pending;
     if (!pending) return;
     if (pending.responseEnvelope && !pending.responsePublished) {
       await this.options.relay.publish(pending.responseEnvelope, signal);
       pending.responsePublished = true;
+      await this.persistCurrentState();
     }
     if (!pending.sequencesCommitted) {
       this.inboundSequences.set(pending.senderDeviceId, pending.inboundSequence);
@@ -883,6 +926,7 @@ export class RemoteOutboundConnector {
         this.outboundSequences.set(pending.senderDeviceId, pending.outboundSequence);
       }
       pending.sequencesCommitted = true;
+      await this.persistCurrentState();
     }
     await this.options.relay.acknowledge({
       accountId: this.certificate.accountId,
@@ -892,6 +936,7 @@ export class RemoteOutboundConnector {
     });
     this.relayCursor = pending.relayCursor;
     this.pending = null;
+    await this.persistCurrentState();
   }
 
   async processOnce(input: {
@@ -899,6 +944,7 @@ export class RemoteOutboundConnector {
     readonly waitMs?: number;
   } = {}): Promise<number> {
     let processed = 0;
+    await this.persistCurrentState();
     if (this.pending) {
       await this.finishPending(input.signal);
       processed += 1;
@@ -940,9 +986,42 @@ export class RemoteOutboundConnector {
         lastAcceptedSequence,
         now: this.now(),
       });
-      const response = await this.options.handleRequest({
+      const request = {
         ...opened,
         senderDeviceId: item.envelope.senderDeviceId,
+      };
+      const action = validatedAuditIdentifier(
+        this.options.classifyAction
+          ? await this.options.classifyAction(request)
+          : "remote.request",
+        "action",
+      );
+      let response: RemoteConnectorResponse | null;
+      try {
+        response = await this.options.handleRequest(request);
+      } catch (error) {
+        await this.options.recordAudit?.({
+          accountId: this.certificate.accountId,
+          localDeviceId: this.certificate.deviceId,
+          remoteDeviceId: item.envelope.senderDeviceId,
+          messageId: opened.messageId,
+          contentType: opened.contentType,
+          action,
+          outcome: "failed",
+          errorCode: safeAuditErrorCode(error),
+          createdAt: this.now().toISOString(),
+        });
+        throw error;
+      }
+      await this.options.recordAudit?.({
+        accountId: this.certificate.accountId,
+        localDeviceId: this.certificate.deviceId,
+        remoteDeviceId: item.envelope.senderDeviceId,
+        messageId: opened.messageId,
+        contentType: opened.contentType,
+        action,
+        outcome: "accepted",
+        createdAt: this.now().toISOString(),
       });
       const outboundSequence = response
         ? (this.outboundSequences.get(item.envelope.senderDeviceId) ?? 0) + 1
@@ -969,6 +1048,7 @@ export class RemoteOutboundConnector {
         responsePublished: false,
         sequencesCommitted: false,
       };
+      await this.persistCurrentState();
       await this.finishPending(input.signal);
       processed += 1;
     }
@@ -985,4 +1065,50 @@ export class RemoteOutboundConnector {
       }
     }
   }
+}
+
+export interface RemoteConnectorDurableStore {
+  isDeviceActive(deviceId: string): boolean;
+  loadConnectorState(localDeviceId: string): RemoteConnectorPersistedState | null;
+  saveConnectorState(localDeviceId: string, state: RemoteConnectorPersistedState): void;
+  appendRemoteAction(event: RemoteConnectorAuditEvent): unknown;
+}
+
+export type DurableRemoteOutboundConnectorOptions = Omit<
+  RemoteOutboundConnectorOptions,
+  | "initialRelayCursor"
+  | "initialInboundSequences"
+  | "initialOutboundSequences"
+  | "initialPersistedState"
+  | "persistState"
+  | "recordAudit"
+  | "classifyAction"
+> & {
+  readonly stateStore: RemoteConnectorDurableStore;
+  readonly classifyAction: NonNullable<RemoteOutboundConnectorOptions["classifyAction"]>;
+};
+
+export function createDurableRemoteOutboundConnector(
+  input: DurableRemoteOutboundConnectorOptions,
+): RemoteOutboundConnector {
+  const { stateStore, ...options } = input;
+  if (!stateStore.isDeviceActive(input.identity.deviceId)) {
+    throw new RemoteBridgeSecurityError("local remote-bridge device is not active");
+  }
+  return new RemoteOutboundConnector({
+    ...options,
+    resolveSenderCertificate: async (deviceId) => {
+      if (!stateStore.isDeviceActive(deviceId)) {
+        throw new RemoteBridgeSecurityError("remote sender device is not active");
+      }
+      return options.resolveSenderCertificate(deviceId);
+    },
+    initialPersistedState: stateStore.loadConnectorState(input.identity.deviceId) ?? undefined,
+    persistState: (state) => {
+      stateStore.saveConnectorState(input.identity.deviceId, state);
+    },
+    recordAudit: (event) => {
+      stateStore.appendRemoteAction(event);
+    },
+  });
 }
