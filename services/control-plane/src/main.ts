@@ -195,6 +195,7 @@ async function main(): Promise<void> {
     remoteHost,
     ...(transport.serverOptions ? { https: transport.serverOptions } : {}),
     workerMtlsRequired: transport.workerMtlsRequired,
+    workerTrustAnchors: transport.workerTrustAnchors,
   });
 
   const shutdown = async () => {

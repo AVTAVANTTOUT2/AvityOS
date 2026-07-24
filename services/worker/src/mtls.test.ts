@@ -265,6 +265,7 @@ describe("worker mutual TLS transport", () => {
         apiToken: "admin-token",
         https: serverTls.serverOptions,
         workerMtlsRequired: serverTls.workerMtlsRequired,
+        workerTrustAnchors: serverTls.workerTrustAnchors,
       });
       app.server.on("secureConnection", (socket: TLSSocket) => {
         const certificate = socket.getPeerCertificate();

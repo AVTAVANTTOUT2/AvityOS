@@ -2,13 +2,16 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdtempSync,
+  readFileSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { X509Certificate } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  clientCertificateIsAuthorizedBy,
   loadClientTlsConfiguration,
   loadControlPlaneTlsConfiguration,
 } from "./index.js";
@@ -45,6 +48,96 @@ function fixture(): {
   return { root, certPath, keyPath };
 }
 
+function signedCertificateFixture(): {
+  readonly ca: X509Certificate;
+  readonly client: X509Certificate;
+  readonly server: X509Certificate;
+} {
+  const root = mkdtempSync(join(tmpdir(), "avity-transport-client-ca-"));
+  chmodSync(root, 0o700);
+  const caKey = join(root, "ca.key");
+  const caCert = join(root, "ca.crt");
+  execFileSync("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-sha256",
+    "-days",
+    "1",
+    "-subj",
+    "/CN=AvityOS transport test CA",
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+    "-addext",
+    "keyUsage=critical,keyCertSign,cRLSign",
+    "-keyout",
+    caKey,
+    "-out",
+    caCert,
+  ], { stdio: "ignore" });
+
+  const issue = (
+    name: string,
+    usage: "clientAuth" | "serverAuth",
+  ): X509Certificate => {
+    const key = join(root, `${name}.key`);
+    const request = join(root, `${name}.csr`);
+    const cert = join(root, `${name}.crt`);
+    const extensions = join(root, `${name}.ext`);
+    writeFileSync(
+      extensions,
+      [
+        "basicConstraints=critical,CA:FALSE",
+        `extendedKeyUsage=critical,${usage}`,
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    execFileSync("openssl", [
+      "req",
+      "-new",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-sha256",
+      "-subj",
+      `/CN=${name}`,
+      "-keyout",
+      key,
+      "-out",
+      request,
+    ], { stdio: "ignore" });
+    execFileSync("openssl", [
+      "x509",
+      "-req",
+      "-sha256",
+      "-days",
+      "1",
+      "-in",
+      request,
+      "-CA",
+      caCert,
+      "-CAkey",
+      caKey,
+      "-CAcreateserial",
+      "-extfile",
+      extensions,
+      "-out",
+      cert,
+    ], { stdio: "ignore" });
+    return new X509Certificate(readFileSync(cert));
+  };
+
+  return {
+    ca: new X509Certificate(readFileSync(caCert)),
+    client: issue("worker", "clientAuth"),
+    server: issue("server", "serverAuth"),
+  };
+}
+
 describe("transport TLS configuration", () => {
   it("fails closed for non-loopback plaintext and incomplete TLS pairs", () => {
     expect(() => loadControlPlaneTlsConfiguration({}, "0.0.0.0")).toThrow(
@@ -76,6 +169,7 @@ describe("transport TLS configuration", () => {
     );
     expect(loaded.protocol).toBe("https");
     expect(loaded.workerMtlsRequired).toBe(true);
+    expect(loaded.workerTrustAnchors).toHaveLength(1);
     expect(loaded.serverOptions?.minVersion).toBe("TLSv1.3");
     const loadedCertificate = loaded.serverOptions?.cert;
     expect(loadedCertificate).toEqual(expect.any(String));
@@ -132,5 +226,19 @@ describe("transport TLS configuration", () => {
       key: expect.any(Buffer),
     });
     expect(loaded?.key?.buffer.byteLength).toBe(loaded?.key?.byteLength);
+  });
+
+  it("accepts only a current client-auth leaf signed by a configured CA", () => {
+    const { ca, client, server } = signedCertificateFixture();
+    expect(clientCertificateIsAuthorizedBy(client, [ca])).toBe(true);
+    expect(clientCertificateIsAuthorizedBy(server, [ca])).toBe(false);
+    expect(clientCertificateIsAuthorizedBy(client, [client])).toBe(false);
+    expect(
+      clientCertificateIsAuthorizedBy(
+        client,
+        [ca],
+        Date.parse(client.validTo) + 1,
+      ),
+    ).toBe(false);
   });
 });
