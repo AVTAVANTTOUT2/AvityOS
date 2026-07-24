@@ -88,6 +88,10 @@ describe("mission state machine", () => {
     expect(canTransitionMission("blocked", "review_required")).toBe(true);
   });
 
+  it("can fail a reviewed result after exhausting bounded corrections", () => {
+    expect(canTransitionMission("review_required", "failed")).toBe(true);
+  });
+
   it("every transition targets a declared state", () => {
     for (const targets of Object.values(MISSION_TRANSITIONS)) {
       for (const t of targets) expect(MissionState.options).toContain(t);

@@ -867,6 +867,35 @@ describe("e2e fixture repo: real worktree, real checks, commit, PR, review", () 
     expect(store.listPullRequests(project.id).filter((pr) => pr.missionId === mission.id).length).toBe(1);
   });
 
+  it("fails safely when review rejects after all correction attempts are exhausted", async () => {
+    ({ store, engine } = makeEngine(db, "fake:code", "fake:review-reject-once"));
+    const project = store.createProject({
+      name: "ExhaustedReviewLoop", description: "", repoPath: repo, repoRemoteUrl: null,
+      autonomyProfile: "autonomous_with_checkpoints",
+    });
+    store.setProjectStatus(project.id, "active");
+    const mission = store.createMission({
+      projectId: project.id, planId: null, milestoneId: null,
+      title: "Reviewed delivery with exhausted corrections", role: "backend",
+      contract: repoMissionContract("Create AVITY.md for exhausted review handling"),
+      priority: 50, dependsOn: [], maxCorrectionAttempts: 3,
+    });
+    store.updateMissionMeta(mission.id, { correctionAttempts: 3 });
+    store.transitionMission(mission.id, "ready", "");
+    store.transitionMission(mission.id, "assigned", "");
+
+    await expect(engine.executeMission(mission.id)).resolves.toBeUndefined();
+
+    const failed = store.getMission(mission.id)!;
+    expect(failed.state).toBe("failed");
+    expect(failed.correctionAttempts).toBe(failed.maxCorrectionAttempts);
+    expect(failed.stateReason).toContain("Correction limit reached");
+    expect(store.listCheckpoints(mission.id).find((c) => c.kind === "review")?.status).toBe("failed");
+    expect(
+      store.listApprovals("open", project.id).some((approval) => approval.title === "Correction limit reached"),
+    ).toBe(true);
+  });
+
 });
 
 describe("cross-provider fallback", () => {
