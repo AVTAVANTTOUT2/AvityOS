@@ -42,8 +42,7 @@ Set `AVITY_TLS_CLIENT_CA_PATH` on the control plane to enable worker mTLS.
 Each enrollment is then bound to the client certificate fingerprint in
 addition to its one-time bearer. Existing workers must be revoked and
 re-enrolled when mTLS is enabled. Private keys must be `0600` inside an
-owner-only directory. Custom-CA TLS/mTLS requires Node.js 24 or newer on
-macOS (Node.js 22.5 remains supported on Linux); follow the
+owner-only directory; follow the
 [TLS/mTLS runbook](./RUNBOOKS.md#native-control-plane-tls-and-worker-mtls).
 
 Revoke lost hosts immediately: `avity worker revoke <id>` — revoked tokens

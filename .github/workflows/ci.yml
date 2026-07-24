@@ -33,9 +33,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          # Private-CA TLS on macOS requires the current LTS runtime. Linux CI
-          # remains on Node 22 to preserve the cross-platform lower bound.
-          node-version: 24
+          # node:sqlite requires Node >= 22.5; repo is developed on 22+
+          node-version: 22
           cache: pnpm
 
       - name: Install pnpm dependencies

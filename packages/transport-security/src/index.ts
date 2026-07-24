@@ -46,15 +46,6 @@ function isLoopbackHost(host: string): boolean {
     normalized === "::1";
 }
 
-function assertCustomCaRuntimeSupport(): void {
-  const major = Number.parseInt(process.versions.node.split(".")[0] ?? "", 10);
-  if (process.platform === "darwin" && (!Number.isFinite(major) || major < 24)) {
-    throw new Error(
-      `custom-CA TLS on macOS requires Node.js 24 or newer; current runtime is ${process.version}`,
-    );
-  }
-}
-
 function requiredPath(
   value: string | undefined,
   label: string,
@@ -194,7 +185,6 @@ export function loadControlPlaneTlsConfiguration(
     };
   }
 
-  if (clientCaPath) assertCustomCaRuntimeSupport();
   const cert = readCertificate(certPath, "control-plane TLS certificate");
   const key = readPrivateKey(keyPath, "control-plane TLS private key");
   const ca = clientCaPath
@@ -248,7 +238,6 @@ export function loadClientTlsConfiguration(
     );
   }
   if (!caPath && !certPath) return null;
-  if (caPath) assertCustomCaRuntimeSupport();
   const servername = env.AVITY_TLS_SERVER_NAME;
   if (
     servername &&

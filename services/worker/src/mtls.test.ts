@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdtempSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,7 @@ interface TestPki {
   readonly root: string;
   readonly serverCert: string;
   readonly serverKey: string;
+  readonly workerCaCert: string;
   readonly workerCert: string;
   readonly workerKey: string;
   readonly rogueCert: string;
@@ -41,16 +43,20 @@ function openssl(args: readonly string[]): void {
 function createSelfSignedTrustAnchor(
   root: string,
   name: string,
-  usage: "serverAuth" | "clientAuth",
+  usage?: "serverAuth",
 ): { readonly cert: string; readonly key: string } {
   const key = join(root, `${name}.key`);
   const cert = join(root, `${name}.crt`);
   const extensions = [
     "basicConstraints=critical,CA:TRUE",
     "subjectKeyIdentifier=hash",
-    `extendedKeyUsage=critical,${usage}`,
     "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign",
-    ...(usage === "serverAuth" ? ["subjectAltName=IP:127.0.0.1"] : []),
+    ...(usage
+      ? [
+          `extendedKeyUsage=critical,${usage}`,
+          "subjectAltName=IP:127.0.0.1",
+        ]
+      : []),
   ];
   openssl([
     "req",
@@ -74,6 +80,64 @@ function createSelfSignedTrustAnchor(
   return { cert, key };
 }
 
+function createSignedClientCertificate(
+  root: string,
+  ca: { readonly cert: string; readonly key: string },
+  name: string,
+): { readonly cert: string; readonly key: string } {
+  const key = join(root, `${name}.key`);
+  const request = join(root, `${name}.csr`);
+  const cert = join(root, `${name}.crt`);
+  const extensions = join(root, `${name}.ext`);
+  writeFileSync(
+    extensions,
+    [
+      "basicConstraints=critical,CA:FALSE",
+      "subjectKeyIdentifier=hash",
+      "authorityKeyIdentifier=keyid,issuer",
+      "extendedKeyUsage=critical,clientAuth",
+      "keyUsage=critical,digitalSignature,keyEncipherment",
+      "",
+    ].join("\n"),
+    { mode: 0o600 },
+  );
+  openssl([
+    "req",
+    "-new",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-sha256",
+    "-subj",
+    `/CN=${name}`,
+    "-keyout",
+    key,
+    "-out",
+    request,
+  ]);
+  openssl([
+    "x509",
+    "-req",
+    "-sha256",
+    "-days",
+    "1",
+    "-in",
+    request,
+    "-CA",
+    ca.cert,
+    "-CAkey",
+    ca.key,
+    "-CAcreateserial",
+    "-extfile",
+    extensions,
+    "-out",
+    cert,
+  ]);
+  chmodSync(key, 0o600);
+  chmodSync(cert, 0o644);
+  return { cert, key };
+}
+
 function createTestPki(): TestPki {
   const root = mkdtempSync(join(tmpdir(), "avity-worker-mtls-"));
   chmodSync(root, 0o700);
@@ -82,20 +146,14 @@ function createTestPki(): TestPki {
     "server",
     "serverAuth",
   );
-  const worker = createSelfSignedTrustAnchor(
-    root,
-    "worker",
-    "clientAuth",
-  );
-  const rogue = createSelfSignedTrustAnchor(
-    root,
-    "rogue",
-    "clientAuth",
-  );
+  const workerCa = createSelfSignedTrustAnchor(root, "worker-ca");
+  const worker = createSignedClientCertificate(root, workerCa, "worker");
+  const rogue = createSignedClientCertificate(root, workerCa, "rogue");
   return {
     root,
     serverCert: server.cert,
     serverKey: server.key,
+    workerCaCert: workerCa.cert,
     workerCert: worker.cert,
     workerKey: worker.key,
     rogueCert: rogue.cert,
@@ -160,7 +218,7 @@ describe("worker mutual TLS transport", () => {
       {
         AVITY_TLS_CERT_PATH: pki.serverCert,
         AVITY_TLS_KEY_PATH: pki.serverKey,
-        AVITY_TLS_CLIENT_CA_PATH: pki.workerCert,
+        AVITY_TLS_CLIENT_CA_PATH: pki.workerCaCert,
       },
       "127.0.0.1",
     );

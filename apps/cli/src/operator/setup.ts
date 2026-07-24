@@ -10,6 +10,7 @@ import {
 import {
   collectDoctorReport,
   probeProviderReadiness,
+  type DoctorDependencies,
 } from "./diagnostics.js";
 import { readEnvFile, writeEnvFileAtomic } from "./env.js";
 import type { OperatorPaths } from "./paths.js";
@@ -35,6 +36,7 @@ export interface EnsureOperatorSetupOptions {
   readonly runner: SetupCommandRunner;
   readonly force: boolean;
   readonly env: NodeJS.ProcessEnv;
+  readonly doctorDependencies?: DoctorDependencies;
 }
 
 function ensurePrivateDirectory(path: string): void {
@@ -149,9 +151,16 @@ export async function ensureOperatorSetup(options: EnsureOperatorSetupOptions): 
   }
 
   writeSetupState(paths);
+  const doctorDependencies = options.doctorDependencies ?? {};
   const report = await collectDoctorReport({
-    nodeVersion: env.AVITY_NODE_VERSION_OVERRIDE ?? process.versions.node,
-    providerProbe: () => probeProviderReadiness(env),
+    ...doctorDependencies,
+    nodeVersion:
+      doctorDependencies.nodeVersion ??
+      env.AVITY_NODE_VERSION_OVERRIDE ??
+      process.versions.node,
+    providerProbe:
+      doctorDependencies.providerProbe ??
+      (() => probeProviderReadiness(env)),
   });
   if (report.readiness === "blocked_missing_tool") {
     const missing = report.checks.filter((check) => !check.ok).map((check) => check.id).join(", ");

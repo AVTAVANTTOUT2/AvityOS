@@ -3,7 +3,6 @@
 ## Supported versions
 
 - Node **≥ 22.5** (control plane uses built-in `node:sqlite`; developed on 26)
-- Node **≥ 24 on macOS for private-CA TLS/mTLS**
 - pnpm 11 (pinned via `packageManager` in package.json)
 - macOS 14+ for the SwiftUI app (Xcode 15+)
 

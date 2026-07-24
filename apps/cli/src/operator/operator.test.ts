@@ -20,6 +20,23 @@ import { resolveOperatorPaths } from "./paths.js";
 import { redactValue } from "./redact.js";
 import { OperatorServiceLifecycle, boundLogFileForAppend } from "./services.js";
 import { collectDoctorReport, probeProviderReadiness } from "./diagnostics.js";
+import type { DoctorDependencies } from "./diagnostics.js";
+
+const readyDoctorDependencies: DoctorDependencies = {
+  commandProbe: async () => ({ ok: true, detail: "available" }),
+  providerProbe: async () => ({
+    codex: { binary: true, auth: true },
+    claudeCode: { binary: true, auth: true },
+    cursorAgent: { binary: true, auth: true },
+  }),
+  serviceProbe: async () => ({
+    controlPlane: "running",
+    web: "running",
+    worker: "running",
+  }),
+  apiProbe: async () => ({ health: true, providersStatus: true }),
+  sandboxProbe: async () => ({ ok: true, detail: "available" }),
+};
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -44,6 +61,7 @@ describe("operator setup", () => {
       paths,
       runner,
       force: false,
+      doctorDependencies: readyDoctorDependencies,
       env: {
         ...process.env,
         AVITY_API_TOKEN: "keep-me",
@@ -58,6 +76,7 @@ describe("operator setup", () => {
       paths,
       runner,
       force: false,
+      doctorDependencies: readyDoctorDependencies,
       env: {
         ...process.env,
         AVITY_API_TOKEN: "new-token",
@@ -90,6 +109,7 @@ describe("operator setup", () => {
       paths,
       runner,
       force: false,
+      doctorDependencies: readyDoctorDependencies,
       env: {
         ...process.env,
         AVITY_API_TOKEN: "replace-token",

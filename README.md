@@ -284,7 +284,6 @@ deploy/                launchd and systemd deployment templates
 
 - macOS 14+ for the complete stack, or Linux for the TypeScript services;
 - Node.js **22.5 or newer** (`node:sqlite` is required);
-- Node.js **24 or newer on macOS when private-CA TLS/mTLS is enabled**;
 - pnpm 11;
 - Git;
 - Xcode 15+ for native macOS UI tests and application packaging;
