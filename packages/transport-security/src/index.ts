@@ -26,8 +26,8 @@ export interface ControlPlaneTlsConfiguration {
 }
 
 export interface ClientTlsConfiguration {
-  readonly ca?: Buffer;
-  readonly cert?: Buffer;
+  readonly ca?: string;
+  readonly cert?: string;
   readonly key?: Buffer;
   readonly servername?: string;
 }
@@ -116,11 +116,16 @@ function readOwnedPem(
   }
 }
 
-function readCertificate(path: string, label: string): Buffer {
-  return readOwnedPem(path, label, {
+function readCertificate(path: string, label: string): string {
+  const bytes = readOwnedPem(path, label, {
     privateMaterial: false,
     maxBytes: MAX_CERTIFICATE_CHAIN_BYTES,
   });
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`${label} must be valid UTF-8 PEM text`);
+  }
 }
 
 function readPrivateKey(path: string, label: string): Buffer {

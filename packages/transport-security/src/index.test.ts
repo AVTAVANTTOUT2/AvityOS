@@ -78,10 +78,8 @@ describe("transport TLS configuration", () => {
     expect(loaded.workerMtlsRequired).toBe(true);
     expect(loaded.serverOptions?.minVersion).toBe("TLSv1.3");
     const loadedCertificate = loaded.serverOptions?.cert;
-    expect(Buffer.isBuffer(loadedCertificate)).toBe(true);
-    expect((loadedCertificate as Buffer).buffer.byteLength).toBe(
-      (loadedCertificate as Buffer).byteLength,
-    );
+    expect(loadedCertificate).toEqual(expect.any(String));
+    expect(loadedCertificate).toContain("BEGIN CERTIFICATE");
 
     chmodSync(keyPath, 0o644);
     expect(() =>
@@ -129,11 +127,10 @@ describe("transport TLS configuration", () => {
       AVITY_TLS_CLIENT_KEY_PATH: keyPath,
     });
     expect(loaded).toMatchObject({
-      ca: expect.any(Buffer),
-      cert: expect.any(Buffer),
+      ca: expect.any(String),
+      cert: expect.any(String),
       key: expect.any(Buffer),
     });
-    expect(loaded?.ca?.buffer.byteLength).toBe(loaded?.ca?.byteLength);
     expect(loaded?.key?.buffer.byteLength).toBe(loaded?.key?.byteLength);
   });
 });
