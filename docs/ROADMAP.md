@@ -74,7 +74,10 @@ reproductible dans `docs/TRACEABILITY.md`.
 6. **🟡 Client natif déjà présent, finition produit et distribution manquantes
    — Application macOS complète.** Déjà présents : SwiftUI, Keychain,
    REST/SSE, reconnexion, polling de secours, vues projets/missions/runs,
-   notifications, Dock badge, menu bar, terminaux et deep links.
+   notifications, Dock badge, menu bar, terminaux et deep links. Le checkpoint
+   6.1 aligne le client sur les contrats réels (dont `TerminalSession.command`),
+   impose HTTPS hors loopback, conserve les erreurs API structurées, reprend
+   SSE par curseur et couvre transport/actions avec des tests déterministes.
    Restent notamment : mode hôte complet, mode distant, tests UI, bundle
    signé, notarisation, installation propre et stratégie de mise à jour.
 

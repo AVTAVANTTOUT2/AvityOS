@@ -241,7 +241,7 @@ struct TerminalsView: View {
         HSplitView {
             List(client.terminals, selection: $selected) { terminal in
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(terminal.command.joined(separator: " ")).font(.system(.caption, design: .monospaced)).lineLimit(1)
+                    Text(terminal.command).font(.system(.caption, design: .monospaced)).lineLimit(1)
                     Text(terminal.state).font(.caption2).foregroundStyle(.secondary)
                 }
                 .tag(terminal)

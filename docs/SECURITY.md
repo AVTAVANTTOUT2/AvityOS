@@ -159,6 +159,8 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   entries form a verifiable SHA-256 chain. Provider/CLI environments are scoped;
   the macOS app and macOS CLI store their API token in Keychain. Non-macOS CLI
   fallback storage is owner-only mode 0600 and may be replaced by a host vault.
+  The native client refuses clear HTTP away from loopback, sends its bearer only
+  in Authorization headers, and resumes SSE with a non-secret event cursor.
 - **Supply chain** — CI blocks on tests, typechecks, browser/Swift tests,
   dependency audit, 508-package license policy, Gitleaks and SPDX SBOM creation.
 
