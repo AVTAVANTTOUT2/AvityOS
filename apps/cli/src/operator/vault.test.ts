@@ -33,6 +33,7 @@ import {
   openOperatorVault,
   operatorVaultStatus,
   restoreOperatorVaultKeyFromRecovery,
+  rotateOperatorServiceCredential,
   rotateOperatorVaultKey,
   resolveOperatorVaultKeyStore,
   verifyOperatorVaultRecovery,
@@ -144,6 +145,115 @@ describe("operator credential vault", () => {
     expect(filterKnownCredentialsForService(environment, "web")).toEqual({
       PATH: "/usr/bin",
     });
+  });
+
+  it("activates external credential rotations and rolls back without clobbering concurrency", async () => {
+    const paths = fixturePaths();
+    const keyPath = join(paths.rootDir, "..", "rotation-master.key");
+    const key = new FileCredentialVaultKeyStore(keyPath).create();
+    const vault = new EncryptedCredentialVault(paths.credentialVaultPath, key);
+    vault.initialize();
+    await expect(rotateOperatorServiceCredential(
+      paths,
+      "OPENAI_API_KEY",
+      "not-yet-provisioned",
+      { activate: async () => undefined },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/not initialized/i);
+    vault.set("DEEPSEEK_API_KEY", "first-provider-secret");
+    await expect(rotateOperatorServiceCredential(
+      paths,
+      "DEEPSEEK_API_KEY",
+      "first-provider-secret",
+      { activate: async () => undefined },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/unchanged/i);
+
+    const activated: string[] = [];
+    const rotated = await rotateOperatorServiceCredential(
+      paths,
+      "DEEPSEEK_API_KEY",
+      "second-provider-secret",
+      {
+        activate: async (service, name) => {
+          activated.push(`${service}:${name}`);
+          expect(vault.environmentFor(service)[name]).toBe(
+            "second-provider-secret",
+          );
+        },
+      },
+      { keyFile: keyPath },
+    );
+    expect(rotated).toMatchObject({
+      name: "DEEPSEEK_API_KEY",
+      service: "control-plane",
+      previousGeneration: 1,
+      generation: 2,
+    });
+    expect(JSON.stringify(rotated)).not.toMatch(/first-provider|second-provider/);
+    expect(activated).toEqual(["control-plane:DEEPSEEK_API_KEY"]);
+
+    let rollbackActivation = 0;
+    await expect(rotateOperatorServiceCredential(
+      paths,
+      "DEEPSEEK_API_KEY",
+      "rejected-provider-secret",
+      {
+        activate: async (service, name) => {
+          rollbackActivation += 1;
+          if (rollbackActivation === 1) throw new Error("probe failed");
+          expect(vault.environmentFor(service)[name]).toBe(
+            "second-provider-secret",
+          );
+        },
+      },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/previous credential restored/i);
+    expect(rollbackActivation).toBe(2);
+    expect(vault.environmentFor("control-plane").DEEPSEEK_API_KEY).toBe(
+      "second-provider-secret",
+    );
+
+    let failedRollbackActivation = 0;
+    await expect(rotateOperatorServiceCredential(
+      paths,
+      "DEEPSEEK_API_KEY",
+      "unstartable-provider-secret",
+      {
+        activate: async () => {
+          failedRollbackActivation += 1;
+          throw new Error("service did not become ready");
+        },
+      },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/rollback could not be activated/i);
+    expect(failedRollbackActivation).toBe(2);
+    expect(vault.environmentFor("control-plane").DEEPSEEK_API_KEY).toBe(
+      "second-provider-secret",
+    );
+
+    await expect(rotateOperatorServiceCredential(
+      paths,
+      "DEEPSEEK_API_KEY",
+      "third-provider-secret",
+      {
+        activate: async () => {
+          vault.set("DEEPSEEK_API_KEY", "concurrent-provider-secret");
+          throw new Error("probe failed");
+        },
+      },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/rollback could not be activated.*changed concurrently/i);
+    expect(vault.environmentFor("control-plane").DEEPSEEK_API_KEY).toBe(
+      "concurrent-provider-secret",
+    );
+    await expect(rotateOperatorServiceCredential(
+      paths,
+      "AVITY_API_TOKEN",
+      "unsupported-in-band-token",
+      { activate: async () => undefined },
+      { keyFile: keyPath },
+    )).rejects.toThrow(/dedicated in-band token rotation/i);
   });
 
   it("injects decrypted values in memory and overrides legacy credentials", async () => {
@@ -261,6 +371,9 @@ describe("operator credential vault", () => {
     expect(output.mock.calls.flat().join("\n")).toContain(
       "vault set <credential-name> --stdin",
     );
+    expect(output.mock.calls.flat().join("\n")).toContain(
+      "vault credential-rotate <credential-name> --stdin",
+    );
     expect(await main([
       "vault",
       "set",
@@ -270,6 +383,16 @@ describe("operator credential vault", () => {
     ])).toBe(2);
     expect(error.mock.calls.flat().join("\n")).toContain(
       "accepts no credential value in argv",
+    );
+    expect(await main([
+      "vault",
+      "credential-rotate",
+      "OPENAI_API_KEY",
+      "argv-secret",
+      "--stdin",
+    ])).toBe(2);
+    expect(error.mock.calls.flat().join("\n")).toContain(
+      "vault credential-rotate accepts no credential value in argv",
     );
   });
 

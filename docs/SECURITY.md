@@ -55,6 +55,15 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   certificate; HTTPS sessions are `Secure`. CLI and worker private-CA trust is
   per-client, TLS-1.3-only and response-bounded, never a process-global
   verification bypass. See ADR-0016.
+- **Transactional external-credential activation (checkpoint 7.4)** —
+  `vault credential-rotate` accepts only a closed external-credential name and
+  a non-TTY stdin value. The encrypted update uses compare-and-swap, restarts
+  only the owning service, then performs bounded authenticated health and
+  provider-registration probes. Failed activation compare-and-swaps the
+  previous value back and restarts/probes again; a concurrent newer rotation
+  is never overwritten. Output contains only the credential name, service and
+  generations. Control-plane and worker bearers are excluded because safe
+  rotation requires a dedicated server-side two-phase protocol. See ADR-0017.
 - **Remote bridge transport (checkpoints 5.1–5.2)** — account/device
   certificates and application envelopes are signed and end-to-end encrypted;
   the relay accepts only strict ciphertext structures and never imports

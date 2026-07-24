@@ -167,7 +167,8 @@ export class CredentialVaultError extends Error {
       | "invalid_key"
       | "invalid_vault"
       | "not_initialized"
-      | "locked",
+      | "locked"
+      | "conflict",
     message: string,
   ) {
     super(message);
@@ -709,6 +710,58 @@ export class EncryptedCredentialVault {
       });
       this.write(next, false);
       return this.snapshotFrom(next);
+    } finally {
+      lock.release();
+    }
+  }
+
+  /**
+   * Replace one existing credential only if its encrypted current value still
+   * matches the caller's snapshot. This prevents an activation rollback from
+   * clobbering a newer concurrent operator rotation.
+   */
+  compareAndSwap(
+    nameValue: string,
+    expectedValue: string,
+    nextValue: string,
+  ): CredentialVaultSnapshot {
+    const expected = VaultEntry.pick({ name: true, value: true }).parse({
+      name: nameValue,
+      value: expectedValue,
+    });
+    const next = VaultEntry.pick({ name: true, value: true }).parse({
+      name: nameValue,
+      value: nextValue,
+    });
+    ensurePrivateDirectory(dirname(this.path));
+    const lock = acquireLock(`${this.path}.lock`);
+    try {
+      const current = this.read();
+      const entries = new Map(current.entries.map((entry) => [entry.name, entry]));
+      const previous = entries.get(expected.name);
+      if (!previous || previous.value !== expected.value) {
+        throw new CredentialVaultError(
+          "conflict",
+          `credential ${expected.name} changed concurrently`,
+        );
+      }
+      if (previous.value === next.value) {
+        return this.snapshotFrom(current);
+      }
+      entries.set(next.name, {
+        ...previous,
+        value: next.value,
+        updatedAt: this.now().toISOString(),
+      });
+      const rotated = VaultPlaintext.parse({
+        schemaVersion: CREDENTIAL_VAULT_SCHEMA_VERSION,
+        generation: current.generation + 1,
+        entries: [...entries.values()].sort((left, right) =>
+          left.name.localeCompare(right.name)
+        ),
+      });
+      this.write(rotated, false);
+      return this.snapshotFrom(rotated);
     } finally {
       lock.release();
     }

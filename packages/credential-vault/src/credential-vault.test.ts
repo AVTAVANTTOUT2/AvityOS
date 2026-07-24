@@ -179,6 +179,38 @@ describe("encrypted credential vault file", () => {
     expect(lstatSync(publicDirectory).mode & 0o777).toBe(0o755);
   });
 
+  it("compare-and-swaps rotations without clobbering a concurrent value", () => {
+    const root = mkdtempSync(join(tmpdir(), "avity-vault-cas-"));
+    const path = join(root, "credentials.vault");
+    const key = randomBytes(32);
+    const first = new EncryptedCredentialVault(path, key);
+    const second = new EncryptedCredentialVault(path, key);
+    first.initialize();
+    first.set("DEEPSEEK_API_KEY", "first-secret");
+
+    const rotated = first.compareAndSwap(
+      "DEEPSEEK_API_KEY",
+      "first-secret",
+      "second-secret",
+    );
+    expect(rotated.generation).toBe(2);
+    expect(first.environmentFor("control-plane").DEEPSEEK_API_KEY).toBe(
+      "second-secret",
+    );
+
+    second.set("DEEPSEEK_API_KEY", "concurrent-secret");
+    expect(() =>
+      first.compareAndSwap(
+        "DEEPSEEK_API_KEY",
+        "second-secret",
+        "rolled-back-secret",
+      )
+    ).toThrow(/changed concurrently/i);
+    expect(first.environmentFor("control-plane").DEEPSEEK_API_KEY).toBe(
+      "concurrent-secret",
+    );
+  });
+
   it("fails closed on an active lock and preserves a recovered stale lock", () => {
     const root = mkdtempSync(join(tmpdir(), "avity-vault-"));
     const path = join(root, "credentials.vault");

@@ -72,9 +72,34 @@ export interface OperatorRecoveryRestoreResult extends OperatorRecoveryResult {
   readonly restored: boolean;
 }
 
+export interface OperatorServiceCredentialRotationResult {
+  readonly name: VaultSecretName;
+  readonly service: VaultService;
+  readonly previousGeneration: number;
+  readonly generation: number;
+}
+
+export interface OperatorServiceCredentialRotationDependencies {
+  readonly activate: (
+    service: VaultService,
+    name: VaultSecretName,
+  ) => Promise<void>;
+}
+
 const VAULT_CONTROL_ENVIRONMENT = new Set([
   "AVITY_DISABLE_KEYCHAIN",
   "AVITY_VAULT_KEY_FILE",
+]);
+
+const SERVICE_ACTIVATED_CREDENTIALS = new Set<VaultSecretName>([
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CODEX_API_KEY",
+  "CURSOR_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "OPENAI_API_KEY",
 ]);
 
 function environment(options: OperatorVaultOptions): NodeJS.ProcessEnv {
@@ -199,6 +224,78 @@ export function loadOperatorVaultEnvironment(
   if (!existsSync(paths.credentialVaultPath)) return {};
   const { vault } = openOperatorVault(paths, { ...options, create: false });
   return vault.environmentFor(service);
+}
+
+/**
+ * Rotate an external service credential and prove that the owning service
+ * starts with it. A failed activation restores the previous encrypted value
+ * with compare-and-swap, then activates that rollback. AvityOS API/worker
+ * bearers are intentionally excluded because they require a server-side
+ * two-phase token protocol.
+ */
+export async function rotateOperatorServiceCredential(
+  paths: OperatorPaths,
+  nameValue: string,
+  nextValue: string,
+  dependencies: OperatorServiceCredentialRotationDependencies,
+  options: OperatorVaultOptions = {},
+): Promise<OperatorServiceCredentialRotationResult> {
+  const name = VaultSecretName.parse(nameValue);
+  if (!SERVICE_ACTIVATED_CREDENTIALS.has(name)) {
+    throw new Error(
+      `${name} requires a dedicated in-band token rotation protocol`,
+    );
+  }
+  const { vault } = openOperatorVault(paths, {
+    ...options,
+    create: false,
+  });
+  const service = vaultSecretService(name);
+  const previousValue = vault.environmentFor(service)[name];
+  if (!previousValue) {
+    throw new Error(
+      `credential ${name} is not initialized; store it before rotating`,
+    );
+  }
+  if (previousValue === nextValue) {
+    throw new Error(`credential ${name} is unchanged`);
+  }
+
+  const staged = vault.compareAndSwap(name, previousValue, nextValue);
+  try {
+    await dependencies.activate(service, name);
+    if (vault.environmentFor(service)[name] !== nextValue) {
+      throw new Error(`credential ${name} changed during activation`);
+    }
+  } catch (activationError) {
+    try {
+      vault.compareAndSwap(name, nextValue, previousValue);
+      await dependencies.activate(service, name);
+      if (vault.environmentFor(service)[name] !== previousValue) {
+        throw new Error(`credential ${name} rollback verification failed`);
+      }
+    } catch (rollbackError) {
+      throw new Error(
+        `credential ${name} activation failed and rollback could not be activated: ${
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError)
+        }`,
+        { cause: activationError },
+      );
+    }
+    throw new Error(
+      `credential ${name} activation failed; previous credential restored`,
+      { cause: activationError },
+    );
+  }
+
+  return {
+    name,
+    service,
+    previousGeneration: staged.generation - 1,
+    generation: staged.generation,
+  };
 }
 
 export function exportOperatorVaultRecovery(

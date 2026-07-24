@@ -119,7 +119,12 @@ reproductible dans `docs/TRACEABILITY.md`.
    plaintext hors loopback et lie chaque bearer worker au fingerprint du
    certificat client utilisé lors de l'enrôlement ; CLI et worker savent
    utiliser une CA privée sans désactiver globalement la vérification TLS.
-   Restent notamment : rotation des autres credentials et certificats,
+   Le checkpoint 7.4 ajoute la rotation transactionnelle des credentials
+   externes : compare-and-swap chiffré, redémarrage du seul service concerné,
+   probe authentifié borné, puis rollback compare-and-swap et réactivation de
+   l'ancienne valeur si la nouvelle configuration ne démarre pas. Les bearers
+   AvityOS sont exclus tant que leur protocole serveur en deux phases n'est
+   pas livré. Restent notamment : rotation des bearers et certificats,
    automatisation des releases versionnées et preuve de
    signature/notarisation Apple réelle. La politique de mise à jour signée et
    le rollback macOS sont livrés au checkpoint 6.6.
