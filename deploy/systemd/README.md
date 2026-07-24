@@ -39,7 +39,7 @@ Tous les placeholders utilisent la syntaxe `__NOM__`. Remplacez-les de façon co
 | `__WORKER_ENTRYPOINT__` | JS compilé du worker | `/opt/avityos/services/worker/dist/main.js` |
 | `__CONTROL_PLANE_ENV_FILE__` | Fichier d’environnement du control plane | `/etc/avityos/control-plane.env` |
 | `__WORKER_ENV_FILE__` | Fichier d’environnement du worker | `/etc/avityos/worker.env` |
-| `__CONTROL_PLANE_HEALTH_URL__` | URL du healthcheck (sans token) | `http://127.0.0.1:7717/v1/health` |
+| `__CONTROL_PLANE_HEALTH_URL__` | URL HTTP(S) du healthcheck (sans token) | `https://plane.example/v1/health` |
 
 Entrypoints réels produits par le build du dépôt :
 
@@ -97,6 +97,7 @@ Les unités utilisent `User=__AVITY_USER__` et `Group=__AVITY_GROUP__` (jamais `
 | `/opt/avityos` | Code applicatif (`__AVITY_ROOT__`) — lecture pour le service |
 | `/etc/avityos` | Configuration et secrets (`*.env`) — hors dépôt git |
 | `/var/lib/avityos` | Données (`__AVITY_DATA_DIR__`) : SQLite, éventuel token généré |
+| `/var/lib/avityos/tls` | Copies de certificats et clés TLS détenues par l’utilisateur du service |
 | `/var/lib/avityos/workspaces` | Workspaces / clones Git (`__AVITY_WORKSPACE_ROOT__`) |
 
 Distinguer clairement :
@@ -118,6 +119,8 @@ sudo chown -R root:avityos /opt/avityos
 sudo chmod -R u=rwX,g=rX,o= /opt/avityos
 sudo chown -R avityos:avityos /var/lib/avityos
 sudo chmod -R u=rwX,g=,o= /var/lib/avityos
+sudo chmod 700 /var/lib/avityos/tls
+sudo chmod 600 /var/lib/avityos/tls/*.key
 sudo chown root:avityos /etc/avityos
 sudo chmod 750 /etc/avityos
 sudo chown root:avityos /etc/avityos/*.env
@@ -125,6 +128,10 @@ sudo chmod 640 /etc/avityos/*.env
 ```
 
 Le service (groupe `avityos`) doit pouvoir **lire** les fichiers d’environnement sans qu’ils soient world-readable. Préférez `chmod 600` si l’utilisateur du service est propriétaire du fichier, ou `640` + `root:avityos` comme ci-dessus.
+Les clés TLS suivent une règle plus stricte du runtime : fichier régulier
+`0600`, répertoire parent `0700`, tous deux possédés par l’utilisateur du
+service. Copiez donc un certificat automatisé dans cette racine privée au lieu
+de pointer directement vers une clé root-owned.
 
 ## Préparation des fichiers d’environnement
 
@@ -140,13 +147,23 @@ Remplacez **tous** les placeholders et valeurs `replace-with-…`. Protégez les
 
 Variables réellement utilisées par le code (voir `.env.example` et les `main.ts`) :
 
-**Control plane (obligatoires en production typique)** : `NODE_ENV`, `AVITY_DB_PATH`, `AVITY_HOST`, `AVITY_PORT`, `AVITY_API_TOKEN`
+**Control plane (obligatoires en production typique)** : `NODE_ENV`,
+`AVITY_DB_PATH`, `AVITY_HOST`, `AVITY_PORT`, `AVITY_API_TOKEN`; ajoutez
+`AVITY_TLS_CERT_PATH` et `AVITY_TLS_KEY_PATH` pour un bind non-loopback, puis
+`AVITY_TLS_CLIENT_CA_PATH` pour imposer le mTLS worker.
 
-**Worker (obligatoires après enrollment)** : `NODE_ENV`, `AVITY_CONTROL_PLANE_URL`, `AVITY_WORKER_ID`, `AVITY_WORKER_TOKEN`
+**Worker (obligatoires après enrollment)** : `NODE_ENV`,
+`AVITY_CONTROL_PLANE_URL`, `AVITY_WORKER_ID`, `AVITY_WORKER_TOKEN`; avec mTLS,
+ajoutez `AVITY_TLS_CA_PATH`, `AVITY_TLS_CLIENT_CERT_PATH` et
+`AVITY_TLS_CLIENT_KEY_PATH`.
 
-Port HTTP par défaut du control plane : **7717**. Healthcheck sans authentification : `GET /v1/health`.
+Port par défaut du control plane : **7717**. Healthcheck sans authentification :
+`GET /v1/health`. Le plaintext est refusé hors loopback.
 
-Authentification worker ↔ control plane : en-têtes `x-worker-id` / `x-worker-token` (token renvoyé une seule fois à l’enrollment ; le serveur ne stocke qu’un hash).
+Authentification worker ↔ control plane : en-têtes `x-worker-id` /
+`x-worker-token` (token renvoyé une seule fois à l’enrollment ; le serveur ne
+stocke qu’un hash) et, lorsque la CA client est configurée, certificat mTLS
+autorisé dont le fingerprint doit correspondre à l’enrôlement.
 
 ## Installation des unités
 
@@ -186,7 +203,10 @@ curl --fail --silent http://127.0.0.1:7717/v1/health
 sudo systemctl enable --now avity-worker.service
 ```
 
-`After=` ordonne le démarrage mais **ne garantit pas** que l’API est prête ; le worker utilise `ExecStartPre` (curl, 6 tentatives, pause 5 s) contre `__CONTROL_PLANE_HEALTH_URL__`.
+`After=` ordonne le démarrage mais **ne garantit pas** que l’API est prête ; le
+worker utilise `ExecStartPre` (curl, 6 tentatives, pause 5 s) contre
+`__CONTROL_PLANE_HEALTH_URL__`. Si `AVITY_TLS_CA_PATH` est défini dans
+`worker.env`, le healthcheck le transmet à curl avec `--cacert`.
 
 Le worker déclare `Wants=avity-control-plane.service` (et non `Requires=`) : il peut continuer à poller pendant un redémarrage du control plane et se reconnecte automatiquement.
 
@@ -278,8 +298,12 @@ Conservez séparément `/var/lib/avityos` (données) et `/etc/avityos` (configur
 - Permissions minimales sur code, données et `*.env`
 - Secrets **hors** des unités `.service` (fichiers `EnvironmentFile` protégés)
 - Logs via journald ; ne pas journaliser de tokens dans `ExecStartPre`
-- Control plane lié à **127.0.0.1** par défaut (`AVITY_HOST`)
-- Pare-feu / reverse proxy TLS obligatoire pour toute exposition réseau
+- Control plane lié à **127.0.0.1** par défaut (`AVITY_HOST`) ; le plaintext
+  hors loopback est refusé
+- Pour toute exposition réseau : TLS 1.3 natif ou reverse proxy TLS, pare-feu
+  et CA/certificats gérés par l’opérateur
+- `AVITY_TLS_CLIENT_CA_PATH` lie chaque nouvel enrôlement worker à son
+  certificat en plus du bearer ; réenrôlez les workers préexistants
 - Tokens longs et aléatoires (`openssl rand -hex 32`) ; rotation après fuite
 - Sauvegardes SQLite protégées (mêmes droits que les données)
 - Prudence sur les workspaces : le worker y écrit via les leases ; limitez `__AVITY_WORKSPACE_ROOT__`

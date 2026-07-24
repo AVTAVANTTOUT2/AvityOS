@@ -115,8 +115,11 @@ reproductible dans `docs/TRACEABILITY.md`.
    l'escrow portable scrypt + AES-GCM séparé, ainsi qu'un bundle
    SQLite/coffre créé en ligne, vérifié par hash, intégrité, migrations, clés
    étrangères et chaîne d'audit, puis restauré uniquement dans une racine
-   vierge et recertifié.
-   Restent notamment : TLS/mTLS, rotation des autres credentials,
+   vierge et recertifié. Le checkpoint 7.3 ajoute TLS 1.3 natif, refuse le
+   plaintext hors loopback et lie chaque bearer worker au fingerprint du
+   certificat client utilisé lors de l'enrôlement ; CLI et worker savent
+   utiliser une CA privée sans désactiver globalement la vérification TLS.
+   Restent notamment : rotation des autres credentials et certificats,
    automatisation des releases versionnées et preuve de
    signature/notarisation Apple réelle. La politique de mise à jour signée et
    le rollback macOS sont livrés au checkpoint 6.6.

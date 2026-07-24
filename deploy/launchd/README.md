@@ -35,6 +35,10 @@ Campagne live opérateur : [docs/LIVE-E2E-CAMPAIGN.md](../../docs/LIVE-E2E-CAMPA
   persiste SQLite via `AVITY_DB_PATH` (défaut applicatif : `~/.avity/avity.sqlite`).
 - Le **worker** interroge le control plane (`AVITY_CONTROL_PLANE_URL`) et attend
   d’abord un healthcheck borné sur `/v1/health` avant de démarrer.
+- Le control plane peut servir TLS 1.3 nativement. Avec
+  `AVITY_TLS_CLIENT_CA_PATH`, les routes worker exigent un certificat client et
+  l’enrôlement lie son fingerprint au bearer. Le healthcheck launchd utilise
+  `AVITY_TLS_CA_PATH` et l’éventuel `AVITY_TLS_SERVER_NAME`.
 - Les deux services sont prévus pour un build de production (`node …/dist/main.js`),
   pas pour `pnpm dev`.
 
@@ -101,6 +105,12 @@ chmod 600 ~/.config/avityos/worker.env
 Éditez chaque fichier séparément : le control plane a besoin de `AVITY_PORT`,
 `AVITY_DB_PATH`, `AVITY_API_TOKEN`, etc. ; le worker a besoin de
 `AVITY_CONTROL_PLANE_URL`, `AVITY_WORKER_ID`, `AVITY_WORKER_TOKEN`, etc.
+
+Pour une exposition distante, renseignez aussi le certificat et la clé serveur
+dans `control-plane.env`, puis la CA, le certificat et la clé client dans
+`worker.env` comme indiqué par `env.example`. Les clés privées doivent être
+`0600` dans un répertoire `0700` appartenant à l’utilisateur du LaunchAgent.
+Tout worker enrôlé avant l’activation mTLS doit être révoqué puis réenrôlé.
 
 Renseignez aussi `AVITY_ROOT` et `NODE_BINARY` avec des **chemins absolus**.
 

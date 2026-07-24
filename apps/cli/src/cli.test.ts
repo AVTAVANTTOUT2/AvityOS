@@ -11,6 +11,10 @@ import { FakeProviderAdapter, type ProviderAdapter } from "@avityos/providers";
 const configDir = mkdtempSync(join(tmpdir(), "avity-cli-"));
 process.env.AVITY_CONFIG = join(configDir, "cli.json");
 process.env.AVITY_DISABLE_KEYCHAIN = "1";
+process.env.AVITY_OPERATOR_HOME = join(configDir, "operator");
+process.env.AVITY_CODEX_BIN = process.execPath;
+process.env.AVITY_CLAUDE_CODE_BIN = process.execPath;
+process.env.AVITY_CURSOR_BIN = process.execPath;
 
 const { main } = await import("./main.js");
 const { CONFIG_PATH, loadConfig, saveConfig } = await import("./client.js");

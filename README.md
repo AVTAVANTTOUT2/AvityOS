@@ -238,6 +238,8 @@ Implemented and covered by automated tests:
   verified migration away from plaintext protected env files;
 - passphrase-encrypted portable master-key recovery plus certified online
   SQLite/vault backup, verification and fresh-root restore.
+- native TLS 1.3 for the control plane plus certificate-bound worker mTLS,
+  with strict key-file permissions and per-client private-CA trust.
 
 Known remaining proof or product work:
 
@@ -253,8 +255,8 @@ Known remaining proof or product work:
   ad hoc signed installable bundle plus a signed update/rollback workflow;
   public Developer ID signing/notarization and the first real HTTPS feed still
   require operator-owned credentials;
-- remote production exposure still requires operator-managed TLS termination;
-  external enterprise secret-manager integration remains chantier 7 work.
+- native remote TLS/mTLS is implemented; certificate issuance/rotation and
+  external enterprise secret-manager integration remain chantier 7 work.
 
 The exact evidence and limitations are maintained in
 [docs/TRACEABILITY.md](docs/TRACEABILITY.md).
@@ -271,6 +273,7 @@ packages/contracts     Domain, API and event schemas — source of truth
 packages/orchestration State machines, DAG, scheduler and fallback policy
 packages/providers     AI/CLI provider adapters
 packages/credential-vault Encrypted, scoped operator credential storage
+packages/transport-security Native TLS and bounded private-CA client transport
 packages/git           Injection-safe Git and worktree operations
 packages/policy        Permissions, command/path policy and secret redaction
 docs/                  Architecture, security, lifecycle, ADRs and runbooks

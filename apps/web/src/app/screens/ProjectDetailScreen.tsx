@@ -136,7 +136,7 @@ export function ProjectDetailScreen({ projectId, onBack }: { projectId: number |
     return () => {
       cancelled = true;
     };
-  }, [p, mode, refresh]);
+  }, [p?.id, mode, refresh]);
   if (!p) {
     return <div className="p-6 text-sm text-[#74716B]">Projet introuvable. <button className="text-[#5267D9] underline" onClick={onBack}>Retour</button></div>;
   }

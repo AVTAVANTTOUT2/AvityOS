@@ -13,8 +13,9 @@ AVITY_API_TOKEN=<generated token> \
 node services/control-plane/dist/main.js
 ```
 
-- Keep the API bound to loopback and put TLS termination + auth proxying
-  in front (Caddy/nginx) if remote clients must reach it.
+- Plain HTTP is accepted only on loopback. For remote clients, either configure
+  the native TLS 1.3 listener (`AVITY_TLS_CERT_PATH`,
+  `AVITY_TLS_KEY_PATH`) or keep the API on loopback behind a TLS reverse proxy.
 - `AVITY_API_TOKEN` is required for any non-loopback exposure.
 - Run under a process supervisor (launchd/systemd); the engine reconciles
   safely on restart (no duplicate side effects).
@@ -31,8 +32,18 @@ store the one-time token in the host's secret store, run:
 ```sh
 AVITY_CONTROL_PLANE_URL=https://plane.example \
 AVITY_WORKER_ID=… AVITY_WORKER_TOKEN=… \
+AVITY_TLS_CA_PATH=/private/tls/control-plane-ca.crt \
+AVITY_TLS_CLIENT_CERT_PATH=/private/tls/worker-1.crt \
+AVITY_TLS_CLIENT_KEY_PATH=/private/tls/worker-1.key \
 node services/worker/dist/main.js
 ```
+
+Set `AVITY_TLS_CLIENT_CA_PATH` on the control plane to enable worker mTLS.
+Each enrollment is then bound to the client certificate fingerprint in
+addition to its one-time bearer. Existing workers must be revoked and
+re-enrolled when mTLS is enabled. Private keys must be `0600` inside an
+owner-only directory; follow the
+[TLS/mTLS runbook](./RUNBOOKS.md#native-control-plane-tls-and-worker-mtls).
 
 Revoke lost hosts immediately: `avity worker revoke <id>` — revoked tokens
 are rejected on the next call.

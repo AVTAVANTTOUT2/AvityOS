@@ -10,6 +10,11 @@ import {
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, dirname } from "node:path";
+import {
+  createSecureFetchTransport,
+  loadClientTlsConfiguration,
+  type SecureFetchTransport,
+} from "@avityos/transport-security";
 
 export interface CliConfig {
   controlPlaneUrl: string;
@@ -154,7 +159,28 @@ export class ApiError extends Error {
 }
 
 export class Client {
-  constructor(private readonly config: CliConfig) {}
+  private readonly tlsTransport: SecureFetchTransport | null;
+
+  constructor(
+    private readonly config: CliConfig,
+    tlsEnvironment: NodeJS.ProcessEnv = process.env,
+  ) {
+    const tls = loadClientTlsConfiguration(tlsEnvironment);
+    this.tlsTransport = tls ? createSecureFetchTransport(tls) : null;
+    if (
+      this.tlsTransport &&
+      new URL(config.controlPlaneUrl).protocol !== "https:"
+    ) {
+      this.tlsTransport.close();
+      throw new Error(
+        "AVITY_TLS_* client material requires an HTTPS control-plane URL",
+      );
+    }
+  }
+
+  close(): void {
+    this.tlsTransport?.close();
+  }
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {};
@@ -164,12 +190,15 @@ export class Client {
     const signal = AbortSignal.timeout(timeoutMs);
     let res: Response;
     try {
-      res = await fetch(`${this.config.controlPlaneUrl}${path}`, {
-        method,
-        headers,
-        signal,
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      });
+      res = await (this.tlsTransport?.fetch ?? fetch)(
+        `${this.config.controlPlaneUrl}${path}`,
+        {
+          method,
+          headers,
+          signal,
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        },
+      );
     } catch (err) {
       if (signal.aborted) {
         throw new ApiError(

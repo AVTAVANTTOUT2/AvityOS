@@ -45,4 +45,22 @@ describe("persistent database file security", () => {
       /absolute and non-root/,
     );
   });
+
+  it("applies the worker certificate-fingerprint migration on a fresh database", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const versions = db.prepare(
+        "SELECT version FROM schema_migrations ORDER BY version",
+      ).all() as { version: number }[];
+      const workerColumns = db.prepare(
+        "PRAGMA table_info(workers)",
+      ).all() as { name: string }[];
+      expect(versions.at(-1)?.version).toBe(9);
+      expect(workerColumns.map((column) => column.name)).toContain(
+        "mtls_fingerprint",
+      );
+    } finally {
+      db.close();
+    }
+  });
 });

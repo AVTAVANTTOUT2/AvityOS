@@ -38,6 +38,7 @@ import {
 } from "./remote-host.js";
 import { buildServer, DEFAULT_ALLOWED_ORIGINS } from "./server.js";
 import { Store } from "./store.js";
+import { loadControlPlaneTlsConfiguration } from "@avityos/transport-security";
 
 const VERSION = "0.1.0";
 
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
   const dbPath = process.env.AVITY_DB_PATH ?? join(homedir(), ".avity", "avity.sqlite");
   const port = Number(process.env.AVITY_PORT ?? 7717);
   const host = process.env.AVITY_HOST ?? "127.0.0.1";
+  const transport = loadControlPlaneTlsConfiguration(process.env, host);
 
   const db = openDatabase(dbPath);
   const store = new Store(db);
@@ -191,6 +193,8 @@ async function main(): Promise<void> {
     allowedOrigins,
     providerStatus,
     remoteHost,
+    ...(transport.serverOptions ? { https: transport.serverOptions } : {}),
+    workerMtlsRequired: transport.workerMtlsRequired,
   });
 
   const shutdown = async () => {
@@ -206,7 +210,12 @@ async function main(): Promise<void> {
 
   await app.listen({ port, host });
   await remoteHost?.start();
-  console.log(`AvityOS control plane v${VERSION} listening on http://${host}:${port} (db: ${dbPath})`);
+  console.log(
+    `AvityOS control plane v${VERSION} listening on ${transport.protocol}://${host}:${port} ` +
+      `(db: ${dbPath}; worker mTLS: ${
+        transport.workerMtlsRequired ? "required" : "disabled"
+      })`,
+  );
 }
 
 main().catch((err) => {

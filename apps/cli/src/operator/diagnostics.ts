@@ -8,6 +8,7 @@ import {
 } from "@avityos/providers";
 
 const execFileAsync = promisify(execFile);
+const PROBE_TIMEOUT_MS = 2_000;
 
 export type ReadinessState =
   | "ready"
@@ -81,7 +82,10 @@ function compareVersions(left: string, right: string): number {
 
 async function defaultCommandProbe(tool: "node" | "pnpm" | "git" | "gh"): Promise<ToolProbeResult> {
   try {
-    const { stdout } = await execFileAsync(tool, ["--version"], { encoding: "utf8" });
+    const { stdout } = await execFileAsync(tool, ["--version"], {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
+    });
     return { ok: true, detail: stdout.trim() };
   } catch {
     return { ok: false, detail: `${tool} not found` };
@@ -97,24 +101,32 @@ export async function probeProviderReadiness(
 ): Promise<ProviderProbeResult> {
   const probeBinary = options.probeBinary ?? (async (binary: string): Promise<boolean> => {
     try {
-      await execFileAsync(binary, ["--version"], { encoding: "utf8" });
+      await execFileAsync(binary, ["--version"], {
+        encoding: "utf8",
+        timeout: PROBE_TIMEOUT_MS,
+      });
       return true;
     } catch {
       return false;
     }
   });
   const authOptions = options.realHome ? { realHome: options.realHome } : {};
+  const [codexBinary, claudeBinary, cursorBinary] = await Promise.all([
+    probeBinary(env.AVITY_CODEX_BIN ?? "codex"),
+    probeBinary(env.AVITY_CLAUDE_CODE_BIN ?? "claude"),
+    probeBinary(env.AVITY_CURSOR_BIN ?? "cursor-agent"),
+  ]);
   return {
     codex: {
-      binary: await probeBinary(env.AVITY_CODEX_BIN ?? "codex"),
+      binary: codexBinary,
       auth: resolveCliProviderAuth(CODEX_SANDBOX_POLICY, env, authOptions).authenticated,
     },
     claudeCode: {
-      binary: await probeBinary(env.AVITY_CLAUDE_CODE_BIN ?? "claude"),
+      binary: claudeBinary,
       auth: resolveCliProviderAuth(CLAUDE_CODE_SANDBOX_POLICY, env, authOptions).authenticated,
     },
     cursorAgent: {
-      binary: await probeBinary(env.AVITY_CURSOR_BIN ?? "cursor-agent"),
+      binary: cursorBinary,
       auth: resolveCliProviderAuth(CURSOR_SANDBOX_POLICY, env, authOptions).authenticated,
     },
   };
@@ -134,7 +146,10 @@ async function defaultApiProbe(): Promise<ApiProbeResult> {
 
 async function defaultSandboxBinaryProbe(binary: SandboxBinary): Promise<ToolProbeResult> {
   try {
-    await execFileAsync(binary, ["--help"], { encoding: "utf8" });
+    await execFileAsync(binary, ["--help"], {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
+    });
     return { ok: true, detail: `${binary} available` };
   } catch (error) {
     const probeError = error as NodeJS.ErrnoException & { code?: string | number };

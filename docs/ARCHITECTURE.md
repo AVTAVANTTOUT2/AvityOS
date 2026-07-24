@@ -34,7 +34,7 @@
         │ Store        (store.ts)       │  transactions + event append
         │ SQLite       (db.ts)          │  node:sqlite, WAL, migrations
         └───────────────────────────────┘
-                   |  lease/output/exit (authenticated per worker)
+                   |  TLS 1.3 + certificate-bound lease/output/exit
             services/worker            capabilities/capacity leases,
                                        OS sandbox + process-group cleanup
 ```
@@ -50,6 +50,12 @@ diagnosing a service, removes vault-control paths and unrelated credentials
 from inherited environments, and injects only the destination service's
 scope. The Web process receives neither registered credentials nor the
 external master-key path.
+
+`packages/transport-security` owns the native TLS 1.3 listener policy and the
+bounded private-CA HTTPS transport shared by the CLI and worker. Configuring a
+worker client CA keeps administrator/browser access bearer-based while the
+worker data plane requires mTLS and binds its bearer to the enrollment
+certificate fingerprint (ADR-0016).
 
 ## Central AI brain
 

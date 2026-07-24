@@ -81,7 +81,35 @@ wait_for_control_plane() {
   log "waiting for control plane healthcheck at ${health_url}"
 
   while (( attempt <= max_attempts )); do
-    if "${NODE_BINARY}" -e 'const url=process.argv[1]; fetch(url).then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' "${health_url}"; then
+    if "${NODE_BINARY}" -e '
+      const fs = require("node:fs");
+      const https = require("node:https");
+      const url = new URL(process.argv[1]);
+      if (url.protocol !== "https:") {
+        fetch(url).then((response) => process.exit(response.ok ? 0 : 1))
+          .catch(() => process.exit(1));
+      } else {
+        const options = {
+          minVersion: "TLSv1.3",
+          ...(process.env.AVITY_TLS_CA_PATH
+            ? { ca: fs.readFileSync(process.env.AVITY_TLS_CA_PATH) }
+            : {}),
+          ...(process.env.AVITY_TLS_SERVER_NAME
+            ? { servername: process.env.AVITY_TLS_SERVER_NAME }
+            : {}),
+        };
+        const request = https.get(url, options, (response) => {
+          response.resume();
+          response.once("end", () =>
+            process.exit(
+              response.statusCode && response.statusCode >= 200 &&
+              response.statusCode < 300 ? 0 : 1,
+            )
+          );
+        });
+        request.once("error", () => process.exit(1));
+      }
+    ' "${health_url}"; then
       log "control plane is reachable (attempt ${attempt}/${max_attempts})"
       return 0
     fi

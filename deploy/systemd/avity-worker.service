@@ -19,7 +19,7 @@ EnvironmentFile=__WORKER_ENV_FILE__
 # Bounded readiness wait against the unauthenticated /v1/health endpoint.
 # Fails the unit start after six attempts (~30s) if the control plane is down.
 # Do not put tokens in this URL; /v1/health does not require authentication.
-ExecStartPre=/bin/sh -c 'for attempt in 1 2 3 4 5 6; do /usr/bin/curl --fail --silent --show-error __CONTROL_PLANE_HEALTH_URL__ >/dev/null && exit 0; /usr/bin/sleep 5; done; echo "avity-worker: control plane health check failed at __CONTROL_PLANE_HEALTH_URL__" >&2; exit 1'
+ExecStartPre=/bin/sh -c 'set -- --fail --silent --show-error; if [ -n "$${AVITY_TLS_CA_PATH:-}" ]; then set -- "$$@" --cacert "$$AVITY_TLS_CA_PATH"; fi; for attempt in 1 2 3 4 5 6; do /usr/bin/curl "$$@" __CONTROL_PLANE_HEALTH_URL__ >/dev/null && exit 0; /usr/bin/sleep 5; done; echo "avity-worker: control plane health check failed at __CONTROL_PLANE_HEALTH_URL__" >&2; exit 1'
 
 ExecStart=__NODE_BINARY__ __WORKER_ENTRYPOINT__
 
