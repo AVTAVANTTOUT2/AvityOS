@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -143,7 +143,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					B142693DE9C94CD1FF99E095 = {
 						ProvisioningStyle = Manual;
@@ -155,6 +155,7 @@
 				};
 			};
 			buildConfigurationList = 415D7A1994E0EF668C9F820B /* Build configuration list for PBXProject "AvityOS" */;
+			compatibilityVersion = "Xcode 15.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -163,7 +164,6 @@
 			);
 			mainGroup = 6443F6373F893DED092FE850;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
 			productRefGroup = 47D5EBA52CC685A56EEFB693 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";

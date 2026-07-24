@@ -276,7 +276,7 @@ deploy/                launchd and systemd deployment templates
 - Node.js **22.5 or newer** (`node:sqlite` is required);
 - pnpm 11;
 - Git;
-- Xcode 16+ for native macOS UI tests and application packaging;
+- Xcode 15+ for native macOS UI tests and application packaging;
 - optional authenticated provider CLIs or API keys for live AI execution.
 
 ## Quick start
