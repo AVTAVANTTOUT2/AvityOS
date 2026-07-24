@@ -60,11 +60,11 @@ jobs:
 
       - name: Build macOS application
         working-directory: apps/macos
-        run: swift build
+        run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
       - name: Run Swift tests
         working-directory: apps/macos
-        run: swift test
+        run: swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
       - name: Audit production dependencies
         run: pnpm audit --audit-level high
