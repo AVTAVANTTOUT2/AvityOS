@@ -62,10 +62,12 @@ reproductible dans `docs/TRACEABILITY.md`.
    Le checkpoint 5.1 définit les contrats stricts, la racine de confiance
    compte/appareil, les certificats Ed25519, l'appairage chiffré par secret
    hors bande et les enveloppes E2E X25519 + HKDF-SHA-256 + AES-256-GCM,
-   signées et protégées contre le rejeu. Le relais n'est pas encore livré.
-   Restent : connexion sortante, relais ciphertext-only, persistance des
-   comptes/appareils, révocation, curseurs anti-rejeu durables et audit des
-   actions distantes sans clair sur le relais.
+   signées et protégées contre le rejeu. Le checkpoint 5.2 ajoute le service
+   relais ciphertext-only borné, le long-poll/ack et un connecteur hôte qui
+   n'ouvre que des connexions sortantes, avec preuve réseau aller-retour sans
+   clair sur le relais. Restent pour 5.3 : persistance des comptes/appareils,
+   autorisation par appareil, révocation, curseurs anti-rejeu/livraison
+   durables et audit des actions distantes.
 
 6. **🟡 Client natif déjà présent, finition produit et distribution manquantes
    — Application macOS complète.** Déjà présents : SwiftUI, Keychain,

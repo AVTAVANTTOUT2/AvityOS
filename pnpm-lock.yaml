@@ -387,6 +387,31 @@ importers:
         specifier: 3.2.6
         version: 3.2.6(@types/node@22.13.1)(jiti@2.7.0)(jsdom@29.1.1)(lightningcss@1.30.1)
 
+  services/remote-relay:
+    dependencies:
+      '@avityos/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      fastify:
+        specifier: 5.8.5
+        version: 5.8.5
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
+    devDependencies:
+      '@avityos/remote-bridge':
+        specifier: workspace:*
+        version: link:../../packages/remote-bridge
+      '@types/node':
+        specifier: 22.13.1
+        version: 22.13.1
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: 3.2.6
+        version: 3.2.6(@types/node@22.13.1)(jiti@2.7.0)(jsdom@29.1.1)(lightningcss@1.30.1)
+
   services/worker:
     dependencies:
       '@avityos/policy':

@@ -29,6 +29,9 @@ import {
   type RemotePairingRequest as RemotePairingRequestType,
   type RemotePairingSession as RemotePairingSessionType,
 } from "@avityos/contracts";
+import type { RemoteRelayClient } from "./relay-client.js";
+
+export * from "./relay-client.js";
 
 const PAIRING_REQUEST_CONTEXT = "avityos-remote-pairing-request-v1";
 const PAIRING_ACCEPTANCE_CONTEXT = "avityos-remote-pairing-acceptance-v1";
@@ -745,5 +748,241 @@ export function openRemoteEnvelope(input: {
   } catch (error) {
     if (error instanceof RemoteBridgeSecurityError) throw error;
     throw new RemoteBridgeSecurityError("remote envelope decryption failed");
+  }
+}
+
+export interface RemoteConnectorRequest {
+  readonly plaintext: Buffer;
+  readonly contentType: string;
+  readonly messageId: string;
+  readonly sequence: number;
+  readonly sentAt: string;
+  readonly senderDeviceId: string;
+}
+
+export interface RemoteConnectorResponse {
+  readonly plaintext: Uint8Array | string;
+  readonly contentType: string;
+}
+
+export interface RemoteOutboundConnectorOptions {
+  readonly relay: RemoteRelayClient;
+  readonly identity: RemoteDeviceIdentity;
+  readonly certificate: RemoteDeviceCertificateType;
+  readonly accountSigningPublicKey: string;
+  readonly resolveSenderCertificate: (
+    deviceId: string,
+  ) => RemoteDeviceCertificateType | Promise<RemoteDeviceCertificateType>;
+  readonly handleRequest: (
+    request: RemoteConnectorRequest,
+  ) => RemoteConnectorResponse | null | Promise<RemoteConnectorResponse | null>;
+  readonly initialRelayCursor?: number;
+  readonly initialInboundSequences?: ReadonlyMap<string, number>;
+  readonly initialOutboundSequences?: ReadonlyMap<string, number>;
+  readonly pollWaitMs?: number;
+  readonly now?: () => Date;
+}
+
+interface PendingRemoteDelivery {
+  readonly relayCursor: number;
+  readonly senderDeviceId: string;
+  readonly inboundSequence: number;
+  readonly responseEnvelope: RemoteEncryptedEnvelopeType | null;
+  readonly outboundSequence: number | null;
+  responsePublished: boolean;
+  sequencesCommitted: boolean;
+}
+
+function validatedSequenceMap(
+  input: ReadonlyMap<string, number> | undefined,
+  label: string,
+): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const [deviceId, sequence] of input ?? []) {
+    if (!/^rdev_[a-f0-9]{32}$/.test(deviceId)) {
+      throw new RemoteBridgeSecurityError(`${label} contains an invalid device id`);
+    }
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new RemoteBridgeSecurityError(`${label} contains an invalid sequence`);
+    }
+    result.set(deviceId, sequence);
+  }
+  return result;
+}
+
+/**
+ * Long-polling host connector. It exposes no listener: every network operation
+ * is an outbound fetch to the relay, and application plaintext exists only
+ * between local decryption and the supplied local handler.
+ *
+ * Cursor/sequence state is deliberately in memory in checkpoint 5.2. Durable
+ * replay cursors and crash recovery are added with persistence in checkpoint
+ * 5.3; callers must not claim restart-safe delivery before then.
+ */
+export class RemoteOutboundConnector {
+  private relayCursor: number;
+  private readonly inboundSequences: Map<string, number>;
+  private readonly outboundSequences: Map<string, number>;
+  private readonly pollWaitMs: number;
+  private readonly now: () => Date;
+  private readonly certificate: RemoteDeviceCertificateType;
+  private pending: PendingRemoteDelivery | null = null;
+
+  constructor(private readonly options: RemoteOutboundConnectorOptions) {
+    this.now = options.now ?? (() => new Date());
+    const initialNow = validDate(this.now(), "connector clock");
+    this.certificate = verifyRemoteDeviceCertificate(
+      options.certificate,
+      options.accountSigningPublicKey,
+      initialNow,
+    );
+    assertIdentityMatchesCertificate(options.identity, this.certificate);
+    assertDeviceKeyPairs(options.identity);
+    this.relayCursor = options.initialRelayCursor ?? 0;
+    if (!Number.isSafeInteger(this.relayCursor) || this.relayCursor < 0) {
+      throw new RemoteBridgeSecurityError("initial relay cursor is invalid");
+    }
+    this.inboundSequences = validatedSequenceMap(
+      options.initialInboundSequences,
+      "initial inbound sequences",
+    );
+    this.outboundSequences = validatedSequenceMap(
+      options.initialOutboundSequences,
+      "initial outbound sequences",
+    );
+    this.pollWaitMs = options.pollWaitMs ?? 25_000;
+    if (!Number.isSafeInteger(this.pollWaitMs) || this.pollWaitMs < 0 || this.pollWaitMs > 25_000) {
+      throw new RemoteBridgeSecurityError("connector poll wait must be between 0 and 25 seconds");
+    }
+  }
+
+  get state(): {
+    readonly relayCursor: number;
+    readonly inboundSequences: ReadonlyMap<string, number>;
+    readonly outboundSequences: ReadonlyMap<string, number>;
+    readonly deliveryPending: boolean;
+  } {
+    return {
+      relayCursor: this.relayCursor,
+      inboundSequences: new Map(this.inboundSequences),
+      outboundSequences: new Map(this.outboundSequences),
+      deliveryPending: this.pending !== null,
+    };
+  }
+
+  private async finishPending(signal?: AbortSignal): Promise<void> {
+    const pending = this.pending;
+    if (!pending) return;
+    if (pending.responseEnvelope && !pending.responsePublished) {
+      await this.options.relay.publish(pending.responseEnvelope, signal);
+      pending.responsePublished = true;
+    }
+    if (!pending.sequencesCommitted) {
+      this.inboundSequences.set(pending.senderDeviceId, pending.inboundSequence);
+      if (pending.outboundSequence !== null) {
+        this.outboundSequences.set(pending.senderDeviceId, pending.outboundSequence);
+      }
+      pending.sequencesCommitted = true;
+    }
+    await this.options.relay.acknowledge({
+      accountId: this.certificate.accountId,
+      deviceId: this.certificate.deviceId,
+      throughCursor: pending.relayCursor,
+      signal,
+    });
+    this.relayCursor = pending.relayCursor;
+    this.pending = null;
+  }
+
+  async processOnce(input: {
+    readonly signal?: AbortSignal;
+    readonly waitMs?: number;
+  } = {}): Promise<number> {
+    let processed = 0;
+    if (this.pending) {
+      await this.finishPending(input.signal);
+      processed += 1;
+    }
+
+    const inbox = await this.options.relay.poll({
+      accountId: this.certificate.accountId,
+      deviceId: this.certificate.deviceId,
+      afterCursor: this.relayCursor,
+      limit: 25,
+      waitMs: input.waitMs ?? this.pollWaitMs,
+      signal: input.signal,
+    });
+
+    let expectedCursor = this.relayCursor;
+    for (const item of inbox.items) {
+      expectedCursor += 1;
+      if (!Number.isSafeInteger(expectedCursor) || item.cursor !== expectedCursor) {
+        throw new RemoteBridgeSecurityError("relay returned a missing or reordered cursor");
+      }
+    }
+    if (inbox.nextCursor !== expectedCursor) {
+      throw new RemoteBridgeSecurityError("relay returned an inconsistent next cursor");
+    }
+
+    for (const item of inbox.items) {
+      const senderCertificate = await this.options.resolveSenderCertificate(
+        item.envelope.senderDeviceId,
+      );
+      const lastAcceptedSequence = this.inboundSequences.get(
+        item.envelope.senderDeviceId,
+      ) ?? 0;
+      const opened = openRemoteEnvelope({
+        envelope: item.envelope,
+        recipientIdentity: this.options.identity,
+        recipientCertificate: this.certificate,
+        senderCertificate,
+        accountSigningPublicKey: this.options.accountSigningPublicKey,
+        lastAcceptedSequence,
+        now: this.now(),
+      });
+      const response = await this.options.handleRequest({
+        ...opened,
+        senderDeviceId: item.envelope.senderDeviceId,
+      });
+      const outboundSequence = response
+        ? (this.outboundSequences.get(item.envelope.senderDeviceId) ?? 0) + 1
+        : null;
+      const responseEnvelope = response && outboundSequence !== null
+        ? sealRemoteEnvelope({
+            plaintext: response.plaintext,
+            contentType: response.contentType,
+            sequence: outboundSequence,
+            senderIdentity: this.options.identity,
+            senderCertificate: this.certificate,
+            recipientCertificate: senderCertificate,
+            accountSigningPublicKey: this.options.accountSigningPublicKey,
+            sentAt: this.now(),
+          })
+        : null;
+
+      this.pending = {
+        relayCursor: item.cursor,
+        senderDeviceId: item.envelope.senderDeviceId,
+        inboundSequence: opened.sequence,
+        responseEnvelope,
+        outboundSequence,
+        responsePublished: false,
+        sequencesCommitted: false,
+      };
+      await this.finishPending(input.signal);
+      processed += 1;
+    }
+    return processed;
+  }
+
+  async run(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      try {
+        await this.processOnce({ signal });
+      } catch (error) {
+        if (signal.aborted && error instanceof Error && error.name === "AbortError") return;
+        throw error;
+      }
+    }
   }
 }

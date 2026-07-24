@@ -13,6 +13,15 @@ budgets, checkpoints and audit records. UI permission checks are never trusted.
   Browser login exchanges it for an HttpOnly, SameSite=Strict cookie; SSE never
   accepts tokens in URLs. CORS uses an explicit origin allowlist and the server
   binds loopback by default.
+- **Remote bridge transport (checkpoints 5.1–5.2)** — account/device
+  certificates and application envelopes are signed and end-to-end encrypted;
+  the relay accepts only strict ciphertext structures and never imports
+  control-plane or decryption code. Host connectivity is outbound long-poll
+  only. Relay bearers stay in Authorization headers, remote URLs require HTTPS
+  outside loopback, inboxes are bounded/expiring, and responses are `no-store`.
+  Routing IDs, sizes and timing remain visible. Current queues, replay cursors
+  and authorization are volatile/global until checkpoint 5.3; see ADR-0006 and
+  ADR-0007.
 - **Validation** — shared zod schemas validate bodies/enums. Project onboarding
   resolves repository paths with `realpath`, requires a readable/writable Git
   working tree, verifies the local default branch and matches GitHub identity

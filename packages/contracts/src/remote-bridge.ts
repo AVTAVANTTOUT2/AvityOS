@@ -103,3 +103,37 @@ export const RemoteEncryptedEnvelope = z.object({
   signature: OpaqueKey,
 }).strict();
 export type RemoteEncryptedEnvelope = z.infer<typeof RemoteEncryptedEnvelope>;
+
+export const RemoteRelayCursor = z.number().int().nonnegative().safe();
+export type RemoteRelayCursor = z.infer<typeof RemoteRelayCursor>;
+
+export const RemoteRelayItem = z.object({
+  cursor: z.number().int().positive().safe(),
+  receivedAt: Timestamp,
+  envelope: RemoteEncryptedEnvelope,
+}).strict();
+export type RemoteRelayItem = z.infer<typeof RemoteRelayItem>;
+
+export const RemoteRelayInbox = z.object({
+  items: z.array(RemoteRelayItem).max(100),
+  nextCursor: RemoteRelayCursor,
+}).strict();
+export type RemoteRelayInbox = z.infer<typeof RemoteRelayInbox>;
+
+export const RemoteRelayPublishResult = z.object({
+  messageId: RemoteBridgeMessageId,
+  acceptedAt: Timestamp,
+  duplicate: z.boolean(),
+}).strict();
+export type RemoteRelayPublishResult = z.infer<typeof RemoteRelayPublishResult>;
+
+export const RemoteRelayAckRequest = z.object({
+  throughCursor: z.number().int().positive().safe(),
+}).strict();
+export type RemoteRelayAckRequest = z.infer<typeof RemoteRelayAckRequest>;
+
+export const RemoteRelayAckResult = z.object({
+  throughCursor: z.number().int().positive().safe(),
+  deleted: z.number().int().nonnegative().safe(),
+}).strict();
+export type RemoteRelayAckResult = z.infer<typeof RemoteRelayAckResult>;
