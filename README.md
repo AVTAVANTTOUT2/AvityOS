@@ -366,6 +366,7 @@ pnpm audit --audit-level high
 
 ## Documentation
 
+- [**Mode d’emploi (A → Z)**](docs/MODE-D-EMPLOI.md) — guide complet pour démarrer et utiliser AvityOS sans connaissances préalables
 - [Product](docs/PRODUCT.md) — implemented product behavior and quality bar
 - [Architecture](docs/ARCHITECTURE.md) — components, state machines and recovery
 - [Project lifecycle](docs/PROJECT-LIFECYCLE.md) — objective to reviewed delivery
