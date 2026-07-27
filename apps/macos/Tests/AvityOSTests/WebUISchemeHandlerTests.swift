@@ -3,6 +3,9 @@ import XCTest
 @testable import AvityOS
 
 final class WebUISchemeHandlerTests: XCTestCase {
+    // SDK 26 isolates WKURLSchemeHandler types on the main actor; these tests
+    // exercise pure helpers that live on that type.
+    @MainActor
     func testResolvedFileURLServesIndexForRootAndRejectsEscape() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("avity-webui-\(UUID().uuidString)", isDirectory: true)
@@ -36,6 +39,7 @@ final class WebUISchemeHandlerTests: XCTestCase {
     /// WebKit drops the HTTP body of a `fetch` before it reaches a custom
     /// scheme handler, so the client shim re-sends it as a header. Without this
     /// path every control-plane write would arrive with an empty payload.
+    @MainActor
     func testProxiedRequestRestoresTheEncodedBodyAndAttachesTheKeychainBearer() throws {
         let requestURL = try XCTUnwrap(URL(string: "avity-app://ui/v1/projects"))
         let payload = Data(#"{"name":"Atlas"}"#.utf8)
@@ -71,6 +75,7 @@ final class WebUISchemeHandlerTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testProxiedRequestPreservesQueryAndKeepsStreamsOpen() throws {
         let requestURL = try XCTUnwrap(
             URL(string: "avity-app://ui/v1/events/stream?since=42")
@@ -95,12 +100,14 @@ final class WebUISchemeHandlerTests: XCTestCase {
         XCTAssertNil(proxied.value(forHTTPHeaderField: "Authorization"))
     }
 
+    @MainActor
     func testMissingBundleNoticeNamesTheStagingScript() {
         XCTAssertTrue(
             WebUISchemeHandler.missingBundleHTML.contains("build-macos-webui.sh")
         )
     }
 
+    @MainActor
     func testMimeTypeCoversWebBundleExtensions() {
         XCTAssertEqual(
             WebUISchemeHandler.mimeType(for: URL(fileURLWithPath: "/tmp/index.html")),

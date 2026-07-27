@@ -46,7 +46,12 @@ every write with an empty payload.
 6. Native concerns remain native: Keychain credentials, remote host/device
    pairing, menu bar, Dock badge, notifications and `avity://` deep links.
 7. The web shell detects `window.__AVITY_NATIVE__`, applies Liquid Glass styling
-   without the faux desktop chrome, and can open the native Settings scene.
+   without the faux desktop chrome, and can open the native Settings UI.
+8. Programmatic Settings opens (toolbar, `avity://settings`, web bridge) use a
+   dedicated `Window` via `openWindow`. `showSettingsWindow:` is a no-op on
+   macOS 14+, and `@Environment(\.openSettings)` does not type-check under the
+   SwiftPM SDK the CI job uses. The SwiftUI `Settings` scene remains for the
+   system « Réglages… » menu item.
 
 ## Consequences
 
@@ -56,15 +61,16 @@ every write with an empty payload.
   background polling; it cannot change which interface is presented.
 - Web and macOS share one frontend source of truth (the Figma Mission Control
   UI). Visual drift between surfaces is no longer acceptable.
-- Settings for the control-plane token and the remote bridge stay in the macOS
-  Settings scene, reachable from the shell toolbar and `avity://settings`.
+- Settings for the control-plane token and the remote bridge stay in the native
+  Settings UI (`SettingsView`), reachable from the shell toolbar,
+  `avity://settings`, and the system Settings menu.
 
 ## Evidence and limits
 
 - XCUITest asserts the shipped shell: the main window hosts the embedded
   WebView, the native connection status is present, the retired sidebar
   identifiers are unreachable, and both the toolbar entry point and
-  `avity://settings` open the native Settings scene. The React screens
+  `avity://settings` open the native Settings UI. The React screens
   themselves are covered by the web workspace (vitest and Playwright) and are
   deliberately not duplicated in XCUITest.
 - Swift tests cover bundle path resolution and SPA fallback, refusal of path

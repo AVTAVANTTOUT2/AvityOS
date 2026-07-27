@@ -57,9 +57,7 @@ struct MissionControlWebView: NSViewRepresentable {
         context.coordinator.onOpenNativeSettings = onOpenNativeSettings
         context.coordinator.onRouteConsumed = onRouteConsumed
         if let pendingRoute {
-            Task { @MainActor in
-                context.coordinator.navigate(to: pendingRoute)
-            }
+            context.coordinator.navigate(to: pendingRoute)
             onRouteConsumed()
         }
     }
@@ -152,7 +150,12 @@ struct MissionControlWebView: NSViewRepresentable {
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, @unchecked Sendable {
+    // SDK 26 annotates WKNavigationDelegate / WKScriptMessageHandler as
+    // @MainActor; marking the coordinator the same way matches both that SDK
+    // and Xcode 15.4, where the protocols are still callable from the main
+    // thread that owns the WKWebView.
+    @MainActor
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var client: ApiClient
         var onOpenNativeSettings: () -> Void
         var onRouteConsumed: () -> Void
@@ -175,7 +178,7 @@ struct MissionControlWebView: NSViewRepresentable {
             super.init()
         }
 
-        static func webUIRoot() -> URL {
+        nonisolated static func webUIRoot() -> URL {
             if let bundled = Bundle.main.resourceURL?.appendingPathComponent("WebUI", isDirectory: true),
                FileManager.default.fileExists(atPath: bundled.appendingPathComponent("index.html").path) {
                 return bundled
@@ -196,7 +199,6 @@ struct MissionControlWebView: NSViewRepresentable {
                 ?? URL(fileURLWithPath: "/tmp/avity-missing-webui")
         }
 
-        @MainActor
         func navigate(to route: String) {
             let escaped = route
                 .replacingOccurrences(of: "\\", with: "\\\\")
@@ -205,7 +207,7 @@ struct MissionControlWebView: NSViewRepresentable {
             webView?.evaluateJavaScript(js, completionHandler: nil)
         }
 
-        nonisolated func userContentController(
+        func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
         ) {
@@ -215,12 +217,9 @@ struct MissionControlWebView: NSViewRepresentable {
                 return
             }
             let token = (body["token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            Task { @MainActor [weak self] in
-                self?.handleNativeBridgeMessage(type: type, token: token)
-            }
+            handleNativeBridgeMessage(type: type, token: token)
         }
 
-        @MainActor
         private func handleNativeBridgeMessage(type: String, token: String?) {
             switch type {
             case "openNativeSettings":
@@ -235,10 +234,11 @@ struct MissionControlWebView: NSViewRepresentable {
             }
         }
 
-        nonisolated func webView(
+        #if compiler(>=6.0)
+        func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
             guard let url = navigationAction.request.url else {
                 decisionHandler(.allow)
@@ -260,5 +260,31 @@ struct MissionControlWebView: NSViewRepresentable {
             }
             decisionHandler(.cancel)
         }
+        #else
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.allow)
+                return
+            }
+            if url.scheme == WebUISchemeHandler.scheme {
+                decisionHandler(.allow)
+                return
+            }
+            if url.scheme == "avity" {
+                decisionHandler(.cancel)
+                return
+            }
+            if url.scheme == "http" || url.scheme == "https" {
+                NSWorkspace.shared.open(url)
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.cancel)
+        }
+        #endif
     }
 }

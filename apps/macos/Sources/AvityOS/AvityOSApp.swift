@@ -26,15 +26,24 @@ struct AvityOSApp: App {
                 Button("Rafraîchir") { Task { await client.refresh() } }
                     .keyboardShortcut("r", modifiers: .command)
             }
-            CommandGroup(replacing: .appSettings) {
-                Button("Réglages…") { NativeAppSettings.open() }
-                    .keyboardShortcut(",", modifiers: .command)
-            }
+            // Leave .appSettings alone: the Settings scene owns « Réglages… »
+            // and ⌘,. Replacing it with showSettingsWindow: broke opening on
+            // macOS 14+ (Apple requires SettingsLink / openSettings there).
         }
 
         MenuBarExtra("AvityOS", systemImage: "brain") {
             MenuBarView().environmentObject(client)
         }
+
+        // Programmatic opens (toolbar, deep link, web bridge) go through this
+        // window: openWindow is available on the CI SDK, unlike openSettings,
+        // and showSettingsWindow: is a no-op since macOS 14.
+        Window("Réglages", id: NativeAppSettings.windowID) {
+            SettingsView()
+                .environmentObject(client)
+                .frame(minWidth: 520, minHeight: 320)
+        }
+        .windowResizability(.contentSize)
 
         Settings {
             SettingsView().environmentObject(client).frame(minWidth: 520, minHeight: 320)
@@ -71,16 +80,17 @@ enum NotificationCoordinator {
 }
 
 enum NativeAppSettings {
-    /// `EnvironmentValues.openSettings` is not available in the SDK this project
-    /// builds against, so the Settings scene is opened through the responder
-    /// chain. AppKit renamed the action in macOS 13; both selectors are tried.
+    static let windowID = "native-settings"
+    static let openNotification = Notification.Name("avity.openNativeSettings")
+
+    /// Asks the main shell to present the native settings window via
+    /// `openWindow`. Posted as a notification so AppKit callers (deep links,
+    /// the web bridge) do not need a SwiftUI `Environment` value that the
+    /// SwiftPM toolchain on CI cannot resolve (`openSettings`).
     @MainActor
     static func open() {
         NSApp.activate(ignoringOtherApps: true)
-        if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            return
-        }
-        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        NotificationCenter.default.post(name: openNotification, object: nil)
     }
 }
 
@@ -95,6 +105,7 @@ struct ContentView: View {
 
 struct FigmaMissionControlShell: View {
     @EnvironmentObject private var client: ApiClient
+    @Environment(\.openWindow) private var openWindow
     @State private var pendingRoute: String?
 
     var body: some View {
@@ -114,7 +125,7 @@ struct FigmaMissionControlShell: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("connection.status")
                 Button("Réglages") {
-                    NativeAppSettings.open()
+                    openNativeSettingsWindow()
                 }
                 .accessibilityIdentifier("toolbar.native-settings")
             }
@@ -129,18 +140,33 @@ struct FigmaMissionControlShell: View {
                 onRouteConsumed: { pendingRoute = nil }
             )
         }
+        // Keep children queryable by their own identifiers. A bare
+        // accessibilityIdentifier on the container replaces them on macOS, so
+        // XCUITest would only see `screen.mission-control` for the status and
+        // settings controls that the suite asserts.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("screen.mission-control")
         .background(Color(red: 0.969, green: 0.957, blue: 0.933))
+        .onReceive(
+            NotificationCenter.default.publisher(for: NativeAppSettings.openNotification)
+        ) { _ in
+            openNativeSettingsWindow()
+        }
         .onOpenURL { url in
             let host = url.host ?? "mission-control"
             if host == "settings" {
-                NativeAppSettings.open()
+                openNativeSettingsWindow()
                 pendingRoute = "settings"
             } else {
                 pendingRoute = host
             }
         }
         .frame(minWidth: 1100, minHeight: 720)
+    }
+
+    private func openNativeSettingsWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: NativeAppSettings.windowID)
     }
 
     private var connectionLabel: String {
@@ -451,6 +477,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Réglages")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("screen.settings")
         .onAppear {
             endpoint = client.baseURL.absoluteString

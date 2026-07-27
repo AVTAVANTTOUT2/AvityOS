@@ -114,6 +114,53 @@ final class SchemeTaskChannel: @unchecked Sendable {
     }
 }
 
+/// Lock-protected bookkeeping for in-flight proxied scheme tasks.
+/// Kept outside `WebUISchemeHandler`'s MainActor isolation (SDK 26) so
+/// URLSession completions can release entries without hopping actors.
+private final class SchemeTaskRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [ObjectIdentifier: URLSessionTask] = [:]
+    private var channels: [ObjectIdentifier: SchemeTaskChannel] = [:]
+    private var streamSessions: [ObjectIdentifier: URLSession] = [:]
+
+    func store(channel: SchemeTaskChannel, for key: ObjectIdentifier) {
+        lock.lock()
+        channels[key] = channel
+        lock.unlock()
+    }
+
+    func store(task: URLSessionTask, for key: ObjectIdentifier) {
+        lock.lock()
+        tasks[key] = task
+        lock.unlock()
+    }
+
+    func store(streamSession: URLSession, task: URLSessionTask, for key: ObjectIdentifier) {
+        lock.lock()
+        tasks[key] = task
+        streamSessions[key] = streamSession
+        lock.unlock()
+    }
+
+    func stop(_ key: ObjectIdentifier) -> (channel: SchemeTaskChannel?, task: URLSessionTask?, streamSession: URLSession?) {
+        lock.lock()
+        let task = tasks.removeValue(forKey: key)
+        let channel = channels.removeValue(forKey: key)
+        let streamSession = streamSessions.removeValue(forKey: key)
+        lock.unlock()
+        return (channel, task, streamSession)
+    }
+
+    func release(_ key: ObjectIdentifier) -> URLSession? {
+        lock.lock()
+        tasks.removeValue(forKey: key)
+        channels.removeValue(forKey: key)
+        let streamSession = streamSessions.removeValue(forKey: key)
+        lock.unlock()
+        return streamSession
+    }
+}
+
 /// Serves the bundled Figma Mission Control UI and proxies `/v1` to the
 /// control plane with the Keychain bearer. SSE routes stream incrementally.
 final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendable {
@@ -131,10 +178,7 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
     private let controlPlaneBaseURL: () -> URL
     private let bearerToken: () -> String?
     private let session: URLSession
-    private let lock = NSLock()
-    private var tasks: [ObjectIdentifier: URLSessionTask] = [:]
-    private var channels: [ObjectIdentifier: SchemeTaskChannel] = [:]
-    private var streamSessions: [ObjectIdentifier: URLSession] = [:]
+    private let registry = SchemeTaskRegistry()
 
     init(
         resourceRoot: URL,
@@ -174,33 +218,22 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
         // A proxied request outlives `start`; it is tracked so `stop` can cancel
         // it and so its entry is released once it completes.
         let key = ObjectIdentifier(urlSchemeTask)
-        lock.lock()
-        channels[key] = channel
-        lock.unlock()
+        registry.store(channel: channel, for: key)
         proxyAPI(urlSchemeTask, channel: channel, key: key, requestURL: requestURL)
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         let key = ObjectIdentifier(urlSchemeTask)
-        lock.lock()
-        let task = tasks.removeValue(forKey: key)
-        let channel = channels.removeValue(forKey: key)
-        let streamSession = streamSessions.removeValue(forKey: key)
-        lock.unlock()
-        channel?.stop()
-        task?.cancel()
+        let stopped = registry.stop(key)
+        stopped.channel?.stop()
+        stopped.task?.cancel()
         // A delegate-backed URLSession retains its delegate until it is
         // invalidated; without this every SSE reconnection leaked one session.
-        streamSession?.invalidateAndCancel()
+        stopped.streamSession?.invalidateAndCancel()
     }
 
-    private func release(_ key: ObjectIdentifier) {
-        lock.lock()
-        tasks.removeValue(forKey: key)
-        channels.removeValue(forKey: key)
-        let streamSession = streamSessions.removeValue(forKey: key)
-        lock.unlock()
-        streamSession?.finishTasksAndInvalidate()
+    nonisolated private func release(_ key: ObjectIdentifier) {
+        registry.release(key)?.finishTasksAndInvalidate()
     }
 
     func resolvedFileURL(for path: String) throws -> URL {
@@ -379,10 +412,7 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
                 delegateQueue: nil
             )
             let task = streamSession.dataTask(with: proxied)
-            lock.lock()
-            tasks[key] = task
-            streamSessions[key] = streamSession
-            lock.unlock()
+            registry.store(streamSession: streamSession, task: task, for: key)
             task.resume()
             return
         }
@@ -401,9 +431,7 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
             channel.complete(http: http, data: data)
         }
 
-        lock.lock()
-        tasks[key] = task
-        lock.unlock()
+        registry.store(task: task, for: key)
         task.resume()
     }
 }
