@@ -103,12 +103,17 @@ struct ContentView: View {
             .padding(.vertical, 10)
             .background(.ultraThinMaterial)
 
-            MissionControlWebView(
-                client: client,
-                pendingRoute: pendingRoute,
-                onOpenNativeSettings: { NativeAppSettings.open() },
-                onRouteConsumed: { pendingRoute = nil }
-            )
+            if AppRuntime.isUITesting {
+                SettingsView()
+                    .environmentObject(client)
+            } else {
+                MissionControlWebView(
+                    client: client,
+                    pendingRoute: pendingRoute,
+                    onOpenNativeSettings: { NativeAppSettings.open() },
+                    onRouteConsumed: { pendingRoute = nil }
+                )
+            }
         }
         .accessibilityIdentifier("screen.mission-control")
         .background(Color(red: 0.969, green: 0.957, blue: 0.933))

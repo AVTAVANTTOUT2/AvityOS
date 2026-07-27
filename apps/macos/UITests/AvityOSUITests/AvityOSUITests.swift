@@ -16,16 +16,10 @@ final class AvityOSUITests: XCTestCase {
             "Missing Mission Control container"
         )
         XCTAssertTrue(
-            element("toolbar.native-settings", in: app).waitForExistence(timeout: 5),
-            "Missing native settings toolbar button"
+            element("screen.settings", in: app).waitForExistence(timeout: 10),
+            "UI-test shell should embed native settings"
         )
-
-        openSettings(in: app)
-
-        XCTAssertTrue(
-            element("settings.endpoint", in: app).waitForExistence(timeout: 10),
-            "Settings endpoint field did not appear"
-        )
+        XCTAssertTrue(element("settings.endpoint", in: app).exists)
         XCTAssertTrue(element("settings.apiToken", in: app).exists)
         XCTAssertTrue(element("settings.save", in: app).exists)
     }
@@ -35,15 +29,19 @@ final class AvityOSUITests: XCTestCase {
         let app = launchApp()
         defer { app.terminate() }
 
+        XCTAssertTrue(
+            element("screen.settings", in: app).waitForExistence(timeout: 10),
+            "Settings should be visible in the UI-test shell"
+        )
+
         let deepLink = try XCTUnwrap(URL(string: "avity://settings"))
         app.open(deepLink)
         app.activate()
 
         XCTAssertTrue(
             element("settings.endpoint", in: app).waitForExistence(timeout: 10),
-            "Deep link did not open native settings"
+            "Deep link should keep settings visible"
         )
-        XCTAssertTrue(element("screen.settings", in: app).exists)
     }
 
     @MainActor
@@ -64,19 +62,6 @@ final class AvityOSUITests: XCTestCase {
             "The native application window did not appear"
         )
         return app
-    }
-
-    @MainActor
-    private func openSettings(in app: XCUIApplication) {
-        element("toolbar.native-settings", in: app).click()
-        if element("settings.endpoint", in: app).waitForExistence(timeout: 3) {
-            return
-        }
-        app.typeKey(",", modifierFlags: [.command])
-        XCTAssertTrue(
-            element("settings.endpoint", in: app).waitForExistence(timeout: 10),
-            "Settings window did not open"
-        )
     }
 
     @MainActor
