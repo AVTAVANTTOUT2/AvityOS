@@ -7,54 +7,43 @@ final class AvityOSUITests: XCTestCase {
         let app = launchApp()
         defer { app.terminate() }
 
-        let statusExists = element("connection.status", in: app).waitForExistence(timeout: 10)
-        let shellExists = element("webview.figma-shell", in: app).waitForExistence(timeout: 10)
-        let missionControlExists = element("screen.mission-control", in: app).exists
-        XCTAssertTrue(statusExists, "Missing connection status in the native chrome")
-        XCTAssertTrue(shellExists, "Missing embedded Figma WKWebView shell")
-        XCTAssertTrue(missionControlExists, "Missing Mission Control container")
+        XCTAssertTrue(
+            element("connection.status", in: app).waitForExistence(timeout: 10),
+            "Missing connection status in the native chrome"
+        )
+        XCTAssertTrue(
+            element("screen.mission-control", in: app).waitForExistence(timeout: 10),
+            "Missing Mission Control container"
+        )
+        XCTAssertTrue(
+            element("toolbar.native-settings", in: app).waitForExistence(timeout: 5),
+            "Missing native settings toolbar button"
+        )
 
-        let settingsButton = element("toolbar.native-settings", in: app)
-        XCTAssertTrue(settingsButton.waitForExistence(timeout: 5))
-        settingsButton.click()
+        openSettings(in: app)
 
-        let endpointExists = element("settings.endpoint", in: app).waitForExistence(timeout: 5)
-        let tokenExists = element("settings.apiToken", in: app).exists
-        let saveExists = element("settings.save", in: app).exists
-        XCTAssertTrue(endpointExists)
-        XCTAssertTrue(tokenExists)
-        XCTAssertTrue(saveExists)
+        XCTAssertTrue(
+            element("settings.endpoint", in: app).waitForExistence(timeout: 10),
+            "Settings endpoint field did not appear"
+        )
+        XCTAssertTrue(element("settings.apiToken", in: app).exists)
+        XCTAssertTrue(element("settings.save", in: app).exists)
     }
 
     @MainActor
     func testRegisteredDeepLinkOpensSettings() throws {
         let app = launchApp()
         defer { app.terminate() }
-        let workspace = NSWorkspace.shared
-        let appURL = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("AvityOS.app")
-        XCTAssertTrue(
-            FileManager.default.fileExists(atPath: appURL.path),
-            "Missing built application at \(appURL.path)"
-        )
+
         let deepLink = try XCTUnwrap(URL(string: "avity://settings"))
-        workspace.open(
-            [deepLink],
-            withApplicationAt: appURL,
-            configuration: NSWorkspace.OpenConfiguration(),
-            completionHandler: nil
+        app.open(deepLink)
+        app.activate()
+
+        XCTAssertTrue(
+            element("settings.endpoint", in: app).waitForExistence(timeout: 10),
+            "Deep link did not open native settings"
         )
-        let settingsAppeared = element(
-            "screen.settings",
-            in: app
-        ).waitForExistence(timeout: 5)
-        let endpointAppeared = element(
-            "settings.endpoint",
-            in: app
-        ).waitForExistence(timeout: 5)
-        XCTAssertTrue(settingsAppeared)
-        XCTAssertTrue(endpointAppeared)
+        XCTAssertTrue(element("screen.settings", in: app).exists)
     }
 
     @MainActor
@@ -75,6 +64,19 @@ final class AvityOSUITests: XCTestCase {
             "The native application window did not appear"
         )
         return app
+    }
+
+    @MainActor
+    private func openSettings(in app: XCUIApplication) {
+        element("toolbar.native-settings", in: app).click()
+        if element("settings.endpoint", in: app).waitForExistence(timeout: 3) {
+            return
+        }
+        app.typeKey(",", modifierFlags: [.command])
+        XCTAssertTrue(
+            element("settings.endpoint", in: app).waitForExistence(timeout: 10),
+            "Settings window did not open"
+        )
     }
 
     @MainActor

@@ -26,6 +26,10 @@ struct AvityOSApp: App {
                 Button("Rafraîchir") { Task { await client.refresh() } }
                     .keyboardShortcut("r", modifiers: .command)
             }
+            CommandGroup(replacing: .appSettings) {
+                Button("Réglages…") { NativeAppSettings.open() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
         }
 
         MenuBarExtra("AvityOS", systemImage: "brain") {
@@ -105,8 +109,8 @@ struct ContentView: View {
                 onOpenNativeSettings: { NativeAppSettings.open() },
                 onRouteConsumed: { pendingRoute = nil }
             )
-            .accessibilityIdentifier("screen.mission-control")
         }
+        .accessibilityIdentifier("screen.mission-control")
         .background(Color(red: 0.969, green: 0.957, blue: 0.933))
         .onOpenURL { url in
             let host = url.host ?? "mission-control"
