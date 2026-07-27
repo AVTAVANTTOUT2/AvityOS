@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+@testable import AvityOS
 
 final class WebUISchemeHandlerTests: XCTestCase {
     func testResolvedFileURLServesIndexForRootAndRejectsEscape() throws {
@@ -18,7 +19,7 @@ final class WebUISchemeHandlerTests: XCTestCase {
         let handler = WebUISchemeHandler(
             resourceRoot: root,
             controlPlaneBaseURL: { WebUIProxyConfiguration.defaultLoopbackURL },
-            bearerToken: { nil }
+            bearerToken: { nil as String? }
         )
 
         XCTAssertEqual(try handler.resolvedFileURL(for: "/").path, index.path)
