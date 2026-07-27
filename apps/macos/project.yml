@@ -53,8 +53,18 @@ targets:
         NSHighResolutionCapable: true
         NSHumanReadableCopyright: Copyright © 2026 AvityOS
         NSPrincipalClass: NSApplication
+    entitlements:
+      path: Resources/AvityOS.entitlements
+      properties:
+        # WebKit spawns WebContent/GPU helpers that need JIT for JavaScriptCore.
+        # Under the hardened runtime these exemptions are required or the helper
+        # processes never start and the embedded UI stays blank (ADR-0021).
+        com.apple.security.cs.allow-jit: true
+        com.apple.security.cs.allow-unsigned-executable-memory: true
+        com.apple.security.network.client: true
     settings:
       base:
+        CODE_SIGN_ENTITLEMENTS: Resources/AvityOS.entitlements
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         PRODUCT_BUNDLE_IDENTIFIER: com.avityos.app

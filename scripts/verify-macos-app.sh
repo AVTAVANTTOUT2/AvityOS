@@ -106,6 +106,21 @@ if ! grep -q 'flags=.*runtime' <<<"$signature_summary"; then
   echo "The hardened runtime flag is missing from the application signature" >&2
   exit 65
 fi
+
+# A --force re-signature silently drops entitlements. WebKit's helper processes
+# need the JIT exemptions under the hardened runtime, so a release without them
+# ships an application whose embedded UI never renders (ADR-0021).
+entitlements_dump="$(codesign -d --entitlements - "$app_path" 2>&1 || true)"
+for required_entitlement in \
+  com.apple.security.cs.allow-jit \
+  com.apple.security.cs.allow-unsigned-executable-memory \
+  com.apple.security.network.client; do
+  if ! grep -q "$required_entitlement" <<<"$entitlements_dump"; then
+    echo "The signature is missing the entitlement: $required_entitlement" >&2
+    exit 65
+  fi
+done
+
 signature_kind="$(sed -n 's/^Signature=//p' <<<"$signature_summary")"
 team_identifier="$(sed -n 's/^TeamIdentifier=//p' <<<"$signature_summary")"
 

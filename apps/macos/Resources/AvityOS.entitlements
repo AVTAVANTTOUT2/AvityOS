@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	The application runs with the hardened runtime enabled (ADR-0011/0013) and
+	hosts the Figma Mission Control UI in a WKWebView (ADR-0021). WebKit spawns
+	WebContent and GPU helper processes that need JIT and unsigned executable
+	memory for JavaScriptCore; without these exemptions those helpers fail to
+	start and the web view never presents any content.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<!--
+	The embedded UI reaches the control plane through the native avity-app://
+	proxy, and the remote bridge reaches the relay over HTTPS.
+	-->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

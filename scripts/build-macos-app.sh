@@ -55,11 +55,21 @@ fi
 staged_app="$staging_dir/AvityOS.app"
 ditto "$built_app" "$staged_app"
 
+# Re-signing with --force discards the entitlements Xcode applied, so they are
+# supplied again here. Without them WebKit's helper processes cannot start under
+# the hardened runtime and the embedded UI never renders (ADR-0021).
+entitlements_path="$macos_root/Resources/AvityOS.entitlements"
+if [[ ! -f "$entitlements_path" ]]; then
+  echo "Missing application entitlements: $entitlements_path" >&2
+  exit 65
+fi
+
 if [[ "$signing_identity" == "-" ]]; then
   codesign \
     --force \
     --deep \
     --options runtime \
+    --entitlements "$entitlements_path" \
     --timestamp=none \
     --sign - \
     "$staged_app"
@@ -68,6 +78,7 @@ else
     --force \
     --deep \
     --options runtime \
+    --entitlements "$entitlements_path" \
     --timestamp \
     --sign "$signing_identity" \
     "$staged_app"

@@ -38,9 +38,14 @@ every write with an empty payload.
    handler decodes it into the proxied request and strips the header before the
    request leaves the application. `GET` and EventSource are untouched, so SSE
    still streams through the handler.
-5. Native concerns remain native: Keychain credentials, remote host/device
+5. The application keeps the hardened runtime and declares the entitlements
+   WebKit's helper processes require (`allow-jit`,
+   `allow-unsigned-executable-memory`, `network.client`). Release packaging
+   re-signs with `--force`, which discards entitlements, so it supplies them
+   again and `verify-macos-app.sh` fails a release whose signature lost them.
+6. Native concerns remain native: Keychain credentials, remote host/device
    pairing, menu bar, Dock badge, notifications and `avity://` deep links.
-6. The web shell detects `window.__AVITY_NATIVE__`, applies Liquid Glass styling
+7. The web shell detects `window.__AVITY_NATIVE__`, applies Liquid Glass styling
    without the faux desktop chrome, and can open the native Settings scene.
 
 ## Consequences
