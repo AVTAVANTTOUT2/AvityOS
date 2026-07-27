@@ -71,7 +71,7 @@ struct MissionControlWebView: NSViewRepresentable {
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, @unchecked Sendable {
         var client: ApiClient
         var onOpenNativeSettings: () -> Void
         var onRouteConsumed: () -> Void
@@ -133,18 +133,24 @@ struct MissionControlWebView: NSViewRepresentable {
                   let type = body["type"] as? String else {
                 return
             }
-            Task { @MainActor in
-                switch type {
-                case "openNativeSettings":
-                    onOpenNativeSettings()
-                case "saveApiToken":
-                    if let token = body["token"] as? String, !token.isEmpty {
-                        client.configure(baseURL: client.baseURL, token: token)
-                        webView?.reload()
-                    }
-                default:
-                    break
+            let token = (body["token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            Task { @MainActor [weak self] in
+                self?.handleNativeBridgeMessage(type: type, token: token)
+            }
+        }
+
+        @MainActor
+        private func handleNativeBridgeMessage(type: String, token: String?) {
+            switch type {
+            case "openNativeSettings":
+                onOpenNativeSettings()
+            case "saveApiToken":
+                if let token {
+                    client.configure(baseURL: client.baseURL, token: token)
+                    webView?.reload()
                 }
+            default:
+                break
             }
         }
 

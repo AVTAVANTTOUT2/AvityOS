@@ -24,6 +24,46 @@ enum WebUIProxyConfiguration {
     }
 }
 
+/// Forwards scheme-task callbacks from @Sendable URLSession closures.
+private final class SchemeTaskForwarder: @unchecked Sendable {
+    private let task: any WKURLSchemeTask
+    private let requestURL: URL
+
+    init(task: any WKURLSchemeTask, requestURL: URL) {
+        self.task = task
+        self.requestURL = requestURL
+    }
+
+    func fail(_ error: Error) {
+        task.didFailWithError(error)
+    }
+
+    func complete(http: HTTPURLResponse, data: Data?) {
+        let filtered = http.allHeaderFields.reduce(into: [String: String]()) { result, entry in
+            guard let header = entry.key as? String else { return }
+            let lower = header.lowercased()
+            if lower.hasPrefix("access-control-") || lower == "transfer-encoding" {
+                return
+            }
+            result[header] = String(describing: entry.value)
+        }
+        guard let schemeResponse = HTTPURLResponse(
+            url: requestURL,
+            statusCode: http.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: filtered
+        ) else {
+            task.didFailWithError(WebUISchemeError.invalidResponse)
+            return
+        }
+        task.didReceive(schemeResponse)
+        if let data, !data.isEmpty {
+            task.didReceive(data)
+        }
+        task.didFinish()
+    }
+}
+
 /// Serves the bundled Figma Mission Control UI and proxies `/v1` to the
 /// control plane with the Keychain bearer. SSE routes stream incrementally.
 final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendable {
@@ -196,6 +236,7 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
             return
         }
 
+        let forwarder = SchemeTaskForwarder(task: urlSchemeTask, requestURL: requestURL)
         let task = session.dataTask(with: proxied) { [weak self] data, response, error in
             guard let self else { return }
             self.lock.lock()
@@ -203,37 +244,14 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
             self.lock.unlock()
 
             if let error {
-                urlSchemeTask.didFailWithError(error)
+                forwarder.fail(error)
                 return
             }
             guard let http = response as? HTTPURLResponse else {
-                urlSchemeTask.didFailWithError(WebUISchemeError.invalidResponse)
+                forwarder.fail(WebUISchemeError.invalidResponse)
                 return
             }
-
-            let filtered = http.allHeaderFields.reduce(into: [String: String]()) { result, entry in
-                guard let header = entry.key as? String else { return }
-                let lower = header.lowercased()
-                if lower.hasPrefix("access-control-") || lower == "transfer-encoding" {
-                    return
-                }
-                result[header] = String(describing: entry.value)
-            }
-            guard let schemeResponse = HTTPURLResponse(
-                url: requestURL,
-                statusCode: http.statusCode,
-                httpVersion: "HTTP/1.1",
-                headerFields: filtered
-            ) else {
-                urlSchemeTask.didFailWithError(WebUISchemeError.invalidResponse)
-                return
-            }
-
-            urlSchemeTask.didReceive(schemeResponse)
-            if let data, !data.isEmpty {
-                urlSchemeTask.didReceive(data)
-            }
-            urlSchemeTask.didFinish()
+            forwarder.complete(http: http, data: data)
         }
 
         lock.lock()
