@@ -57,7 +57,9 @@ struct MissionControlWebView: NSViewRepresentable {
         context.coordinator.onOpenNativeSettings = onOpenNativeSettings
         context.coordinator.onRouteConsumed = onRouteConsumed
         if let pendingRoute {
-            context.coordinator.navigate(to: pendingRoute)
+            Task { @MainActor in
+                context.coordinator.navigate(to: pendingRoute)
+            }
             onRouteConsumed()
         }
     }
@@ -150,12 +152,10 @@ struct MissionControlWebView: NSViewRepresentable {
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
-    // SDK 26 annotates WKNavigationDelegate / WKScriptMessageHandler as
-    // @MainActor; marking the coordinator the same way matches both that SDK
-    // and Xcode 15.4, where the protocols are still callable from the main
-    // thread that owns the WKWebView.
-    @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    // SDK 26 marks the WebKit delegates @MainActor; Xcode 15.4 leaves them
+    // nonisolated. Keep the coordinator itself off the main actor and provide
+    // a matching witness per compiler so both SDKs type-check.
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, @unchecked Sendable {
         var client: ApiClient
         var onOpenNativeSettings: () -> Void
         var onRouteConsumed: () -> Void
@@ -178,7 +178,7 @@ struct MissionControlWebView: NSViewRepresentable {
             super.init()
         }
 
-        nonisolated static func webUIRoot() -> URL {
+        static func webUIRoot() -> URL {
             if let bundled = Bundle.main.resourceURL?.appendingPathComponent("WebUI", isDirectory: true),
                FileManager.default.fileExists(atPath: bundled.appendingPathComponent("index.html").path) {
                 return bundled
@@ -199,6 +199,7 @@ struct MissionControlWebView: NSViewRepresentable {
                 ?? URL(fileURLWithPath: "/tmp/avity-missing-webui")
         }
 
+        @MainActor
         func navigate(to route: String) {
             let escaped = route
                 .replacingOccurrences(of: "\\", with: "\\\\")
@@ -207,11 +208,30 @@ struct MissionControlWebView: NSViewRepresentable {
             webView?.evaluateJavaScript(js, completionHandler: nil)
         }
 
-        // `nonisolated` witnesses satisfy the requirement under both SDKs: the
-        // SDK 26 declaration is @MainActor-isolated, while the SDK the CI job
-        // builds against still declares it nonisolated, and a main-actor method
-        // cannot witness a nonisolated requirement. The hop below restores
-        // main-actor isolation for the coordinator's own state.
+        #if compiler(>=6.0)
+        @MainActor
+        func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            guard message.name == "avityNative",
+                  let body = message.body as? [String: Any],
+                  let type = body["type"] as? String else {
+                return
+            }
+            let token = (body["token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            handleNativeBridgeMessage(type: type, token: token)
+        }
+
+        @MainActor
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+        ) {
+            applyNavigationPolicy(to: navigationAction.request.url, decisionHandler: decisionHandler)
+        }
+        #else
         nonisolated func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
@@ -227,6 +247,16 @@ struct MissionControlWebView: NSViewRepresentable {
             }
         }
 
+        nonisolated func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            applyNavigationPolicy(to: navigationAction.request.url, decisionHandler: decisionHandler)
+        }
+        #endif
+
+        @MainActor
         private func handleNativeBridgeMessage(type: String, token: String?) {
             switch type {
             case "openNativeSettings":
@@ -241,17 +271,17 @@ struct MissionControlWebView: NSViewRepresentable {
             }
         }
 
-        #if compiler(>=6.0)
-        func webView(
-            _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+        /// Scheme compared as a literal so this helper stays callable from both
+        /// MainActor (SDK 26) and nonisolated (Xcode 15.4) witnesses.
+        nonisolated private func applyNavigationPolicy(
+            to url: URL?,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            guard let url = navigationAction.request.url else {
+            guard let url else {
                 decisionHandler(.allow)
                 return
             }
-            if url.scheme == WebUISchemeHandler.scheme {
+            if url.scheme == "avity-app" {
                 decisionHandler(.allow)
                 return
             }
@@ -267,33 +297,5 @@ struct MissionControlWebView: NSViewRepresentable {
             }
             decisionHandler(.cancel)
         }
-        #else
-        // Same reason as above: on this SDK the requirement is nonisolated, so
-        // the witness must be too. The body touches no coordinator state.
-        nonisolated func webView(
-            _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-        ) {
-            guard let url = navigationAction.request.url else {
-                decisionHandler(.allow)
-                return
-            }
-            if url.scheme == WebUISchemeHandler.scheme {
-                decisionHandler(.allow)
-                return
-            }
-            if url.scheme == "avity" {
-                decisionHandler(.cancel)
-                return
-            }
-            if url.scheme == "http" || url.scheme == "https" {
-                NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
-                return
-            }
-            decisionHandler(.cancel)
-        }
-        #endif
     }
 }
