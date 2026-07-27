@@ -2,6 +2,28 @@ import Foundation
 import UniformTypeIdentifiers
 import WebKit
 
+/// Thread-safe reads of control-plane endpoint/token for the WKURLSchemeHandler.
+/// The handler runs off the main actor; credentials remain Keychain-backed.
+enum WebUIProxyConfiguration {
+    static let endpointDefaultsKey = "controlPlaneURL"
+    static let defaultLoopbackURL = URL(string: "http://127.0.0.1:7717/")!
+
+    static func controlPlaneBaseURL(defaults: UserDefaults = .standard) -> URL {
+        guard let saved = defaults.string(forKey: endpointDefaultsKey),
+              let url = URL(string: saved) else {
+            return defaultLoopbackURL
+        }
+        return url
+    }
+
+    static func bearerToken(store: CredentialStore = KeychainCredentialStore()) -> String? {
+        guard let token = try? store.loadToken(), !token.isEmpty else {
+            return nil
+        }
+        return token
+    }
+}
+
 /// Serves the bundled Figma Mission Control UI and proxies `/v1` to the
 /// control plane with the Keychain bearer. SSE routes stream incrementally.
 final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendable {

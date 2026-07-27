@@ -17,7 +17,7 @@ final class WebUISchemeHandlerTests: XCTestCase {
 
         let handler = WebUISchemeHandler(
             resourceRoot: root,
-            controlPlaneBaseURL: { ApiClient.defaultLoopbackURL },
+            controlPlaneBaseURL: { WebUIProxyConfiguration.defaultLoopbackURL },
             bearerToken: { nil }
         )
 

@@ -63,9 +63,15 @@ enum NotificationCoordinator {
     }
 }
 
+enum NativeAppSettings {
+    @MainActor
+    static func open() {
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var client: ApiClient
-    @Environment(\.openSettings) private var openSettings
     @State private var pendingRoute: String?
 
     var body: some View {
@@ -85,7 +91,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("connection.status")
                 Button("Réglages") {
-                    openSettings()
+                    NativeAppSettings.open()
                 }
                 .accessibilityIdentifier("toolbar.native-settings")
             }
@@ -96,7 +102,7 @@ struct ContentView: View {
             MissionControlWebView(
                 client: client,
                 pendingRoute: pendingRoute,
-                onOpenNativeSettings: { openSettings() },
+                onOpenNativeSettings: { NativeAppSettings.open() },
                 onRouteConsumed: { pendingRoute = nil }
             )
             .accessibilityIdentifier("screen.mission-control")
@@ -105,7 +111,7 @@ struct ContentView: View {
         .onOpenURL { url in
             let host = url.host ?? "mission-control"
             if host == "settings" {
-                openSettings()
+                NativeAppSettings.open()
                 pendingRoute = "settings"
             } else {
                 pendingRoute = host

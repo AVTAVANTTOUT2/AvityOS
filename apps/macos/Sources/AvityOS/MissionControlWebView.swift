@@ -31,7 +31,7 @@ struct MissionControlWebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = coordinator
         webView.setValue(false, forKey: "drawsBackground")
-        webView.accessibilityIdentifier = "webview.figma-shell"
+        webView.setAccessibilityIdentifier("webview.figma-shell")
         coordinator.webView = webView
 
         if let url = URL(string: "\(WebUISchemeHandler.scheme)://\(WebUISchemeHandler.host)/index.html") {
@@ -69,6 +69,7 @@ struct MissionControlWebView: NSViewRepresentable {
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
+    @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var client: ApiClient
         var onOpenNativeSettings: () -> Void
@@ -86,12 +87,8 @@ struct MissionControlWebView: NSViewRepresentable {
             self.onRouteConsumed = onRouteConsumed
             self.schemeHandler = WebUISchemeHandler(
                 resourceRoot: Self.webUIRoot(),
-                controlPlaneBaseURL: { [weak client] in
-                    client?.baseURL ?? ApiClient.defaultLoopbackURL
-                },
-                bearerToken: { [weak client] in
-                    client?.embeddedUIBearerToken()
-                }
+                controlPlaneBaseURL: WebUIProxyConfiguration.controlPlaneBaseURL,
+                bearerToken: WebUIProxyConfiguration.bearerToken
             )
             super.init()
         }
