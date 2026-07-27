@@ -207,7 +207,12 @@ struct MissionControlWebView: NSViewRepresentable {
             webView?.evaluateJavaScript(js, completionHandler: nil)
         }
 
-        func userContentController(
+        // `nonisolated` witnesses satisfy the requirement under both SDKs: the
+        // SDK 26 declaration is @MainActor-isolated, while the SDK the CI job
+        // builds against still declares it nonisolated, and a main-actor method
+        // cannot witness a nonisolated requirement. The hop below restores
+        // main-actor isolation for the coordinator's own state.
+        nonisolated func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
         ) {
@@ -217,7 +222,9 @@ struct MissionControlWebView: NSViewRepresentable {
                 return
             }
             let token = (body["token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            handleNativeBridgeMessage(type: type, token: token)
+            Task { @MainActor [weak self] in
+                self?.handleNativeBridgeMessage(type: type, token: token)
+            }
         }
 
         private func handleNativeBridgeMessage(type: String, token: String?) {
@@ -261,7 +268,9 @@ struct MissionControlWebView: NSViewRepresentable {
             decisionHandler(.cancel)
         }
         #else
-        func webView(
+        // Same reason as above: on this SDK the requirement is nonisolated, so
+        // the witness must be too. The body touches no coordinator state.
+        nonisolated func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
