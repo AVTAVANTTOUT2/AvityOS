@@ -69,11 +69,12 @@ jobs:
         working-directory: apps/macos
         run: swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
+      # Not -quiet: XCUITest assertion messages and crash reports are the only
+      # diagnosis available for a failure that reproduces solely on CI.
       - name: Run native macOS UI tests
         working-directory: apps/macos
         run: |
           xcodebuild test \
-            -quiet \
             -project AvityOS.xcodeproj \
             -scheme AvityOS \
             -destination "platform=macOS" \

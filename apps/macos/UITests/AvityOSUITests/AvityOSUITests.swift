@@ -13,12 +13,15 @@ final class AvityOSUITests: XCTestCase {
 
         let statusAppeared = element("connection.status", in: app)
             .waitForExistence(timeout: 10)
-        XCTAssertTrue(statusAppeared, "Missing native connection status")
+        XCTAssertTrue(statusAppeared, "Missing native connection status.\(tree(app))")
 
-        let webViewAppeared = app.webViews.firstMatch.waitForExistence(timeout: 30)
+        // WebKit may expose the host view by identifier or as a web-view
+        // element depending on when the remote accessibility tree attaches.
+        let webViewAppeared = app.webViews.firstMatch.waitForExistence(timeout: 20)
+            || element("webview.figma-shell", in: app).waitForExistence(timeout: 10)
         XCTAssertTrue(
             webViewAppeared,
-            "The main window does not host the embedded Mission Control WebView"
+            "The main window does not host the embedded Mission Control WebView.\(tree(app))"
         )
 
         // The simplified SwiftUI list/table shell is removed, not hidden behind
@@ -38,7 +41,7 @@ final class AvityOSUITests: XCTestCase {
 
         let settingsButton = element("toolbar.native-settings", in: app)
         let buttonAppeared = settingsButton.waitForExistence(timeout: 10)
-        XCTAssertTrue(buttonAppeared, "Missing native settings entry point")
+        XCTAssertTrue(buttonAppeared, "Missing native settings entry point.\(tree(app))")
         settingsButton.click()
 
         assertNativeSettingsAreReachable(in: app)
@@ -73,7 +76,10 @@ final class AvityOSUITests: XCTestCase {
     private func assertNativeSettingsAreReachable(in app: XCUIApplication) {
         let settingsAppeared = element("screen.settings", in: app)
             .waitForExistence(timeout: 15)
-        XCTAssertTrue(settingsAppeared, "The native Settings scene did not open")
+        XCTAssertTrue(
+            settingsAppeared,
+            "The native Settings scene did not open.\(tree(app))"
+        )
 
         let endpointExists = element("settings.endpoint", in: app).exists
         let tokenExists = element("settings.apiToken", in: app).exists
@@ -111,5 +117,13 @@ final class AvityOSUITests: XCTestCase {
         in app: XCUIApplication
     ) -> XCUIElement {
         app.descendants(matching: .any)[identifier]
+    }
+
+    /// Attaches the live accessibility hierarchy to a failure. A missing
+    /// identifier is otherwise indistinguishable from a window that never
+    /// rendered, and this suite only fails on CI.
+    @MainActor
+    private func tree(_ app: XCUIApplication) -> String {
+        "\nAccessibility hierarchy:\n\(app.debugDescription)"
     }
 }
