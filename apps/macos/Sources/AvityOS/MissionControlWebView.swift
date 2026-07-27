@@ -45,7 +45,9 @@ struct MissionControlWebView: NSViewRepresentable {
         context.coordinator.onOpenNativeSettings = onOpenNativeSettings
         context.coordinator.onRouteConsumed = onRouteConsumed
         if let pendingRoute {
-            context.coordinator.navigate(to: pendingRoute)
+            Task { @MainActor in
+                context.coordinator.navigate(to: pendingRoute)
+            }
             onRouteConsumed()
         }
     }
@@ -69,7 +71,6 @@ struct MissionControlWebView: NSViewRepresentable {
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
-    @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var client: ApiClient
         var onOpenNativeSettings: () -> Void
@@ -87,8 +88,8 @@ struct MissionControlWebView: NSViewRepresentable {
             self.onRouteConsumed = onRouteConsumed
             self.schemeHandler = WebUISchemeHandler(
                 resourceRoot: Self.webUIRoot(),
-                controlPlaneBaseURL: WebUIProxyConfiguration.controlPlaneBaseURL,
-                bearerToken: WebUIProxyConfiguration.bearerToken
+                controlPlaneBaseURL: { WebUIProxyConfiguration.controlPlaneBaseURL() },
+                bearerToken: { WebUIProxyConfiguration.bearerToken() }
             )
             super.init()
         }
@@ -114,6 +115,7 @@ struct MissionControlWebView: NSViewRepresentable {
                 ?? URL(fileURLWithPath: "/tmp/avity-missing-webui")
         }
 
+        @MainActor
         func navigate(to route: String) {
             let escaped = route
                 .replacingOccurrences(of: "\\", with: "\\\\")
@@ -122,7 +124,7 @@ struct MissionControlWebView: NSViewRepresentable {
             webView?.evaluateJavaScript(js, completionHandler: nil)
         }
 
-        func userContentController(
+        nonisolated func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
         ) {
@@ -131,20 +133,22 @@ struct MissionControlWebView: NSViewRepresentable {
                   let type = body["type"] as? String else {
                 return
             }
-            switch type {
-            case "openNativeSettings":
-                onOpenNativeSettings()
-            case "saveApiToken":
-                if let token = body["token"] as? String, !token.isEmpty {
-                    client.configure(baseURL: client.baseURL, token: token)
-                    webView?.reload()
+            Task { @MainActor in
+                switch type {
+                case "openNativeSettings":
+                    onOpenNativeSettings()
+                case "saveApiToken":
+                    if let token = body["token"] as? String, !token.isEmpty {
+                        client.configure(baseURL: client.baseURL, token: token)
+                        webView?.reload()
+                    }
+                default:
+                    break
                 }
-            default:
-                break
             }
         }
 
-        func webView(
+        nonisolated func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
