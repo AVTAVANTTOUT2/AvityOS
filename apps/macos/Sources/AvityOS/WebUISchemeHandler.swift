@@ -24,21 +24,74 @@ enum WebUIProxyConfiguration {
     }
 }
 
-/// Forwards scheme-task callbacks from @Sendable URLSession closures.
-private final class SchemeTaskForwarder: @unchecked Sendable {
+/// Serializes callbacks to a `WKURLSchemeTask` and drops every callback that
+/// arrives after WebKit stopped it. Messaging a stopped scheme task raises an
+/// Objective-C exception that terminates the application, and cancelling a
+/// proxied request always delivers a late completion, so the guard is required
+/// rather than defensive.
+final class SchemeTaskChannel: @unchecked Sendable {
     private let task: any WKURLSchemeTask
-    private let requestURL: URL
+    /// Responses must be reported against the `avity-app://` URL the page asked
+    /// for; reporting the control-plane or file URL breaks same-origin.
+    let requestURL: URL
+    private let lock = NSLock()
+    private var isStopped = false
 
     init(task: any WKURLSchemeTask, requestURL: URL) {
         self.task = task
         self.requestURL = requestURL
     }
 
-    func fail(_ error: Error) {
-        task.didFailWithError(error)
+    /// Called from `webView(_:stop:)`. Callbacks already inside `deliver` finish
+    /// first; every later callback becomes a no-op.
+    func stop() {
+        lock.lock()
+        isStopped = true
+        lock.unlock()
     }
 
+    private func deliver(_ work: (any WKURLSchemeTask) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isStopped else { return }
+        work(task)
+    }
+
+    func fail(_ error: any Error) {
+        deliver { $0.didFailWithError(error) }
+        stop()
+    }
+
+    func send(response: URLResponse) {
+        deliver { $0.didReceive(response) }
+    }
+
+    func send(data: Data) {
+        guard !data.isEmpty else { return }
+        deliver { $0.didReceive(data) }
+    }
+
+    func finish() {
+        deliver { $0.didFinish() }
+        stop()
+    }
+
+    /// Rebuilds the control-plane response against the `avity-app://` URL.
+    /// CORS headers are dropped because the embedded UI is same-origin, and
+    /// `transfer-encoding` because WebKit re-frames the body itself.
     func complete(http: HTTPURLResponse, data: Data?) {
+        guard let schemeResponse = Self.schemeResponse(from: http, url: requestURL) else {
+            fail(WebUISchemeError.invalidResponse)
+            return
+        }
+        send(response: schemeResponse)
+        if let data {
+            send(data: data)
+        }
+        finish()
+    }
+
+    static func schemeResponse(from http: HTTPURLResponse, url: URL) -> HTTPURLResponse? {
         let filtered = http.allHeaderFields.reduce(into: [String: String]()) { result, entry in
             guard let header = entry.key as? String else { return }
             let lower = header.lowercased()
@@ -47,20 +100,12 @@ private final class SchemeTaskForwarder: @unchecked Sendable {
             }
             result[header] = String(describing: entry.value)
         }
-        guard let schemeResponse = HTTPURLResponse(
-            url: requestURL,
+        return HTTPURLResponse(
+            url: url,
             statusCode: http.statusCode,
             httpVersion: "HTTP/1.1",
             headerFields: filtered
-        ) else {
-            task.didFailWithError(WebUISchemeError.invalidResponse)
-            return
-        }
-        task.didReceive(schemeResponse)
-        if let data, !data.isEmpty {
-            task.didReceive(data)
-        }
-        task.didFinish()
+        )
     }
 }
 
@@ -70,13 +115,21 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
     static let scheme = "avity-app"
     static let host = "ui"
 
+    /// `WKURLSchemeTask` never exposes the HTTP body of a `fetch` request
+    /// (WebKit does not forward it to custom scheme handlers), so every write
+    /// would reach the control plane with an empty payload. The injected client
+    /// shim re-sends the body base64-encoded in this header; it is decoded here
+    /// and stripped before the request leaves the application.
+    static let encodedBodyHeader = "X-Avity-Encoded-Body"
+
     private let resourceRoot: URL
     private let controlPlaneBaseURL: () -> URL
     private let bearerToken: () -> String?
     private let session: URLSession
     private let lock = NSLock()
     private var tasks: [ObjectIdentifier: URLSessionTask] = [:]
-    private var streamDelegates: [ObjectIdentifier: StreamProxy] = [:]
+    private var channels: [ObjectIdentifier: SchemeTaskChannel] = [:]
+    private var streamSessions: [ObjectIdentifier: URLSession] = [:]
 
     init(
         resourceRoot: URL,
@@ -96,22 +149,53 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
             return
         }
 
-        let path = requestURL.path.isEmpty ? "/" : requestURL.path
-        if path == "/v1" || path.hasPrefix("/v1/") {
-            proxyAPI(urlSchemeTask, requestURL: requestURL)
+        let channel = SchemeTaskChannel(task: urlSchemeTask, requestURL: requestURL)
+
+        // Only the bundle host may be served or proxied: nothing else can reach
+        // the control plane with the Keychain bearer attached.
+        guard requestURL.host == Self.host else {
+            channel.fail(WebUISchemeError.unknownHost)
             return
         }
 
-        serveStatic(urlSchemeTask, path: path)
+        let path = requestURL.path.isEmpty ? "/" : requestURL.path
+        guard path == "/v1" || path.hasPrefix("/v1/") else {
+            // Static assets are served synchronously inside this call, so the
+            // task cannot be stopped mid-flight and needs no bookkeeping.
+            serveStatic(channel, path: path)
+            return
+        }
+
+        // A proxied request outlives `start`; it is tracked so `stop` can cancel
+        // it and so its entry is released once it completes.
+        let key = ObjectIdentifier(urlSchemeTask)
+        lock.lock()
+        channels[key] = channel
+        lock.unlock()
+        proxyAPI(urlSchemeTask, channel: channel, key: key, requestURL: requestURL)
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         let key = ObjectIdentifier(urlSchemeTask)
         lock.lock()
         let task = tasks.removeValue(forKey: key)
-        streamDelegates.removeValue(forKey: key)
+        let channel = channels.removeValue(forKey: key)
+        let streamSession = streamSessions.removeValue(forKey: key)
         lock.unlock()
+        channel?.stop()
         task?.cancel()
+        // A delegate-backed URLSession retains its delegate until it is
+        // invalidated; without this every SSE reconnection leaked one session.
+        streamSession?.invalidateAndCancel()
+    }
+
+    private func release(_ key: ObjectIdentifier) {
+        lock.lock()
+        tasks.removeValue(forKey: key)
+        channels.removeValue(forKey: key)
+        let streamSession = streamSessions.removeValue(forKey: key)
+        lock.unlock()
+        streamSession?.finishTasksAndInvalidate()
     }
 
     func resolvedFileURL(for path: String) throws -> URL {
@@ -144,26 +228,62 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
 
     // MARK: - Static UI
 
-    private func serveStatic(_ urlSchemeTask: any WKURLSchemeTask, path: String) {
+    private func serveStatic(_ channel: SchemeTaskChannel, path: String) {
         do {
             let fileURL = try resolvedFileURL(for: path)
             let data = try Data(contentsOf: fileURL)
             let mime = Self.mimeType(for: fileURL)
             let response = URLResponse(
-                url: urlSchemeTask.request.url ?? fileURL,
+                url: channel.requestURL,
                 mimeType: mime,
                 expectedContentLength: data.count,
                 textEncodingName: mime.hasPrefix("text/") || mime.contains("javascript") || mime.contains("json")
                     ? "utf-8"
                     : nil
             )
-            urlSchemeTask.didReceive(response)
-            urlSchemeTask.didReceive(data)
-            urlSchemeTask.didFinish()
+            channel.send(response: response)
+            channel.send(data: data)
+            channel.finish()
+        } catch WebUISchemeError.missingBundle {
+            // Developer builds run before `scripts/build-macos-webui.sh`. Render
+            // the instruction instead of a blank window, so the staged bundle
+            // never needs a placeholder committed to the repository.
+            serveMissingBundleNotice(channel)
         } catch {
-            urlSchemeTask.didFailWithError(error)
+            channel.fail(error)
         }
     }
+
+    private func serveMissingBundleNotice(_ channel: SchemeTaskChannel) {
+        let data = Data(Self.missingBundleHTML.utf8)
+        let response = URLResponse(
+            url: channel.requestURL,
+            mimeType: "text/html",
+            expectedContentLength: data.count,
+            textEncodingName: "utf-8"
+        )
+        channel.send(response: response)
+        channel.send(data: data)
+        channel.finish()
+    }
+
+    static let missingBundleHTML = """
+    <!doctype html>
+    <html lang="fr"><head><meta charset="utf-8"><title>AvityOS</title>
+    <style>
+    html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+    background:#F7F4EE;color:#202124}
+    main{min-height:100%;display:grid;place-items:center;padding:2rem}
+    .card{max-width:28rem;background:rgba(255,255,255,.8);border:1px solid #fff;
+    border-radius:1.25rem;padding:1.5rem;box-shadow:0 20px 80px rgba(32,33,36,.08)}
+    code{font-size:.85em}
+    </style></head>
+    <body><main><div class="card">
+    <h1>Front Figma non empaqueté</h1>
+    <p>Générez l’interface Mission Control avant de lancer l’app&nbsp;:</p>
+    <p><code>./scripts/build-macos-webui.sh</code></p>
+    </div></main></body></html>
+    """
 
     static func mimeType(for fileURL: URL) -> String {
         if let type = UTType(filenameExtension: fileURL.pathExtension),
@@ -187,40 +307,66 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
 
     // MARK: - API proxy
 
-    private func proxyAPI(_ urlSchemeTask: any WKURLSchemeTask, requestURL: URL) {
-        let base = controlPlaneBaseURL()
-        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+    /// Builds the control-plane request for a proxied `/v1` scheme task.
+    /// Hop-by-hop and origin headers are dropped, the encoded-body header is
+    /// decoded back into a real payload, and the Keychain bearer is attached
+    /// last so a page-supplied Authorization header cannot override it.
+    static func proxiedRequest(
+        from request: URLRequest,
+        requestURL: URL,
+        baseURL: URL,
+        bearerToken: String?
+    ) -> URLRequest? {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         components?.path = requestURL.path
         components?.query = requestURL.query
-        guard let target = components?.url else {
-            urlSchemeTask.didFailWithError(WebUISchemeError.invalidRequest)
+        guard let target = components?.url else { return nil }
+
+        var proxied = URLRequest(url: target)
+        proxied.httpMethod = request.httpMethod ?? "GET"
+        proxied.httpBody = request.httpBody
+        proxied.timeoutInterval = requestURL.path.contains("/stream") ? 0 : 120
+
+        for (key, value) in request.allHTTPHeaderFields ?? [:] {
+            let lower = key.lowercased()
+            if lower == "host" || lower == "origin" || lower == "referer" {
+                continue
+            }
+            if lower == encodedBodyHeader.lowercased() {
+                if let decoded = Data(base64Encoded: value) {
+                    proxied.httpBody = decoded
+                }
+                continue
+            }
+            proxied.setValue(value, forHTTPHeaderField: key)
+        }
+
+        if let bearerToken, !bearerToken.isEmpty {
+            proxied.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+        return proxied
+    }
+
+    private func proxyAPI(
+        _ urlSchemeTask: any WKURLSchemeTask,
+        channel: SchemeTaskChannel,
+        key: ObjectIdentifier,
+        requestURL: URL
+    ) {
+        guard let proxied = Self.proxiedRequest(
+            from: urlSchemeTask.request,
+            requestURL: requestURL,
+            baseURL: controlPlaneBaseURL(),
+            bearerToken: bearerToken()
+        ) else {
+            channel.fail(WebUISchemeError.invalidRequest)
+            release(key)
             return
         }
 
-        var proxied = URLRequest(url: target)
-        proxied.httpMethod = urlSchemeTask.request.httpMethod ?? "GET"
-        proxied.httpBody = urlSchemeTask.request.httpBody
-        proxied.timeoutInterval = requestURL.path.contains("/stream") ? 0 : 120
-        if let headers = urlSchemeTask.request.allHTTPHeaderFields {
-            for (key, value) in headers {
-                let lower = key.lowercased()
-                if lower == "host" || lower == "origin" || lower == "referer" {
-                    continue
-                }
-                proxied.setValue(value, forHTTPHeaderField: key)
-            }
-        }
-        if let token = bearerToken(), !token.isEmpty {
-            proxied.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-
-        let key = ObjectIdentifier(urlSchemeTask)
         if requestURL.path.contains("/stream") {
-            let proxy = StreamProxy(schemeTask: urlSchemeTask, requestURL: requestURL) { [weak self] in
-                self?.lock.lock()
-                self?.tasks.removeValue(forKey: key)
-                self?.streamDelegates.removeValue(forKey: key)
-                self?.lock.unlock()
+            let proxy = StreamProxy(channel: channel) { [weak self] in
+                self?.release(key)
             }
             let streamSession = URLSession(
                 configuration: .default,
@@ -230,28 +376,24 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
             let task = streamSession.dataTask(with: proxied)
             lock.lock()
             tasks[key] = task
-            streamDelegates[key] = proxy
+            streamSessions[key] = streamSession
             lock.unlock()
             task.resume()
             return
         }
 
-        let forwarder = SchemeTaskForwarder(task: urlSchemeTask, requestURL: requestURL)
         let task = session.dataTask(with: proxied) { [weak self] data, response, error in
-            guard let self else { return }
-            self.lock.lock()
-            self.tasks.removeValue(forKey: key)
-            self.lock.unlock()
+            defer { self?.release(key) }
 
             if let error {
-                forwarder.fail(error)
+                channel.fail(error)
                 return
             }
             guard let http = response as? HTTPURLResponse else {
-                forwarder.fail(WebUISchemeError.invalidResponse)
+                channel.fail(WebUISchemeError.invalidResponse)
                 return
             }
-            forwarder.complete(http: http, data: data)
+            channel.complete(http: http, data: data)
         }
 
         lock.lock()
@@ -263,18 +405,11 @@ final class WebUISchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendabl
 
 /// Streams SSE (and other long-lived responses) into a WKURLSchemeTask.
 final class StreamProxy: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    private let schemeTask: any WKURLSchemeTask
-    private let requestURL: URL
+    private let channel: SchemeTaskChannel
     private let onComplete: () -> Void
-    private var didSendResponse = false
 
-    init(
-        schemeTask: any WKURLSchemeTask,
-        requestURL: URL,
-        onComplete: @escaping () -> Void
-    ) {
-        self.schemeTask = schemeTask
-        self.requestURL = requestURL
+    init(channel: SchemeTaskChannel, onComplete: @escaping () -> Void) {
+        self.channel = channel
         self.onComplete = onComplete
     }
 
@@ -284,53 +419,31 @@ final class StreamProxy: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
-        guard let http = response as? HTTPURLResponse else {
+        guard let http = response as? HTTPURLResponse,
+              let schemeResponse = SchemeTaskChannel.schemeResponse(
+                  from: http,
+                  url: channel.requestURL
+              ) else {
             completionHandler(.cancel)
-            schemeTask.didFailWithError(WebUISchemeError.invalidResponse)
+            channel.fail(WebUISchemeError.invalidResponse)
             onComplete()
             return
         }
-        let filtered = http.allHeaderFields.reduce(into: [String: String]()) { result, entry in
-            guard let header = entry.key as? String else { return }
-            let lower = header.lowercased()
-            if lower.hasPrefix("access-control-") || lower == "transfer-encoding" {
-                return
-            }
-            result[header] = String(describing: entry.value)
-        }
-        if let schemeResponse = HTTPURLResponse(
-            url: requestURL,
-            statusCode: http.statusCode,
-            httpVersion: "HTTP/1.1",
-            headerFields: filtered
-        ) {
-            schemeTask.didReceive(schemeResponse)
-            didSendResponse = true
-            completionHandler(.allow)
-        } else {
-            completionHandler(.cancel)
-            schemeTask.didFailWithError(WebUISchemeError.invalidResponse)
-            onComplete()
-        }
+        channel.send(response: schemeResponse)
+        completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        if !data.isEmpty {
-            schemeTask.didReceive(data)
-        }
+        channel.send(data: data)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         defer { onComplete() }
         if let error {
-            if didSendResponse {
-                schemeTask.didFailWithError(error)
-            } else {
-                schemeTask.didFailWithError(error)
-            }
+            channel.fail(error)
             return
         }
-        schemeTask.didFinish()
+        channel.finish()
     }
 }
 
@@ -339,12 +452,14 @@ enum WebUISchemeError: LocalizedError, Equatable {
     case invalidResponse
     case pathEscape
     case missingBundle
+    case unknownHost
 
     var errorDescription: String? {
         switch self {
         case .invalidRequest: return "Invalid embedded UI request"
         case .invalidResponse: return "Invalid control-plane proxy response"
         case .pathEscape: return "Refused path escape outside the WebUI bundle"
+        case .unknownHost: return "Refused request outside the embedded UI host"
         case .missingBundle:
             return "Figma WebUI bundle is missing. Run scripts/build-macos-webui.sh before packaging."
         }

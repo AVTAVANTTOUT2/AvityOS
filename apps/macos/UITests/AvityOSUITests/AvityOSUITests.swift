@@ -1,36 +1,47 @@
 import AppKit
 import XCTest
 
+/// ADR-0021: the installable application ships a single frontend — the Figma
+/// Mission Control build hosted in a `WKWebView`. These tests therefore assert
+/// the shipped shell and the native surfaces around it. The React UI itself is
+/// covered by the web workspace (vitest + Playwright), not duplicated here.
 final class AvityOSUITests: XCTestCase {
     @MainActor
-    func testPrimaryNavigationAndOfflineStatus() {
+    func testMainWindowHostsTheEmbeddedMissionControlShell() {
         let app = launchApp()
         defer { app.terminate() }
-        let statusExists = element("connection.status", in: app).exists
-        let projectsExists = element("screen.projects", in: app).exists
-        XCTAssertTrue(statusExists)
-        XCTAssertTrue(projectsExists)
 
-        select("sidebar.missions", row: 1, screen: "screen.missions", in: app)
-        select(
-            "sidebar.interventions",
-            row: 2,
-            screen: "screen.interventions",
-            in: app
+        let statusAppeared = element("connection.status", in: app)
+            .waitForExistence(timeout: 10)
+        XCTAssertTrue(statusAppeared, "Missing native connection status")
+
+        let webViewAppeared = app.webViews.firstMatch.waitForExistence(timeout: 30)
+        XCTAssertTrue(
+            webViewAppeared,
+            "The main window does not host the embedded Mission Control WebView"
         )
-        let emptyInterventionsExists =
-            app.staticTexts["Aucune intervention en attente"].exists
-        XCTAssertTrue(emptyInterventionsExists)
-        select("sidebar.runs", row: 3, screen: "screen.runs", in: app)
-        select("sidebar.terminals", row: 4, screen: "screen.terminals", in: app)
-        select("sidebar.settings", row: 5, screen: "screen.settings", in: app)
 
-        let endpointExists = element("settings.endpoint", in: app).exists
-        let tokenExists = element("settings.apiToken", in: app).exists
-        let saveExists = element("settings.save", in: app).exists
-        XCTAssertTrue(endpointExists)
-        XCTAssertTrue(tokenExists)
-        XCTAssertTrue(saveExists)
+        // The simplified SwiftUI list/table shell is removed, not hidden behind
+        // a flag: no build of the application may present it again.
+        for retired in ["sidebar.projects", "sidebar.missions", "sidebar.runs"] {
+            XCTAssertFalse(
+                element(retired, in: app).exists,
+                "The retired native sidebar \(retired) is still reachable"
+            )
+        }
+    }
+
+    @MainActor
+    func testToolbarOpensTheNativeSettingsScene() {
+        let app = launchApp()
+        defer { app.terminate() }
+
+        let settingsButton = element("toolbar.native-settings", in: app)
+        let buttonAppeared = settingsButton.waitForExistence(timeout: 10)
+        XCTAssertTrue(buttonAppeared, "Missing native settings entry point")
+        settingsButton.click()
+
+        assertNativeSettingsAreReachable(in: app)
     }
 
     @MainActor
@@ -52,17 +63,32 @@ final class AvityOSUITests: XCTestCase {
             configuration: NSWorkspace.OpenConfiguration(),
             completionHandler: nil
         )
-        let settingsAppeared = element(
-            "screen.settings",
-            in: app
-        ).waitForExistence(timeout: 5)
-        XCTAssertTrue(settingsAppeared)
+
+        assertNativeSettingsAreReachable(in: app)
+    }
+
+    /// Control-plane credentials and the remote bridge stay native: the web
+    /// shell never renders a token form (ADR-0021).
+    @MainActor
+    private func assertNativeSettingsAreReachable(in app: XCUIApplication) {
+        let settingsAppeared = element("screen.settings", in: app)
+            .waitForExistence(timeout: 15)
+        XCTAssertTrue(settingsAppeared, "The native Settings scene did not open")
+
+        let endpointExists = element("settings.endpoint", in: app).exists
+        let tokenExists = element("settings.apiToken", in: app).exists
+        let saveExists = element("settings.save", in: app).exists
+        XCTAssertTrue(endpointExists)
+        XCTAssertTrue(tokenExists)
+        XCTAssertTrue(saveExists)
     }
 
     @MainActor
     private func launchApp() -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
+        // Suppresses the notification prompt and polling only. The shell under
+        // test is the production shell.
         app.launchEnvironment["AVITY_UI_TEST_MODE"] = "1"
         app.launchArguments += [
             "-ApplePersistenceIgnoreState",
@@ -77,36 +103,6 @@ final class AvityOSUITests: XCTestCase {
             "The native application window did not appear"
         )
         return app
-    }
-
-    @MainActor
-    private func select(
-        _ identifier: String,
-        row: Int,
-        screen: String,
-        in app: XCUIApplication
-    ) {
-        let item = element(identifier, in: app)
-        let itemAppeared = item.waitForExistence(timeout: 5)
-        XCTAssertTrue(
-            itemAppeared,
-            "Missing sidebar item \(identifier)"
-        )
-        let sidebar = app.outlines["Sidebar"]
-        let destination = sidebar.cells.element(boundBy: row)
-        XCTAssertTrue(
-            destination.exists,
-            "Missing sidebar row \(row) for \(identifier)"
-        )
-        destination.click()
-        let screenAppeared = element(
-            screen,
-            in: app
-        ).waitForExistence(timeout: 5)
-        XCTAssertTrue(
-            screenAppeared,
-            "Missing destination \(screen)"
-        )
     }
 
     @MainActor

@@ -13,7 +13,10 @@ sémantique lorsque le processus de release sera établi.
 ### Added
 
 - Shell macOS WKWebView embarquant le front Figma Mission Control (`avity-app://`,
-  proxy Keychain, ADR-0021) pour aligner le `.app` sur l’UI produit.
+  proxy Keychain, ADR-0021) comme unique interface du `.app` : les vues SwiftUI
+  simplifiées sont supprimées, les XCUITests valident le shell réellement livré,
+  et le corps des requêtes d’écriture est restitué au proxy malgré la limitation
+  `WKURLSchemeHandler` de WebKit.
 - Clarifications IA structurées et versionnées (`CLARIFICATION_SCHEMA_VERSION=1`)
   avec types de réponse fermés, groupe unique par tour, provenance provider /
   modèle, persistance SQLite et reprise exacte du pipeline cerveau.

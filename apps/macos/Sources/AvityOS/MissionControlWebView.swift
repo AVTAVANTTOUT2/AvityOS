@@ -22,15 +22,27 @@ struct MissionControlWebView: NSViewRepresentable {
         let userController = WKUserContentController()
         userController.add(coordinator, name: "avityNative")
         userController.addUserScript(Self.bridgeBootstrapScript)
+        userController.addUserScript(Self.requestBodyBridgeScript)
 
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = userController
         configuration.setURLSchemeHandler(coordinator.schemeHandler, forURLScheme: WebUISchemeHandler.scheme)
-        configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = coordinator
-        webView.setValue(false, forKey: "drawsBackground")
+        // Public API rather than KVC on private WebKit keys: an unknown key
+        // raises an Objective-C exception, and this view is the whole window.
+        // The cream base matches the shell so loading shows no white flash.
+        webView.underPageBackgroundColor = NSColor(
+            srgbRed: 0.969,
+            green: 0.957,
+            blue: 0.933,
+            alpha: 1
+        )
+        #if DEBUG
+        // Web inspector stays out of distributed, hardened-runtime builds.
+        webView.isInspectable = true
+        #endif
         webView.setAccessibilityIdentifier("webview.figma-shell")
         coordinator.webView = webView
 
@@ -65,6 +77,75 @@ struct MissionControlWebView: NSViewRepresentable {
             saveApiToken: function (token) {
               window.webkit.messageHandlers.avityNative.postMessage({ type: "saveApiToken", token: String(token || "") });
             }
+          };
+        })();
+        """
+        return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+    }
+
+    /// WebKit does not forward a `fetch` body to a custom `WKURLSchemeHandler`,
+    /// so every POST/PATCH/DELETE would reach the control plane empty. The
+    /// body is carried base64-encoded in a request header that
+    /// `WebUISchemeHandler` decodes and strips. GET and EventSource are
+    /// untouched, so SSE keeps streaming through the handler.
+    private static var requestBodyBridgeScript: WKUserScript {
+        let source = """
+        (function () {
+          if (window.__AVITY_BODY_BRIDGE__) return;
+          window.__AVITY_BODY_BRIDGE__ = true;
+          var nativeFetch = window.fetch.bind(window);
+          window.fetch = function (input, init) {
+            var request;
+            try {
+              request = new Request(input, init);
+            } catch (error) {
+              return nativeFetch(input, init);
+            }
+            if (request.method === "GET" || request.method === "HEAD") {
+              return nativeFetch(request);
+            }
+            // A custom scheme is not a "special" URL, so `URL.origin` is the
+            // literal string "null" and cannot be compared. Match the scheme
+            // and host instead.
+            var target;
+            try {
+              target = new URL(request.url, location.href);
+            } catch (error) {
+              return nativeFetch(request);
+            }
+            if (target.protocol !== location.protocol || target.host !== location.host) {
+              return nativeFetch(request);
+            }
+            var clone;
+            try {
+              clone = request.clone();
+            } catch (error) {
+              return nativeFetch(request);
+            }
+            return clone.text().then(function (raw) {
+              if (!raw) {
+                return nativeFetch(request);
+              }
+              var encoded;
+              try {
+                var bytes = new TextEncoder().encode(raw);
+                var binary = "";
+                for (var i = 0; i < bytes.length; i += 1) {
+                  binary += String.fromCharCode(bytes[i]);
+                }
+                encoded = btoa(binary);
+              } catch (error) {
+                return nativeFetch(request);
+              }
+              var headers = new Headers(request.headers);
+              headers.set("\(WebUISchemeHandler.encodedBodyHeader)", encoded);
+              return nativeFetch(request.url, {
+                method: request.method,
+                headers: headers,
+                body: raw,
+                credentials: request.credentials
+              });
+            });
           };
         })();
         """

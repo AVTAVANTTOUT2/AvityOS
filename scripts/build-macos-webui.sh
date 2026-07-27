@@ -21,7 +21,9 @@ if [[ "$output_dir" != /* || "$output_dir" == "/" ]]; then
 fi
 
 mkdir -p "$output_dir"
-rm -rf "${output_dir:?}/"*
+# Clear previous artifacts but keep the tracked .gitkeep, so staging the bundle
+# never leaves the working tree dirty.
+find "${output_dir:?}" -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} +
 
 (
   cd "$repository_root"

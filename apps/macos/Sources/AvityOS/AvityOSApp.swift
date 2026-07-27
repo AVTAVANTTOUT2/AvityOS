@@ -43,6 +43,9 @@ struct AvityOSApp: App {
 }
 
 enum AppRuntime {
+    /// Suppresses the notification-authorization prompt and background polling
+    /// so XCUITest is not blocked by a system dialog. It must never select a
+    /// different user interface: the tested shell is the shipped shell.
     static var isUITesting: Bool {
         ProcessInfo.processInfo.environment["AVITY_UI_TEST_MODE"] == "1"
     }
@@ -68,21 +71,25 @@ enum NotificationCoordinator {
 }
 
 enum NativeAppSettings {
+    /// AppKit renamed the Settings action in macOS 13. Both selectors are
+    /// attempted so the deep link and the toolbar entry point stay functional
+    /// on every supported system.
     @MainActor
     static func open() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            return
+        }
+        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
     }
 }
 
+/// ADR-0021: the main window hosts exactly one frontend — the Figma Mission
+/// Control build. No build flag or environment variable substitutes a second
+/// shell, so XCUITest exercises the surface operators actually receive.
 struct ContentView: View {
-    @EnvironmentObject private var client: ApiClient
-
     var body: some View {
-        if AppRuntime.isUITesting {
-            UITestShellView()
-        } else {
-            FigmaMissionControlShell()
-        }
+        FigmaMissionControlShell()
     }
 }
 

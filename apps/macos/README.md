@@ -8,10 +8,16 @@ menu-bar companion.
 
 The installable `.app` therefore shows the same cream/indigo Liquid Glass UI
 as the web product ([Figma](https://www.figma.com/design/MnTdZbrH4OHTHD8NbZC6iz/Start-project)),
-not a simplified SwiftUI list shell. See
+not a simplified SwiftUI list shell. That embedded frontend is the only one the
+application contains — no flag or environment variable restores the previous
+shell, and XCUITest therefore runs against the surface operators receive. See
 [ADR-0021](../../docs/adr/0021-macos-figma-webview-shell.md).
 
 ## Development and UI tests
+
+`Resources/WebUI` is a build output. Stage it before Xcode or SwiftPM runs;
+launching without it renders a notice naming the script rather than a blank
+window.
 
 ```sh
 # Stage the Figma frontend into Resources/WebUI (required before Xcode runs)
