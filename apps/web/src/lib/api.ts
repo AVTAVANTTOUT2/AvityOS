@@ -1,7 +1,15 @@
 /** Typed client for the AvityOS control-plane API. */
 
+const configuredApiBase = (import.meta as { env?: Record<string, string> }).env?.VITE_AVITY_API;
+
+/**
+ * Empty string = same-origin (macOS WKWebView shell proxies `/v1` via
+ * `avity-app://`). Browser builds keep the loopback control-plane default.
+ */
 export const API_BASE =
-  (import.meta as { env?: Record<string, string> }).env?.VITE_AVITY_API ?? "http://127.0.0.1:7717";
+  configuredApiBase === "same-origin" || configuredApiBase === ""
+    ? ""
+    : (configuredApiBase ?? "http://127.0.0.1:7717");
 
 export class ApiRequestError extends Error {
   constructor(readonly status: number, message: string) {
@@ -343,7 +351,14 @@ export const api = {
   terminals: () => request<{ items: ApiTerminal[] }>("GET", "/v1/terminals"),
   terminalDetail: (id: string) =>
     request<ApiTerminal & { logs: { seq: number; text: string }[] }>("GET", `/v1/terminals/${id}`),
-  login: (token: string) => request<{ ok: boolean }>("POST", "/v1/session", undefined, { authorization: `Bearer ${token}` }),
+  login: async (token: string) => {
+    const result = await request<{ ok: boolean }>("POST", "/v1/session", undefined, {
+      authorization: `Bearer ${token}`,
+    });
+    const { saveApiTokenToNative } = await import("./native-shell.js");
+    saveApiTokenToNative(token);
+    return result;
+  },
   logout: () => request<{ ok: boolean }>("DELETE", "/v1/session"),
 
   createProject: (input: ProjectOnboardingInput) =>

@@ -1,35 +1,25 @@
 # AvityOS — native macOS app
 
-A SwiftUI application (Swift Package Manager executable) that connects to the
-local AvityOS control plane: Keychain authentication, SSE plus polling
-reconnection, project/mission/run/terminal views, approve/reject interventions,
-deep links, native notifications, Dock badge, settings, and a menu-bar
-companion showing live counts. The native API client enforces HTTPS away from
-loopback, preserves structured API errors and resumes SSE from its last durable
-event cursor instead of replaying the full history after every reconnect. Its
-host-mode settings initialize the end-to-end encrypted remote bridge, create
-one-time pairing offers, accept encrypted requests, return encrypted device
-bootstraps and revoke paired devices.
-As a paired remote device it implements the same protocol with CryptoKit,
-stores its identity/bearer/replay state in Keychain and routes the existing
-native screens through the ciphertext relay. Local and remote credentials stay
-independent and the active transport is explicit in the toolbar and menu bar.
-The host and remote device renew their account-signed certificates
-automatically with 30 days remaining, without rotating device keys or the relay
-bearer; Settings displays both expiries and exposes the same check manually.
-Public application updates use a separately pinned Ed25519 manifest key,
-Developer ID Team ID, notarization and Gatekeeper validation before an atomic
-replacement. The explicit operator workflow keeps a recoverable prior bundle;
-see the
-[release runbook](../../docs/RUNBOOKS.md#publish-and-apply-a-signed-macos-update)
-and [ADR-0013](../../docs/adr/0013-signed-macos-update-and-rollback.md).
+A SwiftUI application that embeds the Figma Mission Control frontend
+(`apps/web`) inside a `WKWebView` shell. Native capabilities remain native:
+Keychain authentication, SSE/polling via the control-plane proxy, remote
+host/device pairing, deep links, notifications, Dock badge, settings and a
+menu-bar companion.
+
+The installable `.app` therefore shows the same cream/indigo Liquid Glass UI
+as the web product ([Figma](https://www.figma.com/design/MnTdZbrH4OHTHD8NbZC6iz/Start-project)),
+not a simplified SwiftUI list shell. See
+[ADR-0021](../../docs/adr/0021-macos-figma-webview-shell.md).
 
 ## Development and UI tests
 
 ```sh
+# Stage the Figma frontend into Resources/WebUI (required before Xcode runs)
+./scripts/build-macos-webui.sh
+
 cd apps/macos
 swift build            # compile
-swift test             # deterministic transport, contract and Keychain tests
+swift test             # deterministic transport, contract, Keychain and WebUI tests
 swift run AvityOS      # launch against http://127.0.0.1:7717
 
 # Genuine application-level macOS automation
@@ -42,8 +32,9 @@ xcodebuild test \
 ```
 
 CI compiles both the application and tests with complete strict-concurrency
-checking, treats every Swift warning as an error, runs XCUITest against the
-actual `.app`, and packages a verified universal development artifact.
+checking, treats every Swift warning as an error, stages the Figma WebUI,
+runs XCUITest against the actual `.app`, and packages a verified universal
+development artifact.
 
 SwiftPM development requires the Command Line Tools with the macOS SDK;
 XCUITest and bundle packaging require Xcode 15+. The application supports
@@ -58,11 +49,12 @@ From the repository root:
 ./scripts/build-macos-app.sh
 ```
 
-This emits `dist/macos/AvityOS.app`, a tested
+This builds the Figma WebUI, emits `dist/macos/AvityOS.app`, a tested
 `AvityOS-macos-universal.zip`, and its SHA-256 checksum. The binary contains
-both `arm64` and `x86_64`, registers `avity://`, includes the native icon and is
-ad hoc signed for development/CI. Install by dragging the verified app to
-Applications, or use an explicit writable destination:
+both `arm64` and `x86_64`, registers `avity://`, includes the native icon and
+embedded Mission Control UI, and is ad hoc signed for development/CI. Install
+by dragging the verified app to Applications, or use an explicit writable
+destination:
 
 ```sh
 ./scripts/install-macos-app.sh \
@@ -94,10 +86,11 @@ never required for development or pull-request CI.
 
 ## Security notes
 
-- The app talks to the loopback control plane by default. The API token is
-  always stored in macOS Keychain, never UserDefaults or a plist. Remote
-  endpoints are rejected unless they use HTTPS. Bearers are sent only in
-  Authorization headers and never appear in URLs.
+- The embedded WebUI talks to the control plane through an `avity-app://`
+  scheme handler that injects the Keychain bearer. The token never enters
+  UserDefaults, the URL bar or web localStorage.
+- Remote endpoints are rejected unless they use HTTPS. Bearers are sent only
+  in Authorization headers and never appear in URLs.
 - Remote-host private identities and relay credentials are held in macOS
   Keychain. Public certificates, replay cursors and metadata-only audit use the
   private mode-0600 bridge database. Host pairing secrets are

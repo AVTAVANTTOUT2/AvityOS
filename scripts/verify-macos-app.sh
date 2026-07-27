@@ -73,6 +73,12 @@ if [[ ! -f "$app_path/Contents/Resources/$icon_file" ]]; then
   exit 65
 fi
 
+webui_index="$app_path/Contents/Resources/WebUI/index.html"
+if [[ ! -f "$webui_index" ]]; then
+  echo "Embedded Figma WebUI is missing: WebUI/index.html" >&2
+  exit 65
+fi
+
 executable="$app_path/Contents/MacOS/$executable_name"
 if [[ ! -x "$executable" ]]; then
   echo "Application executable is missing or not executable: $executable" >&2

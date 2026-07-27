@@ -76,7 +76,8 @@ final class ApiClient: ObservableObject {
     @Published private(set) var remoteDeviceError: String?
     @Published private(set) var tokenConfigured: Bool
 
-    private static let defaultEndpoint = URL(string: "http://127.0.0.1:7717/")!
+    static let defaultLoopbackURL = URL(string: "http://127.0.0.1:7717/")!
+    private static let defaultEndpoint = defaultLoopbackURL
     private static let endpointDefaultsKey = "controlPlaneURL"
     private static let eventSequenceDefaultsKey = "controlPlaneEventSequence"
     private static let connectionModeDefaultsKey = "connectionMode"
@@ -223,6 +224,11 @@ final class ApiClient: ObservableObject {
         eventTask = nil
         eventRefreshTask?.cancel()
         eventRefreshTask = nil
+    }
+
+    /// Bearer used exclusively by the embedded Figma WebUI proxy. Never log or persist elsewhere.
+    func embeddedUIBearerToken() -> String? {
+        apiToken
     }
 
     func configure(baseURL inputURL: URL, token: String) {

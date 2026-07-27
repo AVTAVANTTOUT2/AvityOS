@@ -25,9 +25,10 @@ human intervention, across many isolated projects in parallel.
   providers, activity log, settings; cream/indigo Liquid-Glass visual
   identity from the original Figma design. Live/Hors-ligne/Démo/Connexion
   states are always visible; demo fixtures require an explicit build flag.
-- **macOS** — native SwiftUI app with Keychain-backed authentication, SSE
-  reconnection, projects/missions/runs/terminals, intervention approval,
-  deep links, notifications, Dock badge, settings and menu-bar companion.
+- **macOS** — native SwiftUI shell embedding the Figma Mission Control frontend
+  (same cream/indigo Liquid Glass UI as the web app), with Keychain-backed
+  authentication, SSE reconnection, remote host/device pairing, deep links,
+  notifications, Dock badge, settings and menu-bar companion.
 - **CLI** — `avity` covers the full loop headlessly with `--json` output
   for scripting, including a Keychain/file-key encrypted credential vault with
   stdin-only updates, transactional service activation/rollback for external

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Lock } from "lucide-react";
+import { Lock, Settings2 } from "lucide-react";
 import { api, ApiRequestError } from "../lib/api";
 import { DataProvider } from "../lib/data";
+import { isNativeShell, openNativeSettings } from "../lib/native-shell";
 import { CommandPalette } from "./components/CommandPalette";
 import { MacOSMenuBar } from "./components/MacOSMenuBar";
 import { NewProjectModal } from "./components/NewProjectModal";
@@ -32,6 +33,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<"checking" | "ready" | "token">("checking");
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
+  const native = isNativeShell();
 
   useEffect(() => {
     api.projects()
@@ -41,7 +43,42 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (state === "ready") return <>{children}</>;
   if (state === "checking") {
-    return <div className="min-h-screen bg-[#F2EFE8] grid place-items-center text-sm text-[#74716B]">Connexion sécurisée…</div>;
+    return (
+      <div
+        className="min-h-screen bg-[#F2EFE8] grid place-items-center text-sm text-[#74716B]"
+        data-testid="screen.connecting"
+      >
+        Connexion sécurisée…
+      </div>
+    );
+  }
+
+  if (native) {
+    return (
+      <main
+        className="min-h-screen bg-[#F7F4EE] grid place-items-center p-6"
+        data-testid="screen.auth-native"
+      >
+        <div className="w-full max-w-md bg-white/80 backdrop-blur-xl rounded-3xl border border-white shadow-[0_20px_80px_rgba(32,33,36,0.10)] p-8">
+          <div className="w-11 h-11 rounded-2xl bg-[#5267D9]/10 text-[#5267D9] grid place-items-center mb-5">
+            <Settings2 size={20} />
+          </div>
+          <h1 className="text-xl font-semibold text-[#202124]">Connexion native requise</h1>
+          <p className="text-sm text-[#74716B] mt-2 mb-6">
+            Le token du control plane est stocké dans le Keychain macOS. Ouvre les réglages natifs
+            pour le configurer — le front Figma s’affichera ensuite automatiquement.
+          </p>
+          <button
+            type="button"
+            onClick={() => openNativeSettings()}
+            className="w-full rounded-xl bg-[#5267D9] text-white text-sm font-medium py-3 hover:bg-[#4255C4]"
+            data-testid="auth.open-native-settings"
+          >
+            Ouvrir les réglages natifs
+          </button>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -78,6 +115,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 function AppShell() {
+  const native = isNativeShell();
   const [screen, setScreen] = useState("mission-control");
   const [cmdK, setCmdK] = useState(false);
   const [macOS, setMacOS] = useState(false);
@@ -94,36 +132,130 @@ function AppShell() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  useEffect(() => {
+    window.avityNativeNavigate = (route: string) => {
+      const normalized = route.replace(/^\//, "");
+      if (normalized === "settings" || normalized === "parametres") {
+        setScreen("settings");
+        setProjectId(null);
+        return;
+      }
+      if (normalized === "missions") {
+        setScreen("projects");
+        setProjectId(null);
+        return;
+      }
+      if (normalized === "terminals" || normalized === "runs" || normalized === "executions") {
+        setScreen("executions");
+        setProjectId(null);
+        return;
+      }
+      if (normalized === "interventions") {
+        setScreen("interventions");
+        setProjectId(null);
+        return;
+      }
+      if (normalized === "projects") {
+        setScreen("projects");
+        setProjectId(null);
+        return;
+      }
+      setScreen("mission-control");
+      setProjectId(null);
+    };
+    return () => {
+      delete window.avityNativeNavigate;
+    };
+  }, []);
+
   const showProject = projectId !== null;
   const handleNav = (s: string) => { setScreen(s); setProjectId(null); setSettingsSection(undefined); };
   const openProject = (id: number | string) => { setScreen("projects"); setProjectId(id); };
+  const liquidGlass = native || macOS;
 
   const renderContent = () => {
-    if (projectId !== null) return <ProjectDetailScreen projectId={projectId} onBack={() => setProjectId(null)} />;
+    if (projectId !== null) {
+      return (
+        <div data-testid="screen.project-detail">
+          <ProjectDetailScreen projectId={projectId} onBack={() => setProjectId(null)} />
+        </div>
+      );
+    }
     switch (screen) {
-      case "interventions": return <InterventionsScreen />;
-      case "executions": return <TerminalsScreen />;
-      case "github": return <CodePRScreen />;
-      case "providers": return <ProvidersScreen onConfigure={() => { setScreen("settings"); setProjectId(null); setSettingsSection("Providers"); }} />;
-      case "activity": return <ActivityScreen />;
-      case "agents": return <TeamScreen />;
-      case "settings": return <SettingsScreen initialSection={settingsSection} />;
-      case "projects": return <ProjectsScreen onOpenProject={openProject} onNewProject={() => setShowNewProject(true)} />;
-      default: return <MissionControl onNewProject={() => setShowNewProject(true)} onOpenProject={openProject} onOpenInterventions={() => handleNav("interventions")} />;
+      case "interventions":
+        return (
+          <div data-testid="screen.interventions">
+            <InterventionsScreen />
+          </div>
+        );
+      case "executions":
+        return (
+          <div data-testid="screen.terminals">
+            <TerminalsScreen />
+          </div>
+        );
+      case "github":
+        return (
+          <div data-testid="screen.github">
+            <CodePRScreen />
+          </div>
+        );
+      case "providers":
+        return (
+          <div data-testid="screen.providers">
+            <ProvidersScreen onConfigure={() => { setScreen("settings"); setProjectId(null); setSettingsSection("Providers"); }} />
+          </div>
+        );
+      case "activity":
+        return (
+          <div data-testid="screen.activity">
+            <ActivityScreen />
+          </div>
+        );
+      case "agents":
+        return (
+          <div data-testid="screen.agents">
+            <TeamScreen />
+          </div>
+        );
+      case "settings":
+        return (
+          <div data-testid="screen.settings">
+            <SettingsScreen initialSection={settingsSection} />
+          </div>
+        );
+      case "projects":
+        return (
+          <div data-testid="screen.projects">
+            <ProjectsScreen onOpenProject={openProject} onNewProject={() => setShowNewProject(true)} />
+          </div>
+        );
+      default:
+        return (
+          <div data-testid="screen.mission-control">
+            <MissionControl onNewProject={() => setShowNewProject(true)} onOpenProject={openProject} onOpenInterventions={() => handleNav("interventions")} />
+          </div>
+        );
     }
   };
 
   const inner = (
-    <div className="flex h-full bg-[#F7F4EE]" style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif" }}>
-      <Sidebar current={showProject ? "projects" : screen} onChange={handleNav} macOS={macOS} />
+    <div
+      className="flex h-full bg-[#F7F4EE]"
+      style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif" }}
+      data-testid="figma-shell"
+    >
+      <Sidebar current={showProject ? "projects" : screen} onChange={handleNav} macOS={liquidGlass} />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar
           screen={showProject ? "projects" : screen}
           onNewProject={() => setShowNewProject(true)}
           onCmdK={() => setCmdK(true)}
           onBell={() => handleNav("activity")}
-          macOS={macOS}
+          macOS={liquidGlass}
           onToggleMacOS={() => setMacOS(v => !v)}
+          hideMacOSToggle={native}
+          onOpenNativeSettings={native ? openNativeSettings : undefined}
         />
         <div className="flex-1 overflow-y-auto p-5">{renderContent()}</div>
       </div>
@@ -132,7 +264,11 @@ function AppShell() {
 
   return (
     <>
-      {macOS ? (
+      {native ? (
+        <div className="h-screen overflow-hidden bg-[#F7F4EE]" data-testid="native-macos-shell">
+          {inner}
+        </div>
+      ) : macOS ? (
         <div className="min-h-screen bg-gradient-to-br from-slate-400 via-slate-300 to-indigo-200 flex flex-col overflow-hidden">
           <MacOSMenuBar />
           <div className="flex-1 flex items-start justify-center p-5 pt-3 overflow-hidden">

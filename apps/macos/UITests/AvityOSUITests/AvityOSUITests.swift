@@ -3,29 +3,22 @@ import XCTest
 
 final class AvityOSUITests: XCTestCase {
     @MainActor
-    func testPrimaryNavigationAndOfflineStatus() {
+    func testFigmaShellLaunchesWithConnectionStatus() {
         let app = launchApp()
         defer { app.terminate() }
-        let statusExists = element("connection.status", in: app).exists
-        let projectsExists = element("screen.projects", in: app).exists
-        XCTAssertTrue(statusExists)
-        XCTAssertTrue(projectsExists)
 
-        select("sidebar.missions", row: 1, screen: "screen.missions", in: app)
-        select(
-            "sidebar.interventions",
-            row: 2,
-            screen: "screen.interventions",
-            in: app
-        )
-        let emptyInterventionsExists =
-            app.staticTexts["Aucune intervention en attente"].exists
-        XCTAssertTrue(emptyInterventionsExists)
-        select("sidebar.runs", row: 3, screen: "screen.runs", in: app)
-        select("sidebar.terminals", row: 4, screen: "screen.terminals", in: app)
-        select("sidebar.settings", row: 5, screen: "screen.settings", in: app)
+        let statusExists = element("connection.status", in: app).waitForExistence(timeout: 10)
+        let shellExists = element("webview.figma-shell", in: app).waitForExistence(timeout: 10)
+        let missionControlExists = element("screen.mission-control", in: app).exists
+        XCTAssertTrue(statusExists, "Missing connection status in the native chrome")
+        XCTAssertTrue(shellExists, "Missing embedded Figma WKWebView shell")
+        XCTAssertTrue(missionControlExists, "Missing Mission Control container")
 
-        let endpointExists = element("settings.endpoint", in: app).exists
+        let settingsButton = element("toolbar.native-settings", in: app)
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 5))
+        settingsButton.click()
+
+        let endpointExists = element("settings.endpoint", in: app).waitForExistence(timeout: 5)
         let tokenExists = element("settings.apiToken", in: app).exists
         let saveExists = element("settings.save", in: app).exists
         XCTAssertTrue(endpointExists)
@@ -56,7 +49,12 @@ final class AvityOSUITests: XCTestCase {
             "screen.settings",
             in: app
         ).waitForExistence(timeout: 5)
+        let endpointAppeared = element(
+            "settings.endpoint",
+            in: app
+        ).waitForExistence(timeout: 5)
         XCTAssertTrue(settingsAppeared)
+        XCTAssertTrue(endpointAppeared)
     }
 
     @MainActor
@@ -77,36 +75,6 @@ final class AvityOSUITests: XCTestCase {
             "The native application window did not appear"
         )
         return app
-    }
-
-    @MainActor
-    private func select(
-        _ identifier: String,
-        row: Int,
-        screen: String,
-        in app: XCUIApplication
-    ) {
-        let item = element(identifier, in: app)
-        let itemAppeared = item.waitForExistence(timeout: 5)
-        XCTAssertTrue(
-            itemAppeared,
-            "Missing sidebar item \(identifier)"
-        )
-        let sidebar = app.outlines["Sidebar"]
-        let destination = sidebar.cells.element(boundBy: row)
-        XCTAssertTrue(
-            destination.exists,
-            "Missing sidebar row \(row) for \(identifier)"
-        )
-        destination.click()
-        let screenAppeared = element(
-            screen,
-            in: app
-        ).waitForExistence(timeout: 5)
-        XCTAssertTrue(
-            screenAppeared,
-            "Missing destination \(screen)"
-        )
     }
 
     @MainActor

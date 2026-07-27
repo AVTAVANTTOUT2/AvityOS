@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B2C3D4E5F60718293A4B5C6D /* MissionControlWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* MissionControlWebView.swift */; };
+		D4E5F60718293A4B5C6D7E8F /* WebUISchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D4E5F60718293A4B5C6D7E /* WebUISchemeHandler.swift */; };
+		F60718293A4B5C6D7E8F901A /* WebUI in Resources */ = {isa = PBXBuildFile; fileRef = E5F60718293A4B5C6D7E8F90 /* WebUI */; };
 		0BB3D5A911540B9AF863BE6E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3238979E27B4EC864C4D9CB9 /* Models.swift */; };
 		2A43D8E1D4FD5D11A8C53248 /* ApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A6C70AF248FBF96B0DAF2DA /* ApiClient.swift */; };
 		390B76D7A0930F51FF5AC6E5 /* RemoteBridgeCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = E568F97F0DBC5E6E00D27CAD /* RemoteBridgeCrypto.swift */; };
@@ -30,6 +33,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A1B2C3D4E5F60718293A4B5C /* MissionControlWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MissionControlWebView.swift; sourceTree = "<group>"; };
+		C3D4E5F60718293A4B5C6D7E /* WebUISchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISchemeHandler.swift; sourceTree = "<group>"; };
+		E5F60718293A4B5C6D7E8F90 /* WebUI */ = {isa = PBXFileReference; lastKnownFileType = folder; path = WebUI; sourceTree = "<group>"; };
 		073ECDE389106B5E3F06ECDE /* AvityOSUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvityOSUITests.swift; sourceTree = "<group>"; };
 		1B357519AEFADFF729300927 /* AvityOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AvityOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3238979E27B4EC864C4D9CB9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -49,6 +55,7 @@
 			isa = PBXGroup;
 			children = (
 				E3B250CE4879BAA70C66E946 /* AppIcon.icns */,
+				E5F60718293A4B5C6D7E8F90 /* WebUI */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -59,11 +66,13 @@
 				8A6C70AF248FBF96B0DAF2DA /* ApiClient.swift */,
 				79DD0C14B717CA340A953729 /* AvityOSApp.swift */,
 				FB76186DF75802227FBB05C8 /* KeychainStore.swift */,
+				A1B2C3D4E5F60718293A4B5C /* MissionControlWebView.swift */,
 				3238979E27B4EC864C4D9CB9 /* Models.swift */,
 				E568F97F0DBC5E6E00D27CAD /* RemoteBridgeCrypto.swift */,
 				74ECEA4D9C42B24126813902 /* RemoteBridgeModels.swift */,
 				C1F7AE3D9542F3346516E808 /* RemoteDeviceClient.swift */,
 				7E73BBEC3E1131AEFFC26AA7 /* RemoteDeviceStore.swift */,
+				C3D4E5F60718293A4B5C6D7E /* WebUISchemeHandler.swift */,
 			);
 			name = AvityOS;
 			path = Sources/AvityOS;
@@ -180,6 +189,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EFC356A380F0C24065B4E418 /* AppIcon.icns in Resources */,
+				F60718293A4B5C6D7E8F901A /* WebUI in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -201,11 +211,13 @@
 				2A43D8E1D4FD5D11A8C53248 /* ApiClient.swift in Sources */,
 				6C9E63F92D68E8493654CAFE /* AvityOSApp.swift in Sources */,
 				FB651BBB96E43B876A54E997 /* KeychainStore.swift in Sources */,
+				B2C3D4E5F60718293A4B5C6D /* MissionControlWebView.swift in Sources */,
 				0BB3D5A911540B9AF863BE6E /* Models.swift in Sources */,
 				390B76D7A0930F51FF5AC6E5 /* RemoteBridgeCrypto.swift in Sources */,
 				EA4330102DA4E11E4B6C2C63 /* RemoteBridgeModels.swift in Sources */,
 				F4E465E1E6242B6398BBB5CA /* RemoteDeviceClient.swift in Sources */,
 				B66B6C6662DFCC68B5059B8D /* RemoteDeviceStore.swift in Sources */,
+				D4E5F60718293A4B5C6D7E8F /* WebUISchemeHandler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

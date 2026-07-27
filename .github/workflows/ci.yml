@@ -58,6 +58,9 @@ jobs:
       - name: Run web end-to-end tests
         run: pnpm --filter @avityos/web test:e2e
 
+      - name: Stage Figma WebUI for the macOS app bundle
+        run: ./scripts/build-macos-webui.sh
+
       - name: Build macOS application
         working-directory: apps/macos
         run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors

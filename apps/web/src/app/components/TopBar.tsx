@@ -1,10 +1,25 @@
-import { Bell, Monitor, Plus, RefreshCw } from "lucide-react";
+import { Bell, Monitor, Plus, RefreshCw, Settings2 } from "lucide-react";
 import { useData } from "../../lib/data";
 import { cn } from "./shared";
 
-export function TopBar({ screen, onNewProject, onCmdK, onBell, macOS, onToggleMacOS }: {
-  screen: string; onNewProject: () => void; onCmdK: () => void; onBell: () => void;
-  macOS: boolean; onToggleMacOS: () => void;
+export function TopBar({
+  screen,
+  onNewProject,
+  onCmdK,
+  onBell,
+  macOS,
+  onToggleMacOS,
+  hideMacOSToggle = false,
+  onOpenNativeSettings,
+}: {
+  screen: string;
+  onNewProject: () => void;
+  onCmdK: () => void;
+  onBell: () => void;
+  macOS: boolean;
+  onToggleMacOS: () => void;
+  hideMacOSToggle?: boolean;
+  onOpenNativeSettings?: () => void;
 }) {
   const { mode } = useData();
   const titles: Record<string, string> = {
@@ -13,7 +28,13 @@ export function TopBar({ screen, onNewProject, onCmdK, onBell, macOS, onToggleMa
     providers: "Providers", activity: "Journal d'activité", settings: "Paramètres",
   };
   return (
-    <div className="h-14 flex items-center gap-3 px-5 border-b border-black/[0.06] bg-[#F7F4EE]/80 backdrop-blur-xl flex-shrink-0">
+    <div
+      className={cn(
+        "h-14 flex items-center gap-3 px-5 border-b border-black/[0.06] flex-shrink-0",
+        macOS ? "bg-white/55 backdrop-blur-2xl" : "bg-[#F7F4EE]/80 backdrop-blur-xl",
+      )}
+      data-testid="topbar"
+    >
       <span className="text-[13px] font-semibold text-[#202124]">{titles[screen] ?? screen}</span>
       {mode === "demo" && (
         <span className="text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide bg-amber-50 text-amber-600" title="Le control plane est injoignable — données de démonstration affichées">Démo</span>
@@ -36,17 +57,31 @@ export function TopBar({ screen, onNewProject, onCmdK, onBell, macOS, onToggleMa
         <span>Rechercher...</span>
         <kbd className="ml-1 text-[9px] bg-black/[0.06] px-1.5 py-0.5 rounded-md font-mono text-[#74716B]">⌘K</kbd>
       </button>
-      <button
-        onClick={onToggleMacOS}
-        title="Basculer vue macOS"
-        className={cn(
-          "flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] transition-all border",
-          macOS ? "bg-[#5267D9] text-white border-transparent" : "bg-white/80 border-black/[0.08] text-[#74716B] hover:border-[#5267D9]/25",
-        )}
-      >
-        <Monitor size={12} />
-        <span>macOS</span>
-      </button>
+      {!hideMacOSToggle && (
+        <button
+          onClick={onToggleMacOS}
+          title="Basculer vue macOS"
+          className={cn(
+            "flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] transition-all border",
+            macOS ? "bg-[#5267D9] text-white border-transparent" : "bg-white/80 border-black/[0.08] text-[#74716B] hover:border-[#5267D9]/25",
+          )}
+        >
+          <Monitor size={12} />
+          <span>macOS</span>
+        </button>
+      )}
+      {onOpenNativeSettings && (
+        <button
+          type="button"
+          onClick={onOpenNativeSettings}
+          title="Réglages natifs Keychain / pont distant"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] transition-all border bg-white/80 border-black/[0.08] text-[#74716B] hover:border-[#5267D9]/25"
+          data-testid="topbar.native-settings"
+        >
+          <Settings2 size={12} />
+          <span>Keychain</span>
+        </button>
+      )}
       <div className={cn("flex items-center gap-1.5 text-[11px]", mode === "live" ? "text-green-600" : "text-[#74716B]")}>
         <RefreshCw size={11} />
         <span>{mode === "live" ? "Sync" : "Non synchronisé"}</span>

@@ -9,7 +9,7 @@ output_dir="${AVITY_MACOS_OUTPUT_DIR:-$repository_root/dist/macos}"
 signing_identity="${AVITY_CODESIGN_IDENTITY:--}"
 build_archs="${AVITY_MACOS_ARCHS:-arm64 x86_64}"
 
-for required_command in xcodebuild codesign ditto unzip shasum; do
+for required_command in xcodebuild codesign ditto unzip shasum pnpm; do
   command -v "$required_command" >/dev/null || {
     echo "Required command is unavailable: $required_command" >&2
     exit 69
@@ -20,6 +20,10 @@ if [[ "$output_dir" != /* || "$output_dir" == "/" ]]; then
   echo "AVITY_MACOS_OUTPUT_DIR must be an absolute non-root path" >&2
   exit 64
 fi
+
+# Stage the Figma Mission Control frontend into the application resources
+# before Xcode copies Resources/WebUI into the .app bundle.
+"$repository_root/scripts/build-macos-webui.sh"
 
 build_root="$(mktemp -d "${TMPDIR:-/tmp}/avityos-release.XXXXXX")"
 cleanup() {

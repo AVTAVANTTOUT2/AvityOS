@@ -8,7 +8,10 @@ let package = Package(
         .executableTarget(
             name: "AvityOS",
             path: "Sources/AvityOS",
-            linkerSettings: [.linkedFramework("Security")]
+            linkerSettings: [
+                .linkedFramework("Security"),
+                .linkedFramework("WebKit"),
+            ]
         ),
         .testTarget(
             name: "AvityOSTests",
