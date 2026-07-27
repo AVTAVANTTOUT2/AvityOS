@@ -54,7 +54,18 @@ ditto "$source_app" "$candidate_app"
 /usr/libexec/PlistBuddy -c \
   'Set :CFBundleVersion 999999' \
   "$candidate_app/Contents/Info.plist"
-codesign --force --deep --options runtime --timestamp=none --sign - \
+# The candidate stands in for a real published update, so it is re-signed the
+# way scripts/build-macos-app.sh signs a release. Omitting --entitlements here
+# would strip the WebKit JIT exemptions and produce an update whose embedded UI
+# never renders (ADR-0021).
+candidate_entitlements="$script_dir/../apps/macos/Resources/AvityOS.entitlements"
+if [[ ! -f "$candidate_entitlements" ]]; then
+  echo "Missing application entitlements: $candidate_entitlements" >&2
+  exit 65
+fi
+codesign --force --deep --options runtime \
+  --entitlements "$candidate_entitlements" \
+  --timestamp=none --sign - \
   "$candidate_app"
 "$script_dir/verify-macos-app.sh" "$candidate_app"
 
