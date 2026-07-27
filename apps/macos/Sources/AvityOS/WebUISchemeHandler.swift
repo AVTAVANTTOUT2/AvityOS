@@ -42,8 +42,7 @@ final class SchemeTaskChannel: @unchecked Sendable {
         self.requestURL = requestURL
     }
 
-    /// Called from `webView(_:stop:)`. Callbacks already inside `deliver` finish
-    /// first; every later callback becomes a no-op.
+    /// Called from `webView(_:stop:)`. Every later callback becomes a no-op.
     func stop() {
         lock.lock()
         isStopped = true
@@ -52,8 +51,14 @@ final class SchemeTaskChannel: @unchecked Sendable {
 
     private func deliver(_ work: (any WKURLSchemeTask) -> Void) {
         lock.lock()
-        defer { lock.unlock() }
-        guard !isStopped else { return }
+        let isActive = !isStopped
+        lock.unlock()
+        guard isActive else { return }
+        // The callback runs outside the lock on purpose. WebKit calls
+        // `webView(_:stop:)` re-entrantly from within `didFinish` and
+        // `didFailWithError`, and static assets are served synchronously on the
+        // main thread, so holding a non-recursive lock across the callback
+        // deadlocks the main thread and the window never appears.
         work(task)
     }
 

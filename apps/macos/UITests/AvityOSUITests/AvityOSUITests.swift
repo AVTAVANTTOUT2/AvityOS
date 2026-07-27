@@ -106,7 +106,10 @@ final class AvityOSUITests: XCTestCase {
         let windowAppeared = app.windows.firstMatch.waitForExistence(timeout: 10)
         XCTAssertTrue(
             windowAppeared,
-            "The native application window did not appear"
+            """
+            The native application window did not appear \
+            (app state: \(app.state.rawValue)).\(tree(app))
+            """
         )
         return app
     }
