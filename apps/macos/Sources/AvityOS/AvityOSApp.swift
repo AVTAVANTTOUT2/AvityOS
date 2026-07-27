@@ -26,8 +26,10 @@ struct AvityOSApp: App {
                 Button("Rafraîchir") { Task { await client.refresh() } }
                     .keyboardShortcut("r", modifiers: .command)
             }
-            // The Settings scene already contributes the standard "Réglages…"
-            // item and its ⌘, shortcut; replacing it only risked diverging.
+            CommandGroup(replacing: .appSettings) {
+                Button("Réglages…") { NativeAppSettings.open() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
         }
 
         MenuBarExtra("AvityOS", systemImage: "brain") {
@@ -68,6 +70,20 @@ enum NotificationCoordinator {
     }
 }
 
+enum NativeAppSettings {
+    /// `EnvironmentValues.openSettings` is not available in the SDK this project
+    /// builds against, so the Settings scene is opened through the responder
+    /// chain. AppKit renamed the action in macOS 13; both selectors are tried.
+    @MainActor
+    static func open() {
+        NSApp.activate(ignoringOtherApps: true)
+        if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            return
+        }
+        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+    }
+}
+
 /// ADR-0021: the main window hosts exactly one frontend — the Figma Mission
 /// Control build. No build flag or environment variable substitutes a second
 /// shell, so XCUITest exercises the surface operators actually receive.
@@ -79,9 +95,6 @@ struct ContentView: View {
 
 struct FigmaMissionControlShell: View {
     @EnvironmentObject private var client: ApiClient
-    /// Supported SwiftUI action rather than the private `showSettingsWindow:`
-    /// selector: the deep link and the toolbar both depend on it opening.
-    @Environment(\.openSettings) private var openSettings
     @State private var pendingRoute: String?
 
     var body: some View {
@@ -101,7 +114,7 @@ struct FigmaMissionControlShell: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("connection.status")
                 Button("Réglages") {
-                    openSettings()
+                    NativeAppSettings.open()
                 }
                 .accessibilityIdentifier("toolbar.native-settings")
             }
@@ -112,7 +125,7 @@ struct FigmaMissionControlShell: View {
             MissionControlWebView(
                 client: client,
                 pendingRoute: pendingRoute,
-                onOpenNativeSettings: { openSettings() },
+                onOpenNativeSettings: { NativeAppSettings.open() },
                 onRouteConsumed: { pendingRoute = nil }
             )
         }
@@ -121,7 +134,7 @@ struct FigmaMissionControlShell: View {
         .onOpenURL { url in
             let host = url.host ?? "mission-control"
             if host == "settings" {
-                openSettings()
+                NativeAppSettings.open()
                 pendingRoute = "settings"
             } else {
                 pendingRoute = host
