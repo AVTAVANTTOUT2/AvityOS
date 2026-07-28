@@ -239,11 +239,8 @@ struct FigmaMissionControlShell: View {
                 pendingRoute = host
             }
         }
-        // Keep the default desktop layout spacious while still fitting the
-        // narrower macOS CI display and smaller laptop work areas. A 1100 pt
-        // minimum placed the trailing Settings toolbar item exactly outside
-        // the 1096 pt automation viewport, making an otherwise visible control
-        // non-hittable.
+        // The scene still opens at 1280 pt, but its working minimum leaves the
+        // complete unified toolbar reachable on compact laptop work areas.
         .frame(minWidth: 960, minHeight: 720)
     }
 
