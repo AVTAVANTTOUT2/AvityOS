@@ -236,7 +236,12 @@ struct FigmaMissionControlShell: View {
                 pendingRoute = host
             }
         }
-        .frame(minWidth: 1100, minHeight: 720)
+        // Keep the default desktop layout spacious while still fitting the
+        // narrower macOS CI display and smaller laptop work areas. A 1100 pt
+        // minimum placed the trailing Settings toolbar item exactly outside
+        // the 1096 pt automation viewport, making an otherwise visible control
+        // non-hittable.
+        .frame(minWidth: 960, minHeight: 720)
     }
 
     private func openNativeSettingsWindow() {
