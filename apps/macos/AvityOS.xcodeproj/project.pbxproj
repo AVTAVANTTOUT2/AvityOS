@@ -10,8 +10,12 @@
 		0BB3D5A911540B9AF863BE6E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3238979E27B4EC864C4D9CB9 /* Models.swift */; };
 		2A43D8E1D4FD5D11A8C53248 /* ApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A6C70AF248FBF96B0DAF2DA /* ApiClient.swift */; };
 		390B76D7A0930F51FF5AC6E5 /* RemoteBridgeCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = E568F97F0DBC5E6E00D27CAD /* RemoteBridgeCrypto.swift */; };
+		55256A41E5D9CE8F72B53F8F /* MissionControlWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E940171166909726C218A3F9 /* MissionControlWebView.swift */; };
+		5BBDF033467573341FDFADE3 /* WebUISchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8B381E78784CEC154CCF99 /* WebUISchemeHandler.swift */; };
 		61DE181A21A799810693F0EA /* AvityOSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 073ECDE389106B5E3F06ECDE /* AvityOSUITests.swift */; };
 		6C9E63F92D68E8493654CAFE /* AvityOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79DD0C14B717CA340A953729 /* AvityOSApp.swift */; };
+		91DCAFA5FA9BC616764D4B68 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28FE19E59EBF9E6DD2114531 /* SettingsView.swift */; };
+		9C2AED4C4D9A46AFF722110C /* WebUI in Resources */ = {isa = PBXBuildFile; fileRef = 16D0ECE8F414424CB506C4ED /* WebUI */; };
 		B66B6C6662DFCC68B5059B8D /* RemoteDeviceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E73BBEC3E1131AEFFC26AA7 /* RemoteDeviceStore.swift */; };
 		EA4330102DA4E11E4B6C2C63 /* RemoteBridgeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74ECEA4D9C42B24126813902 /* RemoteBridgeModels.swift */; };
 		EFC356A380F0C24065B4E418 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = E3B250CE4879BAA70C66E946 /* AppIcon.icns */; };
@@ -31,16 +35,20 @@
 
 /* Begin PBXFileReference section */
 		073ECDE389106B5E3F06ECDE /* AvityOSUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvityOSUITests.swift; sourceTree = "<group>"; };
+		16D0ECE8F414424CB506C4ED /* WebUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WebUI; path = Resources/WebUI; sourceTree = SOURCE_ROOT; };
 		1B357519AEFADFF729300927 /* AvityOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AvityOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		28FE19E59EBF9E6DD2114531 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		3238979E27B4EC864C4D9CB9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		74ECEA4D9C42B24126813902 /* RemoteBridgeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteBridgeModels.swift; sourceTree = "<group>"; };
 		79DD0C14B717CA340A953729 /* AvityOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvityOSApp.swift; sourceTree = "<group>"; };
 		7E73BBEC3E1131AEFFC26AA7 /* RemoteDeviceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteDeviceStore.swift; sourceTree = "<group>"; };
 		8A6C70AF248FBF96B0DAF2DA /* ApiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApiClient.swift; sourceTree = "<group>"; };
+		AE8B381E78784CEC154CCF99 /* WebUISchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISchemeHandler.swift; sourceTree = "<group>"; };
 		BBA7DAB66F9A68302E8B4541 /* AvityOSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AvityOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1F7AE3D9542F3346516E808 /* RemoteDeviceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteDeviceClient.swift; sourceTree = "<group>"; };
 		E3B250CE4879BAA70C66E946 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		E568F97F0DBC5E6E00D27CAD /* RemoteBridgeCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteBridgeCrypto.swift; sourceTree = "<group>"; };
+		E940171166909726C218A3F9 /* MissionControlWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MissionControlWebView.swift; sourceTree = "<group>"; };
 		FB76186DF75802227FBB05C8 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -59,11 +67,14 @@
 				8A6C70AF248FBF96B0DAF2DA /* ApiClient.swift */,
 				79DD0C14B717CA340A953729 /* AvityOSApp.swift */,
 				FB76186DF75802227FBB05C8 /* KeychainStore.swift */,
+				E940171166909726C218A3F9 /* MissionControlWebView.swift */,
 				3238979E27B4EC864C4D9CB9 /* Models.swift */,
 				E568F97F0DBC5E6E00D27CAD /* RemoteBridgeCrypto.swift */,
 				74ECEA4D9C42B24126813902 /* RemoteBridgeModels.swift */,
 				C1F7AE3D9542F3346516E808 /* RemoteDeviceClient.swift */,
 				7E73BBEC3E1131AEFFC26AA7 /* RemoteDeviceStore.swift */,
+				28FE19E59EBF9E6DD2114531 /* SettingsView.swift */,
+				AE8B381E78784CEC154CCF99 /* WebUISchemeHandler.swift */,
 			);
 			name = AvityOS;
 			path = Sources/AvityOS;
@@ -84,6 +95,7 @@
 				36EE21DDD0AD7F8FE5AC9A15 /* AvityOS */,
 				9114F5A03E8C586F86AD8969 /* AvityOSUITests */,
 				15AAA0E49C9F9D7BE72FBBE6 /* Resources */,
+				16D0ECE8F414424CB506C4ED /* WebUI */,
 				47D5EBA52CC685A56EEFB693 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -143,7 +155,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1500;
+				LastUpgradeCheck = 2600;
 				TargetAttributes = {
 					B142693DE9C94CD1FF99E095 = {
 						ProvisioningStyle = Manual;
@@ -180,6 +192,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EFC356A380F0C24065B4E418 /* AppIcon.icns in Resources */,
+				9C2AED4C4D9A46AFF722110C /* WebUI in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -201,11 +214,14 @@
 				2A43D8E1D4FD5D11A8C53248 /* ApiClient.swift in Sources */,
 				6C9E63F92D68E8493654CAFE /* AvityOSApp.swift in Sources */,
 				FB651BBB96E43B876A54E997 /* KeychainStore.swift in Sources */,
+				55256A41E5D9CE8F72B53F8F /* MissionControlWebView.swift in Sources */,
 				0BB3D5A911540B9AF863BE6E /* Models.swift in Sources */,
 				390B76D7A0930F51FF5AC6E5 /* RemoteBridgeCrypto.swift in Sources */,
 				EA4330102DA4E11E4B6C2C63 /* RemoteBridgeModels.swift in Sources */,
 				F4E465E1E6242B6398BBB5CA /* RemoteDeviceClient.swift in Sources */,
 				B66B6C6662DFCC68B5059B8D /* RemoteDeviceStore.swift in Sources */,
+				91DCAFA5FA9BC616764D4B68 /* SettingsView.swift in Sources */,
+				5BBDF033467573341FDFADE3 /* WebUISchemeHandler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -224,6 +240,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/AvityOS.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -326,7 +343,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -344,6 +361,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/AvityOS.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -412,7 +430,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;

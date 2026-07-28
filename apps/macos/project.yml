@@ -3,19 +3,19 @@ name: AvityOS
 options:
   bundleIdPrefix: com.avityos
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   groupSortPosition: top
   generateEmptyDirectories: true
   minimumXcodeGenVersion: "2.45.4"
   projectFormat: xcode15_0
-  xcodeVersion: "15.0"
+  xcodeVersion: "26.0"
 
 settings:
   base:
     CURRENT_PROJECT_VERSION: 1
     DEAD_CODE_STRIPPING: true
     ENABLE_HARDENED_RUNTIME: true
-    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
     MARKETING_VERSION: "0.1.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: true
@@ -28,6 +28,9 @@ targets:
     sources:
       - path: Sources/AvityOS
       - path: Resources/AppIcon.icns
+      - path: Resources/WebUI
+        type: folder
+        buildPhase: resources
     info:
       path: Resources/Info.plist
       properties:
@@ -50,8 +53,18 @@ targets:
         NSHighResolutionCapable: true
         NSHumanReadableCopyright: Copyright © 2026 AvityOS
         NSPrincipalClass: NSApplication
+    entitlements:
+      path: Resources/AvityOS.entitlements
+      properties:
+        # WebKit spawns WebContent/GPU helpers that need JIT for JavaScriptCore.
+        # Under the hardened runtime these exemptions are required or the helper
+        # processes never start and the embedded UI stays blank (ADR-0021).
+        com.apple.security.cs.allow-jit: true
+        com.apple.security.cs.allow-unsigned-executable-memory: true
+        com.apple.security.network.client: true
     settings:
       base:
+        CODE_SIGN_ENTITLEMENTS: Resources/AvityOS.entitlements
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         PRODUCT_BUNDLE_IDENTIFIER: com.avityos.app

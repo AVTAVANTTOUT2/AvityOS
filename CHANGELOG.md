@@ -12,6 +12,15 @@ sémantique lorsque le processus de release sera établi.
 
 ### Added
 
+- Chrome natif macOS en Liquid Glass et socle macOS 26 (ADR-0022) : barre
+  d’outils unifiée en verre, Réglages répartis en quatre destinations avec
+  appairage hors bande présenté par étapes, et compagnon de barre de menus
+  enrichi.
+- Shell macOS WKWebView embarquant le front Figma Mission Control (`avity-app://`,
+  proxy Keychain, ADR-0021) comme unique interface du `.app` : les vues SwiftUI
+  simplifiées sont supprimées, les XCUITests valident le shell réellement livré,
+  et le corps des requêtes d’écriture est restitué au proxy malgré la limitation
+  `WKURLSchemeHandler` de WebKit.
 - Clarifications IA structurées et versionnées (`CLARIFICATION_SCHEMA_VERSION=1`)
   avec types de réponse fermés, groupe unique par tour, provenance provider /
   modèle, persistance SQLite et reprise exacte du pipeline cerveau.

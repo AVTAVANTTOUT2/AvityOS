@@ -52,7 +52,10 @@ export function Sidebar({ current, onChange, macOS }: { current: string; onChang
           return (
             <button
               key={item.id}
+              type="button"
               onClick={() => onChange(item.id)}
+              data-testid={`sidebar.${item.id}`}
+              aria-current={active ? "page" : undefined}
               className={cn(
                 "w-full flex items-center gap-3 px-3 py-[7px] rounded-xl text-[13px] transition-all",
                 active

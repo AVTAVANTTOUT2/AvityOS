@@ -4,7 +4,7 @@
 
 - Node **≥ 22.5** (control plane uses built-in `node:sqlite`; developed on 26)
 - pnpm 11 (pinned via `packageManager` in package.json)
-- macOS 14+ for the SwiftUI app (Xcode 15+)
+- macOS 26+ for the SwiftUI app (Xcode 26+)
 
 ## Bootstrap
 

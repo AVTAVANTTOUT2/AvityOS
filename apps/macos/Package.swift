@@ -3,12 +3,15 @@ import PackageDescription
 
 let package = Package(
     name: "AvityOS",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.0")],
     targets: [
         .executableTarget(
             name: "AvityOS",
             path: "Sources/AvityOS",
-            linkerSettings: [.linkedFramework("Security")]
+            linkerSettings: [
+                .linkedFramework("Security"),
+                .linkedFramework("WebKit"),
+            ]
         ),
         .testTarget(
             name: "AvityOSTests",

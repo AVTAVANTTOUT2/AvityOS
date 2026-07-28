@@ -51,7 +51,7 @@ icon_name="$(plist_value CFBundleIconFile)"
   echo "The application version and build number must be set" >&2
   exit 65
 }
-[[ "$minimum_system" == "14.0" ]] || {
+[[ "$minimum_system" == "26.0" ]] || {
   echo "Unexpected minimum macOS version: $minimum_system" >&2
   exit 65
 }
@@ -70,6 +70,12 @@ if [[ "$icon_file" != *.icns ]]; then
 fi
 if [[ ! -f "$app_path/Contents/Resources/$icon_file" ]]; then
   echo "Application icon is missing: $icon_file" >&2
+  exit 65
+fi
+
+webui_index="$app_path/Contents/Resources/WebUI/index.html"
+if [[ ! -f "$webui_index" ]]; then
+  echo "Embedded Figma WebUI is missing: WebUI/index.html" >&2
   exit 65
 fi
 
@@ -100,6 +106,21 @@ if ! grep -q 'flags=.*runtime' <<<"$signature_summary"; then
   echo "The hardened runtime flag is missing from the application signature" >&2
   exit 65
 fi
+
+# A --force re-signature silently drops entitlements. WebKit's helper processes
+# need the JIT exemptions under the hardened runtime, so a release without them
+# ships an application whose embedded UI never renders (ADR-0021).
+entitlements_dump="$(codesign -d --entitlements - "$app_path" 2>&1 || true)"
+for required_entitlement in \
+  com.apple.security.cs.allow-jit \
+  com.apple.security.cs.allow-unsigned-executable-memory \
+  com.apple.security.network.client; do
+  if ! grep -q "$required_entitlement" <<<"$entitlements_dump"; then
+    echo "The signature is missing the entitlement: $required_entitlement" >&2
+    exit 65
+  fi
+done
+
 signature_kind="$(sed -n 's/^Signature=//p' <<<"$signature_summary")"
 team_identifier="$(sed -n 's/^TeamIdentifier=//p' <<<"$signature_summary")"
 

@@ -1,1 +1,7 @@
 .build/
+# Resources/WebUI is a build output staged by scripts/build-macos-webui.sh.
+# Only the directory itself is tracked, so the Xcode folder reference resolves
+# on a clean checkout without committing a generated bundle that every build
+# would immediately overwrite.
+Resources/WebUI/*
+!Resources/WebUI/.gitkeep

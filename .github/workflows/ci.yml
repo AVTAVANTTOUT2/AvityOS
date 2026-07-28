@@ -14,7 +14,9 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: macos-14
+    # Liquid Glass is a macOS 26 SDK feature. Pin the runner instead of relying
+    # on macos-latest so the native UI cannot compile with an older toolchain.
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       # Gitleaks compares the complete PR commit range. A shallow checkout
@@ -37,6 +39,15 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Verify Xcode 26 toolchain
+        run: |
+          xcodebuild -version
+          sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+          [[ "$sdk_version" == 26.* ]] || {
+            echo "Liquid Glass requires the macOS 26 SDK; found $sdk_version" >&2
+            exit 1
+          }
+
       - name: Install pnpm dependencies
         run: pnpm install --frozen-lockfile
 
@@ -58,6 +69,9 @@ jobs:
       - name: Run web end-to-end tests
         run: pnpm --filter @avityos/web test:e2e
 
+      - name: Stage Figma WebUI for the macOS app bundle
+        run: ./scripts/build-macos-webui.sh
+
       - name: Build macOS application
         working-directory: apps/macos
         run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
@@ -66,11 +80,12 @@ jobs:
         working-directory: apps/macos
         run: swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
+      # Not -quiet: XCUITest assertion messages and crash reports are the only
+      # diagnosis available for a failure that reproduces solely on CI.
       - name: Run native macOS UI tests
         working-directory: apps/macos
         run: |
           xcodebuild test \
-            -quiet \
             -project AvityOS.xcodeproj \
             -scheme AvityOS \
             -destination "platform=macOS" \
