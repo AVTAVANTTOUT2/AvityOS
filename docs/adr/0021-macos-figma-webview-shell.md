@@ -48,10 +48,12 @@ every write with an empty payload.
 7. The web shell detects `window.__AVITY_NATIVE__`, applies Liquid Glass styling
    without the faux desktop chrome, and can open the native Settings UI.
 8. Programmatic Settings opens (toolbar, `avity://settings`, web bridge) use a
-   dedicated `Window` via `openWindow`. `showSettingsWindow:` is a no-op on
-   macOS 14+, and `@Environment(\.openSettings)` does not type-check under the
-   SwiftPM SDK the CI job uses. The SwiftUI `Settings` scene remains for the
+   dedicated `Window` via `openWindow`, which gives AppKit and WebKit callers a
+   stable scene identifier. The SwiftUI `Settings` scene remains for the
    system « Réglages… » menu item.
+9. The native shell targets macOS 26 and adopts Apple Liquid Glass for the
+   unified window toolbar, interactive controls, connection surfaces and the
+   Settings sidebar. The embedded React content remains unchanged.
 
 ## Consequences
 

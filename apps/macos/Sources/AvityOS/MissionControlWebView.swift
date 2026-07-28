@@ -44,6 +44,13 @@ struct MissionControlWebView: NSViewRepresentable {
         webView.isInspectable = true
         #endif
         webView.setAccessibilityIdentifier("webview.figma-shell")
+        if AppRuntime.isUITesting {
+            // The React tree is already covered by Playwright. Keeping its
+            // thousands of descendants out of the native automation tree
+            // lets XCUITest attach promptly while preserving the real
+            // WKWebView host and every native accessibility identifier.
+            webView.setAccessibilityChildren([])
+        }
         coordinator.webView = webView
 
         if let url = URL(string: "\(WebUISchemeHandler.scheme)://\(WebUISchemeHandler.host)/index.html") {
@@ -54,6 +61,9 @@ struct MissionControlWebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.client = client
+        context.coordinator.updateBearerToken(
+            client.embeddedUIBearerToken()
+        )
         context.coordinator.onOpenNativeSettings = onOpenNativeSettings
         context.coordinator.onRouteConsumed = onRouteConsumed
         if let pendingRoute {
@@ -160,6 +170,7 @@ struct MissionControlWebView: NSViewRepresentable {
         var onOpenNativeSettings: () -> Void
         var onRouteConsumed: () -> Void
         let schemeHandler: WebUISchemeHandler
+        private let bearerTokenSnapshot: BearerTokenSnapshot
         weak var webView: WKWebView?
 
         init(
@@ -170,12 +181,20 @@ struct MissionControlWebView: NSViewRepresentable {
             self.client = client
             self.onOpenNativeSettings = onOpenNativeSettings
             self.onRouteConsumed = onRouteConsumed
+            let bearerTokenSnapshot = BearerTokenSnapshot(
+                client.embeddedUIBearerToken()
+            )
+            self.bearerTokenSnapshot = bearerTokenSnapshot
             self.schemeHandler = WebUISchemeHandler(
                 resourceRoot: Self.webUIRoot(),
                 controlPlaneBaseURL: { WebUIProxyConfiguration.controlPlaneBaseURL() },
-                bearerToken: { WebUIProxyConfiguration.bearerToken() }
+                bearerToken: { bearerTokenSnapshot.value() }
             )
             super.init()
+        }
+
+        func updateBearerToken(_ token: String?) {
+            bearerTokenSnapshot.update(token)
         }
 
         static func webUIRoot() -> URL {
@@ -297,5 +316,30 @@ struct MissionControlWebView: NSViewRepresentable {
             }
             decisionHandler(.cancel)
         }
+    }
+}
+
+/// `WKURLSchemeHandler` can request the bearer from WebKit callback threads.
+/// Keep the already-loaded token in a tiny lock-protected snapshot instead of
+/// synchronously reopening Keychain for every `/v1` request.
+private final class BearerTokenSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var token: String?
+
+    init(_ token: String?) {
+        self.token = token
+    }
+
+    func update(_ token: String?) {
+        lock.lock()
+        self.token = token
+        lock.unlock()
+    }
+
+    func value() -> String? {
+        lock.lock()
+        let token = token
+        lock.unlock()
+        return token
     }
 }

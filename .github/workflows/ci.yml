@@ -14,7 +14,9 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: macos-14
+    # Liquid Glass is a macOS 26 SDK feature. Pin the runner instead of relying
+    # on macos-latest so the native UI cannot compile with an older toolchain.
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       # Gitleaks compares the complete PR commit range. A shallow checkout
@@ -36,6 +38,15 @@ jobs:
           # node:sqlite requires Node >= 22.5; repo is developed on 22+
           node-version: 22
           cache: pnpm
+
+      - name: Verify Xcode 26 toolchain
+        run: |
+          xcodebuild -version
+          sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+          [[ "$sdk_version" == 26.* ]] || {
+            echo "Liquid Glass requires the macOS 26 SDK; found $sdk_version" >&2
+            exit 1
+          }
 
       - name: Install pnpm dependencies
         run: pnpm install --frozen-lockfile

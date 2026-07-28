@@ -6,12 +6,17 @@ Keychain authentication, SSE/polling via the control-plane proxy, remote
 host/device pairing, deep links, notifications, Dock badge, settings and a
 menu-bar companion.
 
-The installable `.app` therefore shows the same cream/indigo Liquid Glass UI
+The installable `.app` therefore shows the same cream/indigo Mission Control UI
 as the web product ([Figma](https://www.figma.com/design/MnTdZbrH4OHTHD8NbZC6iz/Start-project)),
 not a simplified SwiftUI list shell. That embedded frontend is the only one the
 application contains — no flag or environment variable restores the previous
 shell, and XCUITest therefore runs against the surface operators receive. See
 [ADR-0021](../../docs/adr/0021-macos-figma-webview-shell.md).
+
+The native shell targets macOS 26 and uses Apple Liquid Glass directly:
+unified window toolbars, glass controls and status surfaces, plus a native
+glass sidebar for the redesigned Settings experience. The embedded React
+content remains the shared web source of truth and is not restyled by SwiftUI.
 
 ## Development and UI tests
 
@@ -42,9 +47,9 @@ checking, treats every Swift warning as an error, stages the Figma WebUI,
 runs XCUITest against the actual `.app`, and packages a verified universal
 development artifact.
 
-SwiftPM development requires the Command Line Tools with the macOS SDK;
-XCUITest and bundle packaging require Xcode 15+. The application supports
-macOS 14+. Start the control plane first:
+SwiftPM development requires the macOS 26 SDK; XCUITest and bundle packaging
+require Xcode 26+. The application supports macOS 26+. Start the control plane
+first:
 `pnpm --filter @avityos/control-plane start`.
 
 ## Installable application bundle

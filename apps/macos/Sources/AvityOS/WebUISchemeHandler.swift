@@ -2,8 +2,9 @@ import Foundation
 import UniformTypeIdentifiers
 import WebKit
 
-/// Thread-safe reads of control-plane endpoint/token for the WKURLSchemeHandler.
-/// The handler runs off the main actor; credentials remain Keychain-backed.
+/// Thread-safe reads of the control-plane endpoint for the
+/// `WKURLSchemeHandler`. The bearer is supplied from `ApiClient`'s in-memory
+/// snapshot so a scheme callback never blocks the main actor on Keychain I/O.
 enum WebUIProxyConfiguration {
     static let endpointDefaultsKey = "controlPlaneURL"
     static let defaultLoopbackURL = URL(string: "http://127.0.0.1:7717/")!
@@ -16,12 +17,6 @@ enum WebUIProxyConfiguration {
         return url
     }
 
-    static func bearerToken(store: CredentialStore = KeychainCredentialStore()) -> String? {
-        guard let token = try? store.loadToken(), !token.isEmpty else {
-            return nil
-        }
-        return token
-    }
 }
 
 /// Serializes callbacks to a `WKURLSchemeTask` and drops every callback that

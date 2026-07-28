@@ -1,10 +1,10 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 import UserNotifications
 
 @main
 struct AvityOSApp: App {
-    @StateObject private var client = ApiClient()
+    @StateObject private var client = AppRuntime.makeClient()
 
     var body: some Scene {
         WindowGroup("AvityOS", id: "main") {
@@ -17,18 +17,27 @@ struct AvityOSApp: App {
                     }
                 }
                 .onChange(of: client.approvals.count) { previous, count in
-                    NSApplication.shared.dockTile.badgeLabel = count > 0 ? String(count) : nil
-                    if count > previous { NotificationCoordinator.notifyInterventions(count: count) }
+                    NSApplication.shared.dockTile.badgeLabel =
+                        count > 0 ? String(count) : nil
+                    if count > previous {
+                        NotificationCoordinator.notifyInterventions(
+                            count: count
+                        )
+                    }
                 }
         }
+        .defaultSize(width: 1280, height: 820)
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Rafraîchir") { Task { await client.refresh() } }
-                    .keyboardShortcut("r", modifiers: .command)
+                Button("Rafraîchir") {
+                    Task { await client.refresh() }
+                }
+                .keyboardShortcut("r", modifiers: .command)
             }
             // Leave .appSettings alone: the Settings scene owns « Réglages… »
-            // and ⌘,. Replacing it with showSettingsWindow: broke opening on
-            // macOS 14+ (Apple requires SettingsLink / openSettings there).
+            // and ⌘,. Programmatic callers use the identified Window below.
         }
 
         MenuBarExtra("AvityOS", systemImage: "brain") {
@@ -36,18 +45,26 @@ struct AvityOSApp: App {
         }
 
         // Programmatic opens (toolbar, deep link, web bridge) go through this
-        // window: openWindow is available on the CI SDK, unlike openSettings,
-        // and showSettingsWindow: is a no-op since macOS 14.
+        // window: its stable identifier works from toolbar, deep-link and
+        // WebKit bridge entry points.
         Window("Réglages", id: NativeAppSettings.windowID) {
             SettingsView()
                 .environmentObject(client)
-                .frame(minWidth: 520, minHeight: 320)
+                .frame(minWidth: 760, minHeight: 560)
         }
-        .windowResizability(.contentSize)
+        .defaultSize(width: 860, height: 660)
+        .windowResizability(.contentMinSize)
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unified(showsTitle: false))
 
         Settings {
-            SettingsView().environmentObject(client).frame(minWidth: 520, minHeight: 320)
+            SettingsView()
+                .environmentObject(client)
+                .frame(minWidth: 760, minHeight: 560)
         }
+        .defaultSize(width: 860, height: 660)
+        .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unified(showsTitle: false))
     }
 }
 
@@ -57,12 +74,42 @@ enum AppRuntime {
     /// different user interface: the tested shell is the shipped shell.
     static var isUITesting: Bool {
         ProcessInfo.processInfo.environment["AVITY_UI_TEST_MODE"] == "1"
+            || ProcessInfo.processInfo.arguments.contains("--avity-ui-testing")
     }
+
+    /// UI automation validates the shipped shell, not the user's Keychain.
+    /// Isolating credentials also prevents a locked or access-controlled
+    /// Keychain from blocking scene creation before XCUITest can attach.
+    @MainActor
+    static func makeClient() -> ApiClient {
+        guard isUITesting else { return ApiClient() }
+        return ApiClient(
+            credentials: UITestCredentialStore(),
+            remoteStore: UITestRemoteDeviceStore()
+        )
+    }
+}
+
+private struct UITestCredentialStore: CredentialStore {
+    func loadToken() throws -> String? { nil }
+    func saveToken(_ token: String) throws {}
+    func deleteToken() throws {}
+}
+
+private struct UITestRemoteDeviceStore: RemoteDeviceConfigurationStore {
+    func loadConfiguration() throws -> RemoteDeviceConfiguration? { nil }
+    func saveConfiguration(_ configuration: RemoteDeviceConfiguration) throws {}
+    func deleteConfiguration() throws {}
+    func loadPendingPairing() throws -> PendingRemotePairing? { nil }
+    func savePendingPairing(_ pairing: PendingRemotePairing) throws {}
+    func deletePendingPairing() throws {}
 }
 
 enum NotificationCoordinator {
     static func requestAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) {
+            _, _ in
+        }
     }
 
     static func notifyInterventions(count: Int) {
@@ -84,9 +131,8 @@ enum NativeAppSettings {
     static let openNotification = Notification.Name("avity.openNativeSettings")
 
     /// Asks the main shell to present the native settings window via
-    /// `openWindow`. Posted as a notification so AppKit callers (deep links,
-    /// the web bridge) do not need a SwiftUI `Environment` value that the
-    /// SwiftPM toolchain on CI cannot resolve (`openSettings`).
+    /// `openWindow`. Posted as a notification so AppKit callers (deep links
+    /// and the web bridge) do not need to own a SwiftUI `Environment` value.
     @MainActor
     static func open() {
         NSApp.activate(ignoringOtherApps: true)
@@ -109,37 +155,12 @@ struct FigmaMissionControlShell: View {
     @State private var pendingRoute: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("AvityOS")
-                    .font(.headline)
-                Text("Mission Control")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Circle()
-                    .fill(client.connected ? Color.green : Color.orange)
-                    .frame(width: 8, height: 8)
-                Text(connectionLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("connection.status")
-                Button("Réglages") {
-                    openNativeSettingsWindow()
-                }
-                .accessibilityIdentifier("toolbar.native-settings")
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.ultraThinMaterial)
-
-            MissionControlWebView(
-                client: client,
-                pendingRoute: pendingRoute,
-                onOpenNativeSettings: { NativeAppSettings.open() },
-                onRouteConsumed: { pendingRoute = nil }
-            )
-        }
+        MissionControlWebView(
+            client: client,
+            pendingRoute: pendingRoute,
+            onOpenNativeSettings: { NativeAppSettings.open() },
+            onRouteConsumed: { pendingRoute = nil }
+        )
         // Keep children queryable by their own identifiers. A bare
         // accessibilityIdentifier on the container replaces them on macOS, so
         // XCUITest would only see `screen.mission-control` for the status and
@@ -147,8 +168,62 @@ struct FigmaMissionControlShell: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("screen.mission-control")
         .background(Color(red: 0.969, green: 0.957, blue: 0.933))
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                HStack(spacing: 9) {
+                    Image(systemName: "sparkles.rectangle.stack.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.indigo)
+                        .symbolRenderingMode(.hierarchical)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("AvityOS")
+                            .font(.headline)
+                        Text("Mission Control")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("AvityOS Mission Control")
+            }
+
+            ToolbarItem(placement: .principal) {
+                ConnectionStatusPill(
+                    connected: client.connected,
+                    label: connectionLabel
+                )
+                .accessibilityIdentifier("connection.status")
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await client.refresh() }
+                } label: {
+                    Label("Rafraîchir", systemImage: "arrow.clockwise")
+                }
+                .labelStyle(.iconOnly)
+                .help("Rafraîchir Mission Control (⌘R)")
+                .buttonStyle(.glass)
+                .accessibilityIdentifier("toolbar.refresh")
+            }
+
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    openNativeSettingsWindow()
+                } label: {
+                    Label("Réglages", systemImage: "slider.horizontal.3")
+                }
+                .help("Ouvrir les réglages natifs")
+                .buttonStyle(.glass)
+                .accessibilityIdentifier("toolbar.native-settings")
+            }
+        }
         .onReceive(
-            NotificationCenter.default.publisher(for: NativeAppSettings.openNotification)
+            NotificationCenter.default.publisher(
+                for: NativeAppSettings.openNotification
+            )
         ) { _ in
             openNativeSettingsWindow()
         }
@@ -178,331 +253,35 @@ struct FigmaMissionControlShell: View {
     }
 }
 
-struct SettingsView: View {
-    @EnvironmentObject private var client: ApiClient
-    @State private var endpoint = ""
-    @State private var token = ""
-    @State private var relayURL = ""
-    @State private var relayAdminToken = ""
-    @State private var hostDeviceName = Host.current().localizedName ?? "Mac hôte"
-    @State private var pairingSessionId = ""
-    @State private var pairingBundle = ""
-    @State private var pairingRequest = ""
-    @State private var pairingBootstrap = ""
-    @State private var remoteOperationInProgress = false
-    @State private var remotePairingOffer = ""
-    @State private var remoteDeviceName = Host.current().localizedName ?? "Mac distant"
-    @State private var remoteDevicePairingRequest = ""
-    @State private var remoteDeviceBootstrap = ""
+private struct ConnectionStatusPill: View {
+    let connected: Bool
+    let label: String
 
     var body: some View {
-        Form {
-            Section("Control plane") {
-                TextField("URL", text: $endpoint)
-                    .accessibilityIdentifier("settings.endpoint")
-                SecureField("Token API", text: $token)
-                    .accessibilityIdentifier("settings.apiToken")
-                HStack {
-                    Button("Enregistrer") {
-                        guard let url = URL(string: endpoint), !token.isEmpty else { return }
-                        client.configure(baseURL: url, token: token)
-                        token = ""
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("settings.save")
-                    Button("Supprimer le token", role: .destructive) { client.clearCredentials() }
-                }
-                LabeledContent("État", value: client.tokenConfigured ? "Token protégé dans Keychain" : "Authentification requise")
-            }
-            Section("Pont distant — mode hôte") {
-                if !client.remoteHostStatus.supported {
-                    ContentUnavailableView(
-                        "Mode hôte indisponible",
-                        systemImage: "lock.slash",
-                        description: Text(
-                            "Le control-plane hôte doit fonctionner sur macOS avec Keychain."
-                        )
-                    )
-                } else {
-                    TextField("URL HTTPS du relais", text: $relayURL)
-                    SecureField("Jeton administrateur du relais", text: $relayAdminToken)
-                    TextField("Nom de cet appareil", text: $hostDeviceName)
-                    HStack {
-                        Button(client.remoteHostStatus.configured
-                            ? "Mettre à jour"
-                            : "Activer le mode hôte"
-                        ) {
-                            remoteOperationInProgress = true
-                            Task {
-                                await client.configureRemoteHost(
-                                    relayURL: relayURL,
-                                    relayAdminToken: relayAdminToken,
-                                    deviceName: hostDeviceName
-                                )
-                                relayAdminToken = ""
-                                remoteOperationInProgress = false
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(
-                            remoteOperationInProgress ||
-                            client.connectionMode == .remote ||
-                            relayURL.isEmpty ||
-                            relayAdminToken.isEmpty ||
-                            hostDeviceName.isEmpty
-                        )
-                        if client.remoteHostStatus.configured {
-                            LabeledContent(
-                                "Connecteur",
-                                value: remoteConnectorLabel
-                            )
-                        }
-                    }
-
-                    if client.remoteHostStatus.configured {
-                        DisclosureGroup("Appairer un appareil") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Button("Créer une offre à usage unique") {
-                                    remoteOperationInProgress = true
-                                    Task {
-                                        if let response = await client.createRemotePairing() {
-                                            pairingSessionId = response.sessionId
-                                            pairingBundle = response.pairingBundle
-                                            pairingRequest = ""
-                                            pairingBootstrap = ""
-                                        }
-                                        remoteOperationInProgress = false
-                                    }
-                                }
-                                .disabled(remoteOperationInProgress)
-                                .disabled(client.connectionMode == .remote)
-
-                                if !pairingBundle.isEmpty {
-                                    Text("1. Transférez cette offre par un canal hors bande.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    TextEditor(text: $pairingBundle)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .frame(minHeight: 76)
-                                    Button("Copier l’offre") {
-                                        copyToPasteboard(pairingBundle)
-                                    }
-
-                                    Text("2. Collez la requête chiffrée produite par l’appareil.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    TextEditor(text: $pairingRequest)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .frame(minHeight: 76)
-                                    Button("Accepter et enrôler") {
-                                        remoteOperationInProgress = true
-                                        Task {
-                                            if let response = await client.acceptRemotePairing(
-                                                sessionId: pairingSessionId,
-                                                request: pairingRequest
-                                            ) {
-                                                pairingBootstrap = response.bootstrap
-                                            }
-                                            remoteOperationInProgress = false
-                                        }
-                                    }
-                                    .disabled(
-                                        remoteOperationInProgress ||
-                                        client.connectionMode == .remote ||
-                                        pairingRequest.isEmpty
-                                    )
-                                }
-
-                                if !pairingBootstrap.isEmpty {
-                                    Text("3. Retournez ce bootstrap chiffré au nouvel appareil.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    TextEditor(text: $pairingBootstrap)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .frame(minHeight: 76)
-                                    Button("Copier le bootstrap") {
-                                        copyToPasteboard(pairingBootstrap)
-                                    }
-                                }
-                            }
-                            .padding(.top, 6)
-                        }
-
-                        DisclosureGroup(
-                            "Appareils (\(client.remoteHostStatus.devices.count))"
-                        ) {
-                            ForEach(client.remoteHostStatus.devices) { device in
-                                HStack {
-                                    VStack(alignment: .leading) {
-                                        Text(device.name)
-                                        Text(device.deviceId)
-                                            .font(.system(.caption2, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Text(device.isHost ? "Hôte" : device.status)
-                                        .font(.caption)
-                                    if !device.isHost && device.status == "active" {
-                                        Button("Révoquer", role: .destructive) {
-                                            Task {
-                                                await client.revokeRemoteDevice(
-                                                    id: device.deviceId
-                                                )
-                                            }
-                                        }
-                                        .disabled(client.connectionMode == .remote)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Section("Cet appareil — mode distant") {
-                if client.remoteDeviceStatus.configured {
-                    LabeledContent(
-                        "Appareil",
-                        value: client.remoteDeviceStatus.deviceName ?? "—"
-                    )
-                    LabeledContent(
-                        "Hôte",
-                        value: client.remoteDeviceStatus.hostName ?? "—"
-                    )
-                    LabeledContent(
-                        "Relais",
-                        value: client.remoteDeviceStatus.relayURL ?? "—"
-                    )
-                    LabeledContent(
-                        "Certificat appareil",
-                        value:
-                            client.remoteDeviceStatus
-                                .deviceCertificateValidUntil ?? "—"
-                    )
-                    LabeledContent(
-                        "Certificat hôte",
-                        value:
-                            client.remoteDeviceStatus
-                                .hostCertificateValidUntil ?? "—"
-                    )
-                    HStack {
-                        if client.connectionMode == .local {
-                            Button("Utiliser le relais chiffré") {
-                                client.setConnectionMode(.remote)
-                            }
-                            .buttonStyle(.borderedProminent)
-                        } else {
-                            Button("Revenir au control plane local") {
-                                client.setConnectionMode(.local)
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                        Button("Oublier cet appareil", role: .destructive) {
-                            client.clearRemoteDevice()
-                            remoteDevicePairingRequest = ""
-                            remoteDeviceBootstrap = ""
-                        }
-                        Button("Vérifier / renouveler") {
-                            Task {
-                                await client.renewRemoteDeviceCertificates()
-                            }
-                        }
-                    }
-                } else {
-                    Text(
-                        "Collez l’offre créée sur le Mac hôte. L’identité privée "
-                        + "et le secret temporaire seront protégés dans Keychain."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    TextField("Nom de cet appareil", text: $remoteDeviceName)
-                    TextEditor(text: $remotePairingOffer)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(minHeight: 76)
-                    Button("Créer la requête chiffrée") {
-                        if let request = client.beginRemoteDevicePairing(
-                            bundle: remotePairingOffer,
-                            deviceName: remoteDeviceName
-                        ) {
-                            remoteDevicePairingRequest = request
-                        }
-                    }
-                    .disabled(
-                        remotePairingOffer.isEmpty || remoteDeviceName.isEmpty
-                    )
-
-                    if !remoteDevicePairingRequest.isEmpty {
-                        Text(
-                            "Retournez cette requête au Mac hôte, puis collez "
-                            + "son bootstrap chiffré ci-dessous."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        TextEditor(text: $remoteDevicePairingRequest)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(minHeight: 76)
-                        Button("Copier la requête") {
-                            copyToPasteboard(remoteDevicePairingRequest)
-                        }
-                        TextEditor(text: $remoteDeviceBootstrap)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(minHeight: 76)
-                        Button("Ouvrir le bootstrap et terminer") {
-                            client.completeRemoteDevicePairing(
-                                bootstrap: remoteDeviceBootstrap
-                            )
-                            if client.remoteDeviceStatus.configured {
-                                remotePairingOffer = ""
-                                remoteDevicePairingRequest = ""
-                                remoteDeviceBootstrap = ""
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(remoteDeviceBootstrap.isEmpty)
-                    }
-                }
-            }
-            if let error = client.lastError {
-                Section("Dernière erreur") { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-            }
-            if let error = client.remoteHostError {
-                Section("Erreur du pont distant") {
-                    Text(error).foregroundStyle(.red).textSelection(.enabled)
-                }
-            }
-            if let error = client.remoteDeviceError {
-                Section("Erreur du mode distant") {
-                    Text(error).foregroundStyle(.red).textSelection(.enabled)
-                }
-            }
+        HStack(spacing: 7) {
+            Circle()
+                .fill(connected ? Color.green : Color.orange)
+                .frame(width: 8, height: 8)
+                .shadow(
+                    color: (connected ? Color.green : Color.orange)
+                        .opacity(0.55),
+                    radius: 4
+                )
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
-        .formStyle(.grouped)
-        .navigationTitle("Réglages")
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("screen.settings")
-        .onAppear {
-            endpoint = client.baseURL.absoluteString
-            relayURL = client.remoteHostStatus.relayUrl ?? relayURL
-            remoteDevicePairingRequest =
-                client.pendingRemoteDevicePairingRequest() ?? ""
-        }
-        .onChange(of: client.remoteHostStatus.relayUrl) { _, value in
-            if let value { relayURL = value }
-        }
-    }
-
-    private var remoteConnectorLabel: String {
-        switch client.remoteHostStatus.connectorState {
-        case "online": "En ligne"
-        case "connecting": "Connexion…"
-        case "degraded": "Dégradé"
-        case "stopped": "Arrêté"
-        default: client.remoteHostStatus.connectorState
-        }
-    }
-
-    private func copyToPasteboard(_ value: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 6)
+        .glassEffect(
+            .regular.tint(
+                (connected ? Color.green : Color.orange).opacity(0.08)
+            ),
+            in: .capsule
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
     }
 }
 
@@ -511,17 +290,39 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Text(client.connected
-            ? "\(client.connectionMode == .remote ? "Relais chiffré" : "Local") (v\(client.version))"
-            : "Hors ligne"
+        Label(
+            client.connected
+                ? "\(client.connectionMode == .remote ? "Relais chiffré" : "Local") · v\(client.version)"
+                : "Hors ligne",
+            systemImage: client.connected
+                ? "checkmark.circle.fill"
+                : "exclamationmark.circle.fill"
         )
-        Text("\(client.projects.count) projet(s) · \(client.approvals.count) intervention(s)")
+        Label("\(client.projects.count) projet(s)", systemImage: "folder")
+        Label("\(client.approvals.count) intervention(s)", systemImage: "hand.raised")
         Divider()
-        Button("Ouvrir AvityOS") {
+        Button {
             NSApplication.shared.activate(ignoringOtherApps: true)
             openWindow(id: "main")
+        } label: {
+            Label("Ouvrir Mission Control", systemImage: "macwindow")
         }
-        Button("Rafraîchir") { Task { await client.refresh() } }
-        Button("Quitter AvityOS") { NSApplication.shared.terminate(nil) }
+        Button {
+            openWindow(id: NativeAppSettings.windowID)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        } label: {
+            Label("Réglages…", systemImage: "slider.horizontal.3")
+        }
+        Button {
+            Task { await client.refresh() }
+        } label: {
+            Label("Rafraîchir", systemImage: "arrow.clockwise")
+        }
+        Divider()
+        Button {
+            NSApplication.shared.terminate(nil)
+        } label: {
+            Label("Quitter AvityOS", systemImage: "power")
+        }
     }
 }
