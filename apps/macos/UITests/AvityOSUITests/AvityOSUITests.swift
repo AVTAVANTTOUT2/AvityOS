@@ -42,6 +42,22 @@ final class AvityOSUITests: XCTestCase {
         let settingsButton = element("toolbar.native-settings", in: app)
         let buttonAppeared = settingsButton.waitForExistence(timeout: 10)
         XCTAssertTrue(buttonAppeared, "Missing native settings entry point.\(tree(app))")
+
+        // A toolbar item accepts a synthesized click only once its window is
+        // key. Launching does not reliably bring the application forward on a
+        // CI runner, and the click then fails on hit-testing rather than on the
+        // button itself. The assertion stays strict on purpose: the entry point
+        // must become genuinely clickable, not merely present.
+        app.activate()
+        let clickable = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "isHittable == true"),
+            object: settingsButton
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [clickable], timeout: 10),
+            .completed,
+            "The toolbar entry point never became clickable.\(tree(app))"
+        )
         settingsButton.click()
 
         assertNativeSettingsAreReachable(in: app)
