@@ -203,12 +203,16 @@ struct FigmaMissionControlShell: View {
                 }
                 .labelStyle(.iconOnly)
                 .help("Rafraîchir Mission Control (⌘R)")
-                .buttonStyle(.glass)
                 .accessibilityIdentifier("toolbar.refresh")
             }
 
             ToolbarSpacer(.fixed, placement: .primaryAction)
 
+            // Toolbar items adopt Liquid Glass from the unified toolbar itself.
+            // Applying `.buttonStyle(.glass)` here nested a second glass
+            // container inside the item, and the resulting element reported
+            // itself visible but not hittable, so the toolbar entry point could
+            // not be clicked.
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     openNativeSettingsWindow()
@@ -216,7 +220,6 @@ struct FigmaMissionControlShell: View {
                     Label("Réglages", systemImage: "slider.horizontal.3")
                 }
                 .help("Ouvrir les réglages natifs")
-                .buttonStyle(.glass)
                 .accessibilityIdentifier("toolbar.native-settings")
             }
         }
