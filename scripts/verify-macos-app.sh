@@ -51,7 +51,7 @@ icon_name="$(plist_value CFBundleIconFile)"
   echo "The application version and build number must be set" >&2
   exit 65
 }
-[[ "$minimum_system" == "14.0" ]] || {
+[[ "$minimum_system" == "26.0" ]] || {
   echo "Unexpected minimum macOS version: $minimum_system" >&2
   exit 65
 }

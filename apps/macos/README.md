@@ -43,8 +43,8 @@ runs XCUITest against the actual `.app`, and packages a verified universal
 development artifact.
 
 SwiftPM development requires the Command Line Tools with the macOS SDK;
-XCUITest and bundle packaging require Xcode 15+. The application supports
-macOS 14+. Start the control plane first:
+XCUITest and bundle packaging require Xcode 26+ (ADR-0022). The application supports
+macOS 26+. Start the control plane first:
 `pnpm --filter @avityos/control-plane start`.
 
 ## Installable application bundle

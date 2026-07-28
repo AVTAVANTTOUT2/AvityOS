@@ -22,7 +22,7 @@ and notarized public release without weakening either path.
    application plus an XCUITest runner. SwiftPM remains the fast unit and
    Thread Sanitizer path.
 2. The bundle owns a complete `Info.plist`: stable identifier
-   `com.avityos.app`, macOS 14 minimum, Developer Tools category, semantic/build
+   `com.avityos.app`, macOS 26 minimum (raised by ADR-0022), Developer Tools category, semantic/build
    versions, `avity` URL scheme and a native `.icns` asset. The Release binary
    is universal (`arm64` and `x86_64`).
 3. XCUITest launches the actual application in an explicit fixture-free test

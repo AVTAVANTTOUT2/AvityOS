@@ -3,19 +3,19 @@ name: AvityOS
 options:
   bundleIdPrefix: com.avityos
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   groupSortPosition: top
   generateEmptyDirectories: true
   minimumXcodeGenVersion: "2.45.4"
   projectFormat: xcode15_0
-  xcodeVersion: "15.0"
+  xcodeVersion: "26.0"
 
 settings:
   base:
     CURRENT_PROJECT_VERSION: 1
     DEAD_CODE_STRIPPING: true
     ENABLE_HARDENED_RUNTIME: true
-    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
     MARKETING_VERSION: "0.1.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: true
