@@ -1,392 +1,296 @@
 # AvityOS
 
-> Give one software objective. Receive a clean, tested, reviewed and documented
-> deliverable.
+> Donnez un objectif logiciel. AvityOS organise le travail, exécute les
+> missions, vérifie le résultat et prépare une livraison propre.
 
-AvityOS is a local-first operating system for autonomous software delivery. It
-centralizes the work that would otherwise be scattered across projects,
-computers, servers, terminals, coding agents and AI-provider sessions.
+AvityOS est une plateforme **local-first** qui pilote des agents IA pour
+réaliser des tâches de développement logiciel. Elle centralise les projets,
+les décisions, les exécutions, les tests et les livraisons Git dans une seule
+interface.
 
-The user should not have to supervise ten projects or coordinate dozens of
-agents manually. They state the intended outcome, answer a grouped set of
-questions only when a material decision is genuinely ambiguous, then AvityOS
-plans, delegates, executes, validates and prepares the result for integration.
+L’objectif est simple : permettre à une personne ou une équipe de décrire le
+résultat attendu sans devoir coordonner manuellement plusieurs agents,
+terminaux, branches et fournisseurs d’IA.
 
-The product supports multiple isolated projects in parallel through the web,
-a native macOS application and the `avity` CLI. Its visual identity comes from
-the original [Figma design](https://www.figma.com/design/MnTdZbrH4OHTHD8NbZC6iz/Start-project):
-a calm white/cream interface, restrained indigo accents and a clean macOS
-Liquid Glass influence.
+AvityOS est actuellement en version `0.1.0` et reste en développement actif.
 
-## Why AvityOS
+## Pourquoi AvityOS ?
 
-Using several AI coding tools can increase output, but it also creates a new
-coordination problem: duplicated work, contradictory architecture, dirty Git
-history, forgotten sessions, unverified claims, provider limits and constant
-human context switching.
+Utiliser plusieurs outils d’IA accélère le développement, mais crée aussi de
+nouveaux problèmes : contexte dispersé, tâches dupliquées, changements non
+testés, historique Git difficile à relire et supervision permanente.
 
-AvityOS provides one durable control point for that entire workflow:
+AvityOS fournit un point de contrôle unique pour :
 
-- one objective instead of continuous micromanagement;
-- one independent project brain for every repository;
-- specialized product, architecture, frontend, backend, infrastructure,
-  cybersecurity, QA, review and documentation missions;
-- interchangeable Codex, Claude Code, Cursor, OpenAI, Anthropic and DeepSeek
-  execution paths;
-- isolated terminals, branches and worktrees for concurrent work;
-- automatic checkpoints, bounded correction loops and provider fallback;
-- evidence-backed Git commits and pull requests instead of unverified AI
-  completion messages;
-- a complete audit trail that survives restarts.
+- transformer un objectif en plan de travail structuré ;
+- distribuer les missions aux agents et modèles adaptés ;
+- isoler les changements dans des branches et worktrees Git ;
+- exécuter les builds, tests, vérifications de types et contrôles de sécurité ;
+- corriger les échecs dans des boucles limitées ;
+- préparer des commits et pull requests avec des preuves vérifiables ;
+- conserver les décisions, événements et résultats après un redémarrage.
 
-The priority is quality, not speed. AvityOS deliberately works in dependency
-order within a project and only parallelizes work whose interfaces are stable.
-Separate projects can continue concurrently without sharing state.
+La priorité est donnée à la **qualité et à la traçabilité**, pas seulement à la
+vitesse.
 
-## Product contract
-
-The intended interaction is:
-
-1. The user creates or imports a project and submits an objective with optional
-   acceptance criteria.
-2. AvityOS analyzes clarity, feasibility, risks and missing information.
-3. If the result would materially change, AvityOS asks one concise, grouped set
-   of questions. Otherwise it proceeds without interruption.
-4. The answers become durable, source-linked project decisions and execution
-   resumes automatically.
-5. A versioned plan and mission dependency graph are created and continuously
-   revised from verified repository state.
-6. Structured missions are delegated to specialized teams and suitable AI
-   providers.
-7. Agents execute in scoped worktrees or workers, while the control plane
-   enforces permissions, budgets, timeouts and legal state transitions.
-8. Real builds, tests, type checks, security scans and acceptance checks provide
-   objective evidence.
-9. Validated changes are committed and published as draft pull requests for an
-   independent review. Rejected work enters a bounded correction loop.
-10. The user receives a delivery report mapped to the acceptance criteria, or
-    an intervention only when no safe autonomous path remains.
-
-AvityOS does not silently purchase infrastructure, deploy to production,
-expand credential access, override policy or merge protected branches.
-
-## Non-negotiable principles
-
-### Deterministic control plane
-
-The central brain is not one long, fragile chat session. AI models reason,
-plan, implement and review; a conventional orchestration engine owns durable
-state transitions, scheduling, dependencies, permissions, retries, quotas,
-budgets, checkpoints, Git operations, cancellation, recovery and audit.
-
-### One durable brain per project
-
-Each project keeps its own objective, clarified requirements, acceptance
-criteria, plan versions, architecture decisions, mission results, constraints,
-risks and verified repository state. Entries distinguish facts, assumptions,
-proposals and decisions and retain provenance. Hidden conversational memory is
-never the source of truth.
-
-### Strict project isolation
-
-Every project is scoped independently across persistence, policies, repository,
-worktrees, processes, terminals, environment, provider usage, budgets, logs,
-artifacts and events. There is no arbitrary product-wide terminal limit;
-configurable host capacity, project policy, provider quotas and safety limits
-control concurrency.
-
-### Evidence before completion
-
-A mission is not complete because an agent says it is. Completion requires the
-expected diff and artifacts, successful required checks, clean Git state and an
-independent review. Fake providers and demo fixtures are clearly identified and
-never presented as real implementation evidence.
-
-### Provider independence
-
-All AI execution passes through versioned adapters with explicit capabilities
-and normalized errors. The system can wait for a quota reset, retry with
-backoff, switch model, switch provider or escalate according to project policy.
-It never changes provider silently when privacy, capability or budget rules
-would be violated.
-
-### Git as the delivery ledger
-
-Each coding mission uses an isolated branch and worktree. Changes remain scoped,
-commits are atomic, checks are mandatory and protected branches are never
-force-pushed. AvityOS can prepare and mark an approved draft PR ready, but it
-does not self-merge.
-
-## Specialized teams and mission contracts
-
-AvityOS routes work by role: product and requirements, architecture, frontend,
-backend, infrastructure and platform, cybersecurity, QA, independent code
-review, documentation and release.
-
-Delegation is structured rather than prompt-only. Every mission carries an
-immutable identity, objective, rationale, dependencies, allowed and forbidden
-paths/actions, acceptance criteria, required checks, budget, timeout, expected
-artifacts and escalation conditions. The author of a change is not its sole
-reviewer.
-
-## User surfaces
-
-- **Web Mission Control** — projects, plans, mission Kanban, agents, live
-  executions and terminals, interventions, GitHub state, providers, usage,
-  quality, security, project memory, activity and policies. Connection state is
-  always explicit: `Live`, `Hors ligne`, `Reconnexion` or `Démo`.
-- **Native macOS app** — SwiftUI client using Keychain-backed authentication,
-  REST/SSE state, multiple project views, terminal logs, interventions, deep
-  links, notifications, Dock badge and a menu-bar companion.
-- **CLI** — headless access to the complete lifecycle with human-readable and
-  machine-readable JSON output for scripts and remote workflows.
-
-## Architecture
+## Comment ça fonctionne ?
 
 ```text
- React/Vite web        SwiftUI macOS app        avity CLI
-       \                      |                    /
-        +---------------- REST + SSE -------------+
-                              |
-                    Durable control plane
-              Fastify + state engine + SQLite/WAL
-                   /            |             \
-          project brains   policies/Git    scheduler
-                 |              |             |
-       provider adapters   checkpoints    worker leases
-                 \              |             /
-          isolated worktrees, sandboxes and terminals
+Objectif
+   ↓
+Analyse du projet et questions éventuelles
+   ↓
+Plan versionné et missions ordonnées
+   ↓
+Exécution par les agents dans des espaces isolés
+   ↓
+Builds, tests, contrôles et revue indépendante
+   ↓
+Correction automatique si nécessaire
+   ↓
+Commit, pull request et rapport de livraison
 ```
 
-The control plane is local-first: one pnpm workspace and one SQLite database
-are enough for the complete deterministic fake-provider lifecycle. Registered
-workers can extend execution to other machines using authenticated,
-revocable, capacity-fenced leases.
+1. Vous créez ou importez un projet et décrivez le résultat attendu.
+2. AvityOS analyse le dépôt, les contraintes et les critères d’acceptation.
+3. Si une décision importante manque, les questions sont regroupées en une
+   seule clarification.
+4. Le système produit un plan et un graphe de missions avec leurs dépendances.
+5. Les agents exécutent chaque mission via le fournisseur IA autorisé.
+6. Les changements sont validés par de vraies commandes et une revue distincte.
+7. Le résultat validé est préparé pour GitHub ; les branches protégées ne sont
+   jamais fusionnées automatiquement.
 
-### Technology stack
+L’état du projet est stocké dans un moteur déterministe. Les modèles IA
+réfléchissent et produisent du code, mais le control plane garde la maîtrise
+des permissions, budgets, délais, reprises, dépendances et transitions d’état.
 
-| Area | Technologies |
-| --- | --- |
-| Web | React 18, TypeScript, Vite 6, Material UI, Radix UI, Tailwind CSS, REST and SSE |
-| macOS | Swift 5.9, SwiftUI, Security/Keychain, native notifications and menu-bar integration |
-| CLI | TypeScript/Node.js, shared runtime contracts, JSON output |
-| Control plane | Node.js 22+, Fastify 5, built-in `node:sqlite`, WAL and transactional migrations |
-| Contracts | Zod schemas shared across API, events, services and TypeScript clients |
-| Orchestration | Explicit state machines, dependency DAG, deterministic scheduler, retries and fallback |
-| Providers | Codex CLI, Claude Code, Cursor CLI, OpenAI Responses, Anthropic, DeepSeek, generic command and deterministic fake adapters |
-| Execution | Git worktrees, scoped subprocesses, macOS `sandbox-exec`, Linux Bubblewrap and remote workers |
-| Quality | Vitest, Playwright, Swift XCTest, strict TypeScript, dependency audit, license policy, Gitleaks and SPDX SBOM |
-| Delivery | GitHub branches, conventional commits, draft PRs, independent review and macOS/Linux CI |
+## Fonctionnalités principales
 
-See [Architecture](docs/ARCHITECTURE.md),
-[Provider adapters](docs/PROVIDER-ADAPTERS.md) and
-[Security](docs/SECURITY.md) for the implemented boundaries.
+- **Gestion multi-projets** : plusieurs projets isolés peuvent avancer en
+  parallèle sans partager leur mémoire ou leurs secrets.
+- **Mémoire durable par projet** : objectifs, décisions, risques, plans,
+  résultats et preuves restent disponibles après redémarrage.
+- **Planification structurée** : découpage du travail en missions spécialisées
+  pour le produit, l’architecture, le frontend, le backend, l’infrastructure,
+  la sécurité, la QA, la revue et la documentation.
+- **Plusieurs fournisseurs IA** : Codex CLI, Claude Code, Cursor CLI, OpenAI,
+  Anthropic, DeepSeek, commande personnalisée et provider de test déterministe.
+- **Exécution isolée** : worktrees Git, processus limités, sandboxes macOS ou
+  Linux et workers locaux ou distants.
+- **Validation réelle** : builds, tests, typecheck, critères d’acceptation,
+  scans de sécurité et revue indépendante.
+- **Correction et fallback** : nouvelle tentative contrôlée ou changement de
+  fournisseur selon les règles du projet.
+- **Workflow GitHub** : branches dédiées, commits atomiques, pull requests
+  brouillon et historique vérifiable.
+- **Supervision en direct** : projets, missions, agents, logs, terminaux,
+  interventions, budgets et état GitHub depuis le Web, macOS ou la CLI.
+- **Sécurité intégrée** : coffre de secrets chiffré, permissions explicites,
+  masquage des secrets, TLS/mTLS, journal d’audit et actions dangereuses
+  soumises à approbation.
+- **Reprise après incident** : état persistant, checkpoints, sauvegarde et
+  restauration certifiée.
 
-## Security and autonomy
+## Cas d’utilisation
 
-AvityOS treats provider output, repository content, terminal output, web
-content and downloaded material as untrusted input. Important controls include:
+| Besoin | Exemple d’objectif | Ce qu’AvityOS orchestre |
+| --- | --- | --- |
+| Développer une fonctionnalité | « Ajouter une authentification par passkey avec tests » | Analyse, architecture, code, tests, revue et PR |
+| Corriger un bug | « Corriger le panier vide sur mobile sans régression » | Reproduction, correctif ciblé, tests et validation |
+| Moderniser un projet | « Migrer cette API vers Node.js 22 et mettre à jour la CI » | Inventaire, plan de migration, changements ordonnés et contrôles |
+| Renforcer la qualité | « Ajouter les tests manquants sur le parcours de paiement » | Identification des risques, tests et rapport de couverture |
+| Auditer la sécurité | « Vérifier les entrées utilisateur et corriger les failles critiques » | Analyse, corrections isolées, scans et revue indépendante |
+| Maintenir plusieurs dépôts | « Mettre à jour la même convention de lint sur cinq projets » | Projets isolés, exécutions parallèles et suivi centralisé |
+| Documenter une livraison | « Mettre à jour le guide d’installation et le changelog » | Analyse du code actuel, documentation et vérification des liens |
 
-- runtime validation using shared contracts;
-- server-resolved worktree paths and symlink-escape protection;
-- argv-based command execution without unsafe shell construction;
-- fail-closed OS sandboxing and process-group cleanup;
-- scoped provider environments and secret redaction before persistence;
-- authenticated and revocable workers with short, fenced leases;
-- policy-controlled dangerous actions and human approvals;
-- hash-chained audit records, dependency scanning, secret scanning and SBOMs.
+## Exemple concret
 
-Projects choose one of three autonomy profiles: `supervised`,
-`autonomous_with_checkpoints` or `maximum_autonomy`. Even maximum autonomy
-remains bounded by explicit policies; destructive or irreversible actions
-require approval by default.
-
-## Current status
-
-AvityOS is an active `0.1.0` implementation, not a claim that every production
-integration is finished.
-
-Implemented and covered by automated tests:
-
-- complete project onboarding and idempotent updates across Web, CLI and the
-  public API, with server-canonicalized Git paths, branches and GitHub remotes;
-- a durable central AI brain: bounded secret-free repository snapshots,
-  structured analysis, architecture proposals and validated plan/DAG versions
-  produced through provider adapters, with bounded repair of invalid output,
-  explicit fixture provenance and evidence-based bounded replanning. Ambiguous
-  or infeasible analyses stop before delegation; repository checks must match
-  the server snapshot exactly; replans persist their idempotency key and
-  withdraw stale interventions in the same transaction;
-- durable objective, structured clarification, planning, mission and
-  intervention flows;
-- atomic project pause/resume with run cancellation, isolated lease revocation
-  (P-ISO), late-result fencing (P-FENCE) and durable, exactly-once
-  clarification resume (P-RESUME);
-- restart recovery, transactional events and a hash-chained audit trail;
-- concurrent project isolation and ordered per-project execution;
-- real worktree changes, validation commands, commits, correction and
-  independent review in deterministic fixture repositories;
-- provider routing and cross-provider fallback;
-- authenticated worker enrollment, capacity leases, revocation and sandboxed
-  execution;
-- live web state, native macOS client and first-class CLI;
-- macOS and Linux CI with build, tests, type checking, browser tests,
-  native XCUITest, universal `.app` packaging, dependency/license checks,
-  secret scanning and SBOM generation.
-- an AES-256-GCM operator credential vault with a Keychain/external-file
-  master key, strict per-service scopes, verified migration away from
-  plaintext protected env files, and transactional external-credential
-  activation with service restart and compare-and-swap rollback, plus durable
-  two-phase administrator and worker bearer rotation;
-- passphrase-encrypted portable master-key recovery plus certified online
-  SQLite/vault backup, verification and fresh-root restore.
-- native TLS 1.3 for the control plane plus certificate-bound worker mTLS,
-  with strict key-file permissions and per-client private-CA trust.
-
-Known remaining proof or product work:
-
-- the central AI brain is fully exercised offline through the deterministic
-  fixture provider (labelled `fake_fixture`, never real planning evidence);
-  a planning run with a live reasoning provider requires operator-owned API
-  credentials and is deliberately part of the E2E live-validation milestone;
-- the external live fixture, Codex/DeepSeek runs, controlled fallback,
-  autonomous push and non-merged draft PRs are proven; Claude Code and Cursor
-  missions still require their missing sandbox-portable operator credentials,
-  and the rejected-work correction scenario still needs final approval;
-- the macOS client now has native UI automation and a verified universal,
-  ad hoc signed installable bundle plus a signed update/rollback workflow;
-  public Developer ID signing/notarization and the first real HTTPS feed still
-  require operator-owned credentials;
-- native remote TLS/mTLS, transactional provider-credential activation and
-  in-band administrator/worker-bearer rotation are implemented; certificate
-  and CA rollover plus external enterprise secret-manager integration remain
-  chantier 7 work.
-
-The exact evidence and limitations are maintained in
-[docs/TRACEABILITY.md](docs/TRACEABILITY.md).
-
-## Repository layout
+Un objectif utile indique le résultat attendu et la manière de le vérifier :
 
 ```text
-apps/web               React/Vite Mission Control client
-apps/macos             Native SwiftUI app and menu-bar companion
-apps/cli               avity command-line client
-services/control-plane Durable orchestration API, engine and SQLite store
-services/worker        Local/remote execution worker
-packages/contracts     Domain, API and event schemas — source of truth
-packages/orchestration State machines, DAG, scheduler and fallback policy
-packages/providers     AI/CLI provider adapters
-packages/credential-vault Encrypted, scoped operator credential storage
-packages/transport-security Native TLS and bounded private-CA client transport
-packages/git           Injection-safe Git and worktree operations
-packages/policy        Permissions, command/path policy and secret redaction
-docs/                  Architecture, security, lifecycle, ADRs and runbooks
-deploy/                launchd and systemd deployment templates
+Objectif : ajouter un mode sombre à l’application web.
+
+Critères d’acceptation :
+- le thème suit le réglage du système par défaut ;
+- le choix manuel est conservé après rechargement ;
+- les composants principaux restent accessibles ;
+- les tests et la documentation sont à jour.
 ```
 
-## Requirements
+AvityOS peut alors créer les missions de conception, d’implémentation, de test
+et de revue, les exécuter dans l’ordre requis et signaler uniquement les
+décisions qui nécessitent réellement une intervention humaine.
 
-- macOS 14+ for the complete stack, or Linux for the TypeScript services;
-- Node.js **22.5 or newer** (`node:sqlite` is required);
-- pnpm 11;
-- Git;
-- Xcode 15+ for native macOS UI tests and application packaging;
-- optional authenticated provider CLIs or API keys for live AI execution.
-
-## Quick start
+Le même projet peut être créé en CLI :
 
 ```sh
-pnpm install
+node apps/cli/dist/main.js project create "Mode sombre" \
+  --repo /chemin/absolu/vers/le-projet \
+  --remote git@github.com:organisation/projet.git \
+  --branch main \
+  --objective "Ajouter un mode sombre accessible" \
+  --criterion "Le thème suit le système par défaut" \
+  --criterion "Le choix manuel est conservé" \
+  --criterion "Les tests passent" \
+  --autonomy autonomous_with_checkpoints
+```
+
+Commandes utiles pour suivre le travail :
+
+```sh
+node apps/cli/dist/main.js project list
+node apps/cli/dist/main.js plan show <project-id>
+node apps/cli/dist/main.js mission list <project-id>
+node apps/cli/dist/main.js run list --project <project-id>
+node apps/cli/dist/main.js intervention list
+```
+
+## Interfaces disponibles
+
+- **Mission Control Web** : tableau de bord React pour piloter les projets,
+  missions, agents, exécutions et interventions.
+- **Application macOS** : client SwiftUI avec authentification Keychain,
+  notifications, deep links, badge Dock et compagnon de barre des menus.
+- **CLI `avity`** : cycle complet en terminal, avec sortie JSON pour les scripts
+  et l’automatisation.
+
+Toutes les interfaces utilisent le même control plane via REST et SSE.
+
+## Architecture simplifiée
+
+```text
+ Web React/Vite       App macOS SwiftUI       CLI avity
+        \                    |                   /
+         +--------------- REST + SSE -----------+
+                              |
+                 Control plane Fastify
+            orchestration + politiques + SQLite
+                  /            |            \
+         Providers IA       Git/worktrees    Workers
+                  \            |            /
+              Exécution, tests, revue et livraison
+```
+
+AvityOS fonctionne localement avec un workspace pnpm et une base SQLite. Des
+workers authentifiés peuvent étendre l’exécution à d’autres machines.
+
+## Stack technique
+
+| Couche | Technologies principales |
+| --- | --- |
+| Web | React 18, TypeScript, Vite 6, Material UI, Radix UI, Tailwind CSS |
+| macOS | Swift 5.9, SwiftUI, WebKit, Keychain, notifications natives |
+| CLI | TypeScript, Node.js, sortie texte ou JSON |
+| API et control plane | Node.js 22+, Fastify 5, REST, SSE |
+| Données | SQLite avec WAL et migrations transactionnelles |
+| Contrats | Zod, schémas partagés entre API, événements et clients |
+| Orchestration | Machines à états, graphe de dépendances, scheduler déterministe |
+| IA | Codex, Claude Code, Cursor, OpenAI, Anthropic, DeepSeek |
+| Exécution | Git worktrees, subprocessus isolés, sandbox-exec, Bubblewrap, workers |
+| Tests et qualité | Vitest, Playwright, XCTest, TypeScript strict, Gitleaks, SBOM SPDX |
+| CI et livraison | GitHub Actions, commits conventionnels, pull requests brouillon |
+
+## Démarrage rapide
+
+### Prérequis
+
+- macOS 14+ pour l’ensemble de la plateforme, ou Linux pour les services
+  TypeScript ;
+- Node.js `22.5` ou plus récent ;
+- pnpm 11 ;
+- Git ;
+- Xcode 15+ uniquement pour l’application et les tests macOS.
+
+### Installation
+
+```sh
+git clone https://github.com/AVTAVANTTOUT2/AvityOS.git
+cd AvityOS
+pnpm install --frozen-lockfile
 pnpm verify
 ```
 
-Start the local platform in separate terminals:
+### Lancer la plateforme
+
+Ouvrez deux terminaux :
 
 ```sh
-# Control plane — http://127.0.0.1:7717
+# Terminal 1 — API sur http://127.0.0.1:7717
 pnpm --filter @avityos/control-plane start
+```
 
-# Web Mission Control — http://localhost:5173
+```sh
+# Terminal 2 — interface sur http://localhost:5173
 pnpm --filter @avityos/web dev
+```
 
-# Optional execution worker
+Services optionnels :
+
+```sh
+# Worker d’exécution
 pnpm --filter @avityos/worker start
 
-# Optional native macOS app
+# Application macOS
 cd apps/macos && swift run AvityOS
-
-# Optional universal installable development bundle
-cd ../.. && ./scripts/build-macos-app.sh
 ```
 
-Drive the same control plane from the CLI:
+Copiez [`.env.example`](.env.example) uniquement si vous souhaitez modifier la
+configuration par défaut. Ne placez jamais de clé réelle dans le dépôt : le
+coffre chiffré `avity vault` est prévu pour les identifiants des providers.
 
-```sh
-# Structured clarifications (interactive or JSON)
-avity clarification list <project>
-avity clarification show <project>
-avity clarification answer <project>
+Le provider `fake` permet de tester gratuitement et hors ligne le cycle
+d’orchestration. Il valide le fonctionnement d’AvityOS, mais ne remplace pas un
+provider IA réel pour développer un produit.
 
-# Atomic project pause / resume
-avity project pause <project> --reason "operator hold"
-avity project resume <project>
-node apps/cli/dist/main.js doctor
-node apps/cli/dist/main.js project create "My project" \
-  --repo /absolute/path/to/repository \
-  --remote git@github.com:owner/repository.git \
-  --branch main \
-  --objective "Build the requested product" \
-  --criterion "All acceptance criteria pass" \
-  --criterion "Documentation is current" \
-  --autonomy autonomous_with_checkpoints \
-  --budget 100 --warn-at 80
+## Structure du dépôt
 
-# A greenfield project can be created without --repo/--remote.
-node apps/cli/dist/main.js project update <project-id> --budget 150 --warn-at 70
+```text
+apps/web                 Interface Mission Control React
+apps/macos               Application native macOS
+apps/cli                 CLI avity
+services/control-plane   API, moteur d’orchestration et stockage SQLite
+services/worker          Worker d’exécution local ou distant
+packages/contracts       Schémas métier, API et événements
+packages/orchestration   États, dépendances, scheduler et fallback
+packages/providers       Adaptateurs des fournisseurs IA
+packages/git             Opérations Git et worktrees sécurisés
+packages/policy          Permissions, sandbox et masquage des secrets
+packages/credential-vault Coffre chiffré des identifiants opérateur
+packages/transport-security TLS et mTLS
+docs                     Guides, architecture, sécurité et runbooks
+deploy                   Exemples de services launchd et systemd
 ```
 
-Repository paths are never trusted from clients. The control plane resolves
-the path on its own host, requires an accessible Git working tree, verifies the
-local default branch and confirms that the requested GitHub repository matches
-a configured Git remote before persisting canonical values.
-
-No paid credentials are required to test the orchestration engine. The
-deterministic fake provider exercises the isolated worktree, checks, correction,
-commit and review lifecycle. Web fixtures are available only when explicitly
-enabled with `VITE_AVITY_DEMO=1` and are visibly labelled `Démo`.
-
-## Verification
+## Vérification
 
 ```sh
-pnpm verify             # TypeScript builds, tests and strict type checking
-pnpm verify:full        # Above + Playwright browser E2E + Swift tests
-pnpm licenses:check     # Dependency license inventory and policy
+pnpm verify          # build + tests + typecheck strict
+pnpm verify:full     # ajoute Playwright et les tests Swift
+pnpm licenses:check  # inventaire et politique des licences
 pnpm audit --audit-level high
 ```
 
 ## Documentation
 
-- [**Mode d’emploi (A → Z)**](docs/MODE-D-EMPLOI.md) — guide complet pour démarrer et utiliser AvityOS sans connaissances préalables
-- [Product](docs/PRODUCT.md) — implemented product behavior and quality bar
-- [Architecture](docs/ARCHITECTURE.md) — components, state machines and recovery
-- [Project lifecycle](docs/PROJECT-LIFECYCLE.md) — objective to reviewed delivery
-- [Provider adapters](docs/PROVIDER-ADAPTERS.md) — integrations and fallback
-- [Policies](docs/POLICIES.md) — autonomy, budgets and checkpoints
-- [Git workflow](docs/GIT-WORKFLOW.md) — branch, worktree and PR discipline
-- [Security](docs/SECURITY.md) — trust model, controls and limitations
-- [Local development](docs/LOCAL-DEVELOPMENT.md) — environment and commands
-- [Live E2E campaign (operator)](docs/LIVE-E2E-CAMPAIGN.md) — real-provider campaign runbook
-- [Live E2E evidence (2026-07-23)](docs/LIVE-E2E-EVIDENCE-2026-07-23.md) — verified campaign results and remaining gaps
-- [Deployment](docs/DEPLOYMENT.md) and
-  [backup/restore](docs/BACKUP-RESTORE.md) — operations
-- [Runbooks](docs/RUNBOOKS.md) — failure handling
-- [ADRs](docs/adr/) — versioned architecture decisions
-- [Traceability](docs/TRACEABILITY.md) — definition-of-done evidence map
-- [Roadmap](docs/ROADMAP.md) — mandatory product dependency order
+- [Mode d’emploi complet](docs/MODE-D-EMPLOI.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Cycle de vie d’un projet](docs/PROJECT-LIFECYCLE.md)
+- [Providers et fallback](docs/PROVIDER-ADAPTERS.md)
+- [Sécurité](docs/SECURITY.md)
+- [Développement local](docs/LOCAL-DEVELOPMENT.md)
+- [Déploiement](docs/DEPLOYMENT.md)
+- [Sauvegarde et restauration](docs/BACKUP-RESTORE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [État des fonctionnalités et preuves](docs/TRACEABILITY.md)
 
-## Delivery discipline
+## Limites importantes
 
-Changes to AvityOS follow the same rules AvityOS applies to user projects:
-small scoped branches, conventional commits, mandatory CI, independent review,
-clean working trees and no self-merge. Major dependency upgrades are handled as
-dedicated migrations rather than automatic bulk merges.
+AvityOS ne déploie pas silencieusement en production, n’achète pas de services,
+n’élargit pas l’accès aux secrets et ne fusionne pas les branches protégées.
+Les actions dangereuses ou irréversibles demandent une approbation selon la
+politique du projet.
+
+Les intégrations réelles nécessitent les identifiants fournis par l’opérateur.
+L’état exact des fonctionnalités implémentées et des validations restantes est
+maintenu dans [la matrice de traçabilité](docs/TRACEABILITY.md).
